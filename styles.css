@@ -1,0 +1,724 @@
+/**
+ * reMarkable Bridge plugin styles.
+ *
+ * Uses Obsidian's CSS variables exclusively -- no custom color palette.
+ * Respects dark/light theme automatically.
+ * Minimal styling: layout only, letting Obsidian's native look carry the UI.
+ */
+
+/* ===== Settings Tab ===== */
+
+.remarkable-advanced-toggle {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-2) 0;
+  margin-top: var(--size-4-4);
+}
+
+.remarkable-advanced-toggle:hover {
+  color: var(--text-normal);
+}
+
+.remarkable-advanced-content {
+  padding-top: var(--size-4-2);
+}
+
+/* ===== Setup Wizard ===== */
+
+.remarkable-setup-wizard {
+  max-width: 640px;
+}
+
+.remarkable-setup-wizard .modal-content {
+  padding: 0;
+}
+
+/* Step indicator bar */
+.remarkable-wizard-header {
+  margin-bottom: var(--size-4-4);
+}
+
+.remarkable-wizard-steps {
+  display: flex;
+  gap: var(--size-4-2);
+  flex-wrap: wrap;
+  margin-top: var(--size-4-2);
+}
+
+.remarkable-wizard-step-indicator {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  padding: var(--size-2-2) var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-wizard-step-indicator.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: var(--font-semibold);
+}
+
+.remarkable-wizard-step-indicator.is-complete {
+  color: var(--text-success);
+  background: var(--background-modifier-success);
+}
+
+/* Wizard step content area */
+.remarkable-wizard-step {
+  margin-bottom: var(--size-4-4);
+}
+
+.remarkable-wizard-step h3 {
+  margin-top: 0;
+}
+
+.remarkable-wizard-step p {
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* Verify section */
+.remarkable-wizard-verify {
+  margin-top: var(--size-4-3);
+}
+
+/* Status messages */
+.remarkable-wizard-status {
+  padding: var(--size-4-2) var(--size-4-3);
+  border-radius: var(--radius-s);
+  margin-bottom: var(--size-4-2);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  min-height: 1.5em;
+}
+
+.remarkable-wizard-status:empty {
+  display: none;
+}
+
+.remarkable-wizard-status.is-success {
+  background: var(--background-modifier-success);
+  color: var(--text-on-accent, #fff);
+}
+
+.remarkable-wizard-status.is-error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent, #fff);
+}
+
+.remarkable-wizard-status.is-loading {
+  color: var(--text-muted);
+}
+
+/* Installation log */
+.remarkable-wizard-log {
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  margin-top: var(--size-4-2);
+}
+
+.remarkable-wizard-log:empty {
+  display: none;
+}
+
+.remarkable-wizard-log-line {
+  padding: var(--size-2-1) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  word-break: break-word;
+}
+
+.remarkable-wizard-log-line:last-child {
+  border-bottom: none;
+}
+
+/* Safety note */
+.remarkable-wizard-safety-note {
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  border-left: 3px solid var(--text-accent);
+  margin: var(--size-4-2) 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+/* Warning text */
+.remarkable-wizard-warning {
+  color: var(--text-error);
+  font-style: italic;
+}
+
+/* Device info table */
+.remarkable-wizard-device-info,
+.remarkable-wizard-summary {
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-3);
+  margin: var(--size-4-2) 0;
+}
+
+.remarkable-info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--size-2-2) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-small);
+}
+
+.remarkable-info-row:last-child {
+  border-bottom: none;
+}
+
+.remarkable-info-label {
+  color: var(--text-muted);
+  font-weight: var(--font-semibold);
+}
+
+.remarkable-info-value {
+  color: var(--text-normal);
+  text-align: right;
+}
+
+/* Pre-flight check rows */
+.remarkable-wizard-checks {
+  margin: var(--size-4-2) 0;
+}
+
+.remarkable-wizard-check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-2-2) 0;
+  font-size: var(--font-ui-small);
+}
+
+.remarkable-check-icon {
+  font-weight: bold;
+  width: 1.5em;
+  text-align: center;
+}
+
+.remarkable-check-icon.is-pass {
+  color: var(--text-success);
+}
+
+.remarkable-check-icon.is-fail {
+  color: var(--text-error);
+}
+
+/* Navigation bar */
+.remarkable-wizard-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.remarkable-wizard-nav-spacer {
+  flex: 1;
+}
+
+/* ===== Settings Tab ===== */
+
+.remarkable-setup-status {
+  padding: var(--size-4-2) var(--size-4-3);
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+/* ===== Library View ===== */
+
+.remarkable-library {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Toolbar: search + controls */
+.remarkable-library-toolbar {
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.remarkable-library-search {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-2-2) var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+}
+
+.remarkable-library-search-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.remarkable-library-search-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.remarkable-library-search-input {
+  border: none;
+  background: transparent;
+  outline: none;
+  width: 100%;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  padding: 0;
+}
+
+.remarkable-library-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.remarkable-library-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.remarkable-library-sort {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  flex: 1;
+}
+
+.remarkable-library-sort-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.remarkable-library-sort-select {
+  font-size: var(--font-ui-smaller);
+  flex: 1;
+}
+
+.remarkable-library-sort-dir,
+.remarkable-library-refresh {
+  padding: var(--size-2-2);
+}
+
+.remarkable-library-sort-dir svg,
+.remarkable-library-refresh svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Content area */
+.remarkable-library-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Folder tree */
+.remarkable-library-folder {
+  /* No extra margin -- structure handled by padding-left on nested levels */
+}
+
+.remarkable-library-folder-header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-4-3);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  border-radius: var(--radius-s);
+}
+
+.remarkable-library-folder-header:hover {
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-library-folder-collapse {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: transform 100ms ease-in-out;
+}
+
+.remarkable-library-folder-collapse.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.remarkable-library-folder-collapse svg {
+  width: 12px;
+  height: 12px;
+  color: var(--text-faint);
+}
+
+.remarkable-library-folder-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.remarkable-library-folder-icon svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.remarkable-library-folder-name {
+  flex: 1;
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remarkable-library-folder-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.remarkable-library-folder-contents {
+  padding-left: var(--size-4-2);
+}
+
+/* Document item */
+.remarkable-library-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-2);
+  padding: var(--size-2-3) var(--size-4-3);
+  cursor: pointer;
+  border-radius: var(--radius-s);
+}
+
+.remarkable-library-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-library-item-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.remarkable-library-item-icon svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+.remarkable-library-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.remarkable-library-item-name {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remarkable-library-item-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  flex-wrap: wrap;
+  margin-top: 1px;
+}
+
+.remarkable-library-item-type {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.03em;
+}
+
+.remarkable-library-item-date {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.remarkable-library-item-highlights {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+}
+
+.remarkable-library-highlight-icon {
+  display: flex;
+  align-items: center;
+}
+
+.remarkable-library-highlight-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.remarkable-library-item-path {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.remarkable-library-item-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 4px;
+}
+
+/* Sync status dots */
+.remarkable-sync-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.remarkable-sync-dot--synced {
+  background: var(--text-success);
+}
+
+.remarkable-sync-dot--pending {
+  background: var(--text-warning);
+}
+
+.remarkable-sync-dot--extracting {
+  background: var(--text-accent);
+  animation: remarkable-pulse 1.5s ease-in-out infinite;
+}
+
+.remarkable-sync-dot--error {
+  background: var(--text-error);
+}
+
+.remarkable-sync-dot--unknown {
+  background: var(--text-faint);
+}
+
+@keyframes remarkable-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Empty state */
+.remarkable-library-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-4-8) var(--size-4-4);
+  text-align: center;
+  gap: var(--size-4-3);
+}
+
+.remarkable-library-empty-icon {
+  color: var(--text-faint);
+}
+
+.remarkable-library-empty-icon svg {
+  width: 32px;
+  height: 32px;
+}
+
+.remarkable-library-empty-text {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 280px;
+}
+
+/* Footer */
+.remarkable-library-footer {
+  padding: var(--size-2-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.remarkable-library-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* Document list container */
+.remarkable-library-list {
+  /* Thin separator between flat-list items */
+}
+
+/* ===== Status Bar (Enhanced) ===== */
+
+.remarkable-status-bar {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.remarkable-status-bar:hover {
+  color: var(--text-normal);
+}
+
+.remarkable-statusbar-dot {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.remarkable-statusbar-dot--idle {
+  color: var(--text-faint);
+}
+
+.remarkable-statusbar-dot--connected {
+  color: var(--text-success);
+}
+
+.remarkable-statusbar-dot--syncing {
+  color: var(--text-accent);
+}
+
+.remarkable-statusbar-dot--extracting {
+  color: var(--text-accent);
+}
+
+.remarkable-statusbar-dot--error {
+  color: var(--text-error);
+}
+
+.remarkable-statusbar-dot--disconnected {
+  color: var(--text-faint);
+}
+
+.remarkable-statusbar-label {
+  font-size: var(--font-ui-smaller);
+}
+
+.remarkable-statusbar-docs {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.remarkable-statusbar-sync-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* ===== Sync Status Modal ===== */
+
+.remarkable-sync-status-modal {
+  max-width: 480px;
+}
+
+.remarkable-sync-status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-4-2) 0;
+  margin-bottom: var(--size-4-2);
+}
+
+.remarkable-sync-status-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.remarkable-sync-status-indicator .remarkable-sync-dot {
+  width: 10px;
+  height: 10px;
+}
+
+.remarkable-sync-status-text {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+}
+
+.remarkable-sync-details {
+  background: var(--background-secondary);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2) var(--size-4-3);
+  margin-bottom: var(--size-4-3);
+}
+
+.remarkable-sync-status-modal h3 {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: var(--size-4-4);
+  margin-bottom: var(--size-4-2);
+}
+
+/* ===== Settings Tab: Warning Banners ===== */
+
+.remarkable-warning-banner {
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--text-warning);
+  background-color: var(--background-modifier-warning);
+  border-radius: 4px;
+}
+
+.remarkable-collision-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.remarkable-warning-banner-text {
+  flex: 1;
+}
+
+.remarkable-warning-title {
+  color: var(--text-warning);
+}
+
+.remarkable-warning-detail {
+  margin: 4px 0 0 0;
+}
+
+.remarkable-dismiss-btn {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* ===== Settings Tab: Inline Warnings ===== */
+
+.remarkable-field-warning {
+  color: var(--text-warning);
+  margin-top: -8px;
+  margin-bottom: 8px;
+}
+
+.remarkable-field-error {
+  color: var(--text-error);
+  margin-bottom: 8px;
+}
+
+/* ===== Settings Tab: Source Items ===== */
+
+.remarkable-source-item {
+  border-left: 2px solid var(--interactive-accent);
+  padding-left: 12px;
+  margin-bottom: 16px;
+}

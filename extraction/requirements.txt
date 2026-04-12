@@ -1,0 +1,8 @@
+rmscene>=0.5.0
+PyMuPDF>=1.23.0
+
+# Optional: OCR support for handwritten notes
+# Uncomment the following lines to enable OCR:
+# pytesseract>=0.3.10
+# Pillow>=10.0.0
+# cairosvg>=2.7.0  # Optional: for SVG-to-PNG rasterization before OCR

@@ -1,0 +1,64 @@
+node_modules/
+dist/
+build/
+*.js
+*.js.map
+*.d.ts
+!jest.config.js
+!esbuild.config.mjs
+!scripts/*.mjs
+
+# IDE
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generator notes (internal)
+.generator/
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.local
+
+# Coverage
+coverage/
+
+# npm
+npm-debug.log*
+
+# Test artifacts
+test-data/
+!test-data/renderer-quality/
+!test-data/renderer-quality/rm-files/
+!test-data/renderer-quality/reference-thumbnails/
+test-data/renderer-quality/rendered-output/
+test-output/
+
+# Parameter sweep artifacts
+sweep*.py
+sweep*-results/
+sweep*-results-multi/
+
+# Temporary render files
+*.tmp
+test-*.png
+p2-*.png
+p3-*.png
+verify*.png
+cmp-*.png
+chk-*.png
+diff-*.png
+final-*.png
+check-*.png
+
+# Evaluator feedback (regenerated)
+.feedback

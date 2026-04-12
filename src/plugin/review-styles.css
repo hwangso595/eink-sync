@@ -1,0 +1,469 @@
+/**
+ * Highlight Review Panel styles.
+ *
+ * Uses Obsidian CSS variables exclusively -- no custom colors.
+ * Respects dark/light theme automatically.
+ * Design direction: focused, efficient, like processing email.
+ */
+
+/* ----------------------------------------------------------------
+   Review panel layout
+   ---------------------------------------------------------------- */
+
+.remarkable-review {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  font-size: var(--font-ui-small);
+}
+
+.remarkable-review:focus {
+  outline: none;
+}
+
+.remarkable-review-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ----------------------------------------------------------------
+   Header
+   ---------------------------------------------------------------- */
+
+.remarkable-review-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.remarkable-review-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.remarkable-review-title-row h4 {
+  margin: 0;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.remarkable-review-batch-btn {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 8px;
+}
+
+.remarkable-review-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.remarkable-review-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.remarkable-review-stat-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.remarkable-review-stat-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.remarkable-review-stat--pending {
+  color: var(--text-accent);
+}
+
+.remarkable-review-stat--accepted {
+  color: var(--color-green);
+}
+
+.remarkable-review-stat--dismissed {
+  color: var(--text-faint);
+}
+
+.remarkable-review-shortcuts {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.remarkable-review-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.remarkable-review-shortcut kbd {
+  display: inline-block;
+  padding: 0 4px;
+  font-size: 10px;
+  font-family: var(--font-monospace);
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px;
+  line-height: 1.4;
+}
+
+/* ----------------------------------------------------------------
+   Document list (left pane)
+   ---------------------------------------------------------------- */
+
+.remarkable-review-doclist {
+  width: 200px;
+  min-width: 150px;
+  border-right: 1px solid var(--background-modifier-border);
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.remarkable-review-doclist-header {
+  padding: 6px 10px;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.remarkable-review-doclist-items {
+  padding: 4px 0;
+}
+
+.remarkable-review-doc-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background-color 100ms ease;
+}
+
+.remarkable-review-doc-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-review-doc-item.is-selected {
+  background: var(--background-modifier-hover);
+  border-left-color: var(--interactive-accent);
+}
+
+.remarkable-review-doc-name {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.remarkable-review-doc-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.remarkable-review-doc-pending {
+  color: var(--text-accent);
+}
+
+/* ----------------------------------------------------------------
+   Highlight detail (right pane)
+   ---------------------------------------------------------------- */
+
+.remarkable-review-detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+  min-width: 0;
+}
+
+.remarkable-review-doc-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.remarkable-review-doc-header h5 {
+  margin: 0 0 4px 0;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+}
+
+.remarkable-review-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+  cursor: pointer;
+}
+
+.remarkable-review-source-link:hover {
+  text-decoration: underline;
+}
+
+.remarkable-review-source-link svg {
+  width: 12px;
+  height: 12px;
+}
+
+.remarkable-review-doc-actions {
+  margin-top: 6px;
+}
+
+.remarkable-review-batch-doc-btn {
+  font-size: var(--font-ui-smaller);
+  padding: 2px 6px;
+}
+
+/* ----------------------------------------------------------------
+   Highlight items
+   ---------------------------------------------------------------- */
+
+.remarkable-review-highlights {
+  padding: 4px 0;
+}
+
+.remarkable-review-hl {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.remarkable-review-hl:hover {
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-review-hl.is-selected {
+  background: var(--background-modifier-hover);
+  border-left: 3px solid var(--interactive-accent);
+  padding-left: 9px;
+}
+
+/* Status variants */
+.remarkable-review-hl--accepted,
+.remarkable-review-hl--edited {
+  opacity: 0.6;
+}
+
+.remarkable-review-hl--dismissed {
+  opacity: 0.4;
+}
+
+.remarkable-review-hl-status {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.remarkable-review-hl-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.remarkable-review-hl--pending .remarkable-review-hl-status {
+  color: var(--text-accent);
+}
+
+.remarkable-review-hl--accepted .remarkable-review-hl-status,
+.remarkable-review-hl--edited .remarkable-review-hl-status {
+  color: var(--color-green);
+}
+
+.remarkable-review-hl--dismissed .remarkable-review-hl-status {
+  color: var(--text-faint);
+}
+
+.remarkable-review-hl-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.remarkable-review-hl-page {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remarkable-review-hl-color {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.remarkable-review-hl-text {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  line-height: 1.5;
+}
+
+.remarkable-review-hl-text blockquote {
+  margin: 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--interactive-accent);
+  color: var(--text-normal);
+  font-style: normal;
+}
+
+/* ----------------------------------------------------------------
+   Action buttons
+   ---------------------------------------------------------------- */
+
+.remarkable-review-hl-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.remarkable-review-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  transition: all 100ms ease;
+}
+
+.remarkable-review-action-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.remarkable-review-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.remarkable-review-accept:hover {
+  color: var(--color-green);
+  border-color: var(--color-green);
+}
+
+.remarkable-review-edit:hover {
+  color: var(--text-accent);
+  border-color: var(--text-accent);
+}
+
+.remarkable-review-dismiss:hover {
+  color: var(--color-red);
+  border-color: var(--color-red);
+}
+
+.remarkable-review-undo:hover {
+  color: var(--text-accent);
+  border-color: var(--text-accent);
+}
+
+.remarkable-review-hl-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--color-green);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.remarkable-review-hl-badge svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ----------------------------------------------------------------
+   Edit mode
+   ---------------------------------------------------------------- */
+
+.remarkable-review-edit-wrap {
+  margin-top: 4px;
+}
+
+.remarkable-review-edit-textarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 6px 8px;
+  font-size: var(--font-ui-small);
+  font-family: var(--font-text);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.remarkable-review-edit-textarea:focus {
+  border-color: var(--interactive-accent);
+  outline: none;
+}
+
+.remarkable-review-edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* ----------------------------------------------------------------
+   Empty states
+   ---------------------------------------------------------------- */
+
+.remarkable-review-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.remarkable-review-empty-icon {
+  margin-bottom: 12px;
+}
+
+.remarkable-review-empty-icon svg {
+  width: 48px;
+  height: 48px;
+  color: var(--text-faint);
+}
+
+.remarkable-review-empty-text {
+  font-size: var(--font-ui-small);
+  max-width: 300px;
+}
+
+.remarkable-review-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
