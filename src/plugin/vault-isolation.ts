@@ -2,11 +2,11 @@
  * Vault Isolation and Collision Detection.
  *
  * Prevents data corruption when multiple Obsidian vaults (or nested vaults)
- * have the reMarkable Bridge plugin enabled with overlapping folder paths.
+ * have the E-Ink Sync plugin enabled with overlapping folder paths.
  *
  * ## How It Works
  *
- * On plugin load, a lightweight "claim file" (`.remarkable-bridge-instance`)
+ * On plugin load, a lightweight "claim file" (`.eink-sync-instance`)
  * is written into each managed folder (sync source folders, highlights folder,
  * archive folder). The file contains the vault path and a timestamp.
  *
@@ -36,7 +36,14 @@ import { logger } from '../utils/logger';
 // -------------------------------------------------------------------
 
 /** Name of the claim file written into managed folders. */
-export const CLAIM_FILENAME = '.remarkable-bridge-instance';
+export const CLAIM_FILENAME = '.eink-sync-instance';
+
+/**
+ * Legacy claim filename from the pre-rename `remarkable-bridge` plugin.
+ * Older vaults may still have these files in managed folders. We accept
+ * them as valid claims on read but only write the new name.
+ */
+export const LEGACY_CLAIM_FILENAME = '.remarkable-bridge-instance';
 
 /** Claims older than this are treated as stale and ignored (7 days in ms). */
 export const STALE_CLAIM_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
@@ -76,7 +83,7 @@ export function getClaimFilePath(pluginDataDir: string, folderAbsPath: string): 
 // -------------------------------------------------------------------
 
 /**
- * Contents of a `.remarkable-bridge-instance` claim file.
+ * Contents of a `.eink-sync-instance` claim file.
  *
  * Written as JSON into each managed folder so that other vault instances
  * can detect overlapping folder usage.
@@ -84,7 +91,7 @@ export function getClaimFilePath(pluginDataDir: string, folderAbsPath: string): 
 export interface ClaimFileContents {
   /** Absolute path of the vault that owns this folder. */
   vaultPath: string;
-  /** Plugin identifier (always "remarkable-bridge"). */
+  /** Plugin identifier ("eink-sync"; older claim files may say "remarkable-bridge"). */
   pluginId: string;
   /** Epoch-ms timestamp of when this claim was last written/refreshed. */
   timestamp: number;
@@ -149,10 +156,10 @@ export interface VaultIsolationResult {
 export function buildClaimContents(vaultPath: string, folderAbsPath?: string): ClaimFileContents {
   const contents: ClaimFileContents = {
     vaultPath,
-    pluginId: 'remarkable-bridge',
+    pluginId: 'eink-sync',
     timestamp: Date.now(),
     _note:
-      'This file is created by the reMarkable Bridge Obsidian plugin to detect ' +
+      'This file is created by the E-Ink Sync Obsidian plugin to detect ' +
       'when multiple vaults share the same folder. It is safe to delete -- the ' +
       'plugin will recreate it on next load.',
   };

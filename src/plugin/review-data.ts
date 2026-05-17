@@ -13,8 +13,8 @@
 
 import type { ExtractedHighlight } from '../pipeline/types';
 import {
-  HIGHLIGHTS_SECTION_START,
-  HIGHLIGHTS_SECTION_END,
+  findHighlightsStart,
+  findHighlightsEnd,
 } from './highlight-markers';
 import {
   scanDocumentsWithHighlights,
@@ -63,26 +63,23 @@ function simpleHash(str: string): string {
 // Highlight parsing from existing notes
 // -------------------------------------------------------------------
 
-/** Aliases for the shared marker constants (shorter local names). */
-const HIGHLIGHTS_START = HIGHLIGHTS_SECTION_START;
-const HIGHLIGHTS_END = HIGHLIGHTS_SECTION_END;
-
 /**
  * Parse highlights from an existing markdown note.
  *
  * Reads the section between the highlight markers and extracts
- * blockquote-based highlights with their page numbers.
+ * blockquote-based highlights with their page numbers. Accepts both
+ * current and legacy markers transparently.
  */
 export function parseHighlightsFromNote(
   noteContent: string,
 ): ExtractedHighlight[] {
-  const startIdx = noteContent.indexOf(HIGHLIGHTS_START);
-  const endIdx = noteContent.indexOf(HIGHLIGHTS_END);
-  if (startIdx === -1 || endIdx === -1) return [];
+  const start = findHighlightsStart(noteContent);
+  const end = findHighlightsEnd(noteContent);
+  if (!start || !end) return [];
 
   const section = noteContent.substring(
-    startIdx + HIGHLIGHTS_START.length,
-    endIdx,
+    start.index + start.marker.length,
+    end.index,
   );
 
   const highlights: ExtractedHighlight[] = [];

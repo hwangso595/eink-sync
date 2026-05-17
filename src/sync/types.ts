@@ -74,16 +74,27 @@ export const SYNCTHING_BIN_PATH = '/home/root/.entware/bin/syncthing';
 export const SYNCTHING_CONFIG_DIR = '/home/root/.config/syncthing';
 
 /** Systemd service name for our Syncthing instance. */
-export const SYNCTHING_SERVICE_NAME = 'remarkable-sync';
+export const SYNCTHING_SERVICE_NAME = 'eink-sync';
 
 /** Systemd service file path. */
 export const SYNCTHING_SERVICE_PATH = `/etc/systemd/system/${SYNCTHING_SERVICE_NAME}.service`;
 
 /** Memory watchdog service name. */
-export const WATCHDOG_SERVICE_NAME = 'remarkable-sync-watchdog';
+export const WATCHDOG_SERVICE_NAME = 'eink-sync-watchdog';
 
 /** Memory watchdog service file path. */
 export const WATCHDOG_SERVICE_PATH = `/etc/systemd/system/${WATCHDOG_SERVICE_NAME}.service`;
+
+/**
+ * Legacy systemd unit names from the pre-rename `remarkable-bridge` plugin.
+ * These may still be installed on tablets where the user ran the setup
+ * wizard before the rename. cleanupLegacyServices() in service-manager
+ * removes them on the next deploy so the new names take over cleanly.
+ */
+export const LEGACY_SYNCTHING_SERVICE_NAME = 'remarkable-sync';
+export const LEGACY_SYNCTHING_SERVICE_PATH = `/etc/systemd/system/${LEGACY_SYNCTHING_SERVICE_NAME}.service`;
+export const LEGACY_WATCHDOG_SERVICE_NAME = 'remarkable-sync-watchdog';
+export const LEGACY_WATCHDOG_SERVICE_PATH = `/etc/systemd/system/${LEGACY_WATCHDOG_SERVICE_NAME}.service`;
 
 /** Memory watchdog script path on the tablet. */
 export const WATCHDOG_SCRIPT_PATH = '/home/root/.config/syncthing/memory-watchdog.sh';

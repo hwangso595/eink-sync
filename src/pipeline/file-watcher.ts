@@ -43,6 +43,12 @@ export interface FileWatcherConfig {
   watchExtensions?: string[];
   /** Whether to watch recursively (default: true). */
   recursive?: boolean;
+  /**
+   * Pass-through to Obsidian's `Plugin#registerInterval` so the debounce
+   * timer is guaranteed-cleared on plugin unload even if `stop()` isn't
+   * called. Optional so this class stays usable from tests and CLI.
+   */
+  registerInterval?: (handle: number) => number;
 }
 
 /** Default debounce time: 10 seconds to let Syncthing finish. */
@@ -67,9 +73,10 @@ const DEFAULT_WATCH_EXTENSIONS = ['.rm', '.metadata', '.content'];
  *   watcher.stop();
  */
 export class XochitlFileWatcher {
-  private config: Required<FileWatcherConfig>;
+  private config: Required<Omit<FileWatcherConfig, 'registerInterval'>>;
+  private registerInterval: ((handle: number) => number) | undefined;
   private watcher: fs.FSWatcher | null = null;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debounceTimer: number | null = null;
   private listeners: FileWatcherCallback[] = [];
   private running = false;
   private pendingChanges = 0;
@@ -82,6 +89,7 @@ export class XochitlFileWatcher {
       watchExtensions: config.watchExtensions ?? DEFAULT_WATCH_EXTENSIONS,
       recursive: config.recursive ?? true,
     };
+    this.registerInterval = config.registerInterval;
   }
 
   /**
@@ -147,8 +155,8 @@ export class XochitlFileWatcher {
   stop(): void {
     if (!this.running) return;
 
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+    if (this.debounceTimer !== null) {
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
 
@@ -206,11 +214,11 @@ export class XochitlFileWatcher {
     this.emit('change-detected', filename);
 
     // Reset the debounce timer
-    if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+    if (this.debounceTimer !== null) {
+      window.clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = setTimeout(() => {
+    const handle = window.setTimeout(() => {
       this.debounceTimer = null;
       const count = this.pendingChanges;
       this.pendingChanges = 0;
@@ -218,6 +226,8 @@ export class XochitlFileWatcher {
       logger.info(`Debounce settled: ${count} file change(s), triggering extraction`);
       this.emit('extraction-due', `${count} file(s) changed`);
     }, this.config.debounceMs);
+    this.debounceTimer = handle;
+    this.registerInterval?.(handle);
   }
 
   /**

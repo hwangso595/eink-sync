@@ -1,5 +1,5 @@
 /**
- * Main Obsidian plugin class for the reMarkable Bridge.
+ * Main Obsidian plugin class for E-Ink Sync.
  *
  * This is the entry point that Obsidian loads. It:
  * - Registers the settings tab, commands, ribbon icon, and status bar
@@ -132,9 +132,9 @@ export default class ReMarkableBridgePlugin extends Plugin {
    */
   private fileWatcher: XochitlFileWatcher | null = null;
   /** Handle for the deferred xochitl-restart timeout in pushPdfToSyncFolder. */
-  private pdfSyncTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private pdfSyncTimeoutHandle: number | null = null;
   /** Handle for the debounced xochitl restart. */
-  private xochitlRestartHandle: ReturnType<typeof setTimeout> | null = null;
+  private xochitlRestartHandle: number | null = null;
   /** Whether a xochitl restart is currently in progress. */
   private xochitlRestartInProgress = false;
   /** Timestamp of the last periodic archive check, used for 30-minute cooldown. */
@@ -161,7 +161,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   private _outsideVaultWarnings: import('./vault-isolation').OutsideVaultWarning[] = [];
 
   async onload(): Promise<void> {
-    logger.info('Loading reMarkable Bridge plugin');
+    logger.info('Loading E-Ink Sync plugin');
 
     // Load persisted settings
     await this.loadSettings();
@@ -226,17 +226,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
     if (!this.settings.setupComplete) {
       this.app.workspace.onLayoutReady(() => {
         new Notice(
-          'reMarkable Bridge: First-time setup required. Opening the setup wizard.',
+          'E-Ink Sync: First-time setup required. Opening the setup wizard.',
         );
         this.openSetupWizard();
       });
     }
 
-    logger.info('reMarkable Bridge plugin loaded');
+    logger.info('E-Ink Sync plugin loaded');
   }
 
   async onunload(): Promise<void> {
-    logger.info('Unloading reMarkable Bridge plugin');
+    logger.info('Unloading E-Ink Sync plugin');
 
     // Best-effort cleanup of claim files
     this.removeVaultClaims();
@@ -245,13 +245,13 @@ export default class ReMarkableBridgePlugin extends Plugin {
     this.syncCoordinator.stop();
     this.statusBarManager.stopChecks();
     // Clear any pending PDF sync timeout
-    if (this.pdfSyncTimeoutHandle) {
-      clearTimeout(this.pdfSyncTimeoutHandle);
+    if (this.pdfSyncTimeoutHandle !== null) {
+      window.clearTimeout(this.pdfSyncTimeoutHandle);
       this.pdfSyncTimeoutHandle = null;
     }
     // Clear any pending xochitl restart
-    if (this.xochitlRestartHandle) {
-      clearTimeout(this.xochitlRestartHandle);
+    if (this.xochitlRestartHandle !== null) {
+      window.clearTimeout(this.xochitlRestartHandle);
       this.xochitlRestartHandle = null;
     }
     this.app.workspace.detachLeavesOfType(LIBRARY_VIEW_TYPE);
@@ -287,7 +287,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
     // drawingsFolder is now derived from highlightsFolder (no longer a setting)
     // Clean up legacy drawingsFolder if present in saved data
-    delete (this.settings as any).drawingsFolder;
+    delete (this.settings as unknown as Record<string, unknown>).drawingsFolder;
     // Load non-settings plugin data (legacy fields, kept for backward compat)
     this._pluginData.lastExtractionTimestamp = data?.lastExtractionTimestamp ?? null;
     this._pluginData.syncFolderPathHash = data?.syncFolderPathHash ?? null;
@@ -614,11 +614,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
    */
   scheduleXochitlRestart(): void {
     // Clear any pending debounce timer
-    if (this.xochitlRestartHandle) {
-      clearTimeout(this.xochitlRestartHandle);
+    if (this.xochitlRestartHandle !== null) {
+      window.clearTimeout(this.xochitlRestartHandle);
     }
 
-    this.xochitlRestartHandle = setTimeout(async () => {
+    const handle = window.setTimeout(async () => {
       this.xochitlRestartHandle = null;
 
       // Skip if a restart is already in progress
@@ -640,6 +640,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
         this.xochitlRestartInProgress = false;
       }
     }, 5000);
+    this.xochitlRestartHandle = handle;
+    this.registerInterval(handle);
   }
 
   /** Quick connection test. Returns true if SSH works. */
@@ -789,7 +791,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     const sources = this._pluginData.syncSources;
 
     if (sources.length === 0) {
-      new Notice('reMarkable Bridge: No sync sources configured.');
+      new Notice('E-Ink Sync: No sync sources configured.');
       throw new Error('No sync sources configured.');
     }
 
@@ -799,7 +801,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       : sources;
 
     if (targetSources.length === 0) {
-      new Notice('reMarkable Bridge: Sync source not found.');
+      new Notice('E-Ink Sync: Sync source not found.');
       throw new Error(`Sync source "${sourceId}" not found.`);
     }
 
@@ -861,7 +863,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
             // Only source — propagate the error
             this.updateStatusBar('error');
             const suggestion = err.suggestion ?? '';
-            new Notice(`reMarkable Bridge: ${err.message}\n${suggestion}`, 15000);
+            new Notice(`E-Ink Sync: ${err.message}\n${suggestion}`, 15000);
             throw err;
           }
           continue;
@@ -872,7 +874,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
         if (targetSources.length === 1) {
           this.updateStatusBar('error');
-          new Notice(`reMarkable Bridge: Extraction failed.\n${msg}`, 15000);
+          new Notice(`E-Ink Sync: Extraction failed.\n${msg}`, 15000);
           throw err;
         }
       }
@@ -892,14 +894,14 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // Notify user
     if (aggregateResult.totalHighlights > 0) {
       new Notice(
-        `reMarkable Bridge: Extracted ${aggregateResult.totalHighlights} highlight(s) from ${aggregateResult.documentsWithHighlights} document(s).`,
+        `E-Ink Sync: Extracted ${aggregateResult.totalHighlights} highlight(s) from ${aggregateResult.documentsWithHighlights} document(s).`,
       );
     } else if (aggregateResult.errors.length > 0 && targetSources.length > 1) {
       new Notice(
-        `reMarkable Bridge: Extraction completed with errors. ${aggregateResult.errors.length} source(s) had issues.`,
+        `E-Ink Sync: Extraction completed with errors. ${aggregateResult.errors.length} source(s) had issues.`,
       );
     } else {
-      new Notice('reMarkable Bridge: No new highlights found.');
+      new Notice('E-Ink Sync: No new highlights found.');
     }
 
     this.updateStatusBar('idle');
@@ -944,7 +946,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         `Running full extraction.`,
       );
       new Notice(
-        `reMarkable Bridge: Source "${source.label}" folder changed. Running full extraction.`,
+        `E-Ink Sync: Source "${source.label}" folder changed. Running full extraction.`,
       );
       effectiveTimestamp = null;
     }
@@ -1027,6 +1029,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         const watcher = new XochitlFileWatcher({
           xochitlPath: resolvePath(this.app, source.syncFolder),
           debounceMs: AUTO_EXTRACT_DEBOUNCE_S * 1000,
+          registerInterval: (handle) => this.registerInterval(handle),
         });
 
         watcher.on((event, detail) => {
@@ -1122,7 +1125,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       if (newCollisions.length > 0) {
         const folders = newCollisions.map((c) => c.folderPath).join(', ');
         new Notice(
-          `reMarkable Bridge: Folder collision detected. ` +
+          `E-Ink Sync: Folder collision detected. ` +
           `Another vault is using the same folder(s): ${folders}. ` +
           `Check Settings for details.`,
           15000,
@@ -1132,7 +1135,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       // Show Notice for outside-vault warnings
       for (const w of result.outsideVaultWarnings) {
         new Notice(
-          `reMarkable Bridge: The folder "${w.configuredPath}" resolves ` +
+          `E-Ink Sync: The folder "${w.configuredPath}" resolves ` +
           `outside your vault. This is unusual and may cause issues with Obsidian indexing.`,
           10000,
         );
@@ -1210,7 +1213,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async sendDocumentToRemarkable(): Promise<void> {
     const sources = this._pluginData.syncSources;
     if (sources.length === 0 || !sources[0].syncFolder) {
-      new Notice('reMarkable Bridge: No sync source configured. Run setup wizard first.');
+      new Notice('E-Ink Sync: No sync source configured. Run setup wizard first.');
       return;
     }
 
@@ -1220,7 +1223,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     );
 
     if (docFiles.length === 0) {
-      new Notice('reMarkable Bridge: No PDF or EPUB files found in your vault.');
+      new Notice('E-Ink Sync: No PDF or EPUB files found in your vault.');
       return;
     }
 
@@ -1298,31 +1301,33 @@ export default class ReMarkableBridgePlugin extends Plugin {
         Buffer.from(docData)
       );
 
-      new Notice(`reMarkable Bridge: "${visibleName}" queued. Syncing to tablet...`);
+      new Notice(`E-Ink Sync: "${visibleName}" queued. Syncing to tablet...`);
 
       // Best-effort: wait for Syncthing to push the file, then try to restart xochitl.
       // If SSH is unavailable, Syncthing will still deliver the file and the tablet
       // will see it after the next xochitl restart or reboot.
-      this.pdfSyncTimeoutHandle = setTimeout(async () => {
+      const pdfHandle = window.setTimeout(async () => {
         this.pdfSyncTimeoutHandle = null;
         try {
           await this.withSSH(async (ssh) => {
             const check = await ssh.execute(`test -f /home/root/.local/share/remarkable/xochitl/${uuid}.${fileType} && echo yes || echo no`);
             if (check.stdout.trim() === 'yes') {
               this.scheduleXochitlRestart();
-              new Notice(`reMarkable Bridge: "${visibleName}" is now on your tablet.`);
+              new Notice(`E-Ink Sync: "${visibleName}" is now on your tablet.`);
             } else {
-              new Notice(`reMarkable Bridge: "${visibleName}" is syncing. It will appear on the tablet shortly.`);
+              new Notice(`E-Ink Sync: "${visibleName}" is syncing. It will appear on the tablet shortly.`);
             }
           });
         } catch {
           // SSH unavailable -- Syncthing will still deliver the file
-          new Notice(`reMarkable Bridge: "${visibleName}" will appear on the tablet after sync completes and the tablet restarts.`);
+          new Notice(`E-Ink Sync: "${visibleName}" will appear on the tablet after sync completes and the tablet restarts.`);
         }
       }, 15000);
+      this.pdfSyncTimeoutHandle = pdfHandle;
+      this.registerInterval(pdfHandle);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`reMarkable Bridge: Failed to send PDF. ${msg}`);
+      new Notice(`E-Ink Sync: Failed to send PDF. ${msg}`);
     }
   }
 
@@ -1381,9 +1386,10 @@ export default class ReMarkableBridgePlugin extends Plugin {
   /** Get the plugin's installation directory (where extraction/ scripts live). */
   private getPluginDir(): string {
     const basePath = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.() ?? '';
+    const configDir = this.app.vault.configDir;
     return basePath
-      ? `${basePath}/.obsidian/plugins/${this.manifest.id}`
-      : `.obsidian/plugins/${this.manifest.id}`;
+      ? `${basePath}/${configDir}/plugins/${this.manifest.id}`
+      : `${configDir}/plugins/${this.manifest.id}`;
   }
 
   // -------------------------------------------------------------------
@@ -1445,16 +1451,16 @@ export default class ReMarkableBridgePlugin extends Plugin {
       });
 
       if (archived > 0) {
-        new Notice(`reMarkable Bridge: Archived ${archived} old document(s) to free space.`);
+        new Notice(`E-Ink Sync: Archived ${archived} old document(s) to free space.`);
       } else {
-        new Notice('reMarkable Bridge: No documents needed archiving.');
+        new Notice('E-Ink Sync: No documents needed archiving.');
       }
 
       return archived;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error(`Archive operation failed: ${msg}`);
-      new Notice(`reMarkable Bridge: Archive failed -- ${msg}`);
+      new Notice(`E-Ink Sync: Archive failed -- ${msg}`);
       return 0;
     }
   }
@@ -1484,24 +1490,24 @@ export default class ReMarkableBridgePlugin extends Plugin {
   // -------------------------------------------------------------------
 
   private async testConnectionCommand(): Promise<void> {
-    new Notice('reMarkable Bridge: Testing connection...');
+    new Notice('E-Ink Sync: Testing connection...');
     try {
       const result = await this.connectAndVerify(
         (step, detail) => logger.info(`[connection-test] ${step}: ${detail}`),
       );
       if (result.success) {
         new Notice(
-          `reMarkable Bridge: Connected to ${result.deviceInfo?.model ?? 'device'} ` +
+          `E-Ink Sync: Connected to ${result.deviceInfo?.model ?? 'device'} ` +
           `(firmware ${result.deviceInfo?.firmware.raw ?? 'unknown'}).`,
         );
         this.updateStatusBar('connected');
       } else {
-        new Notice(`reMarkable Bridge: Connection failed. ${result.summary}`);
+        new Notice(`E-Ink Sync: Connection failed. ${result.summary}`);
         this.updateStatusBar('disconnected');
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`reMarkable Bridge: ${msg}`);
+      new Notice(`E-Ink Sync: ${msg}`);
       this.updateStatusBar('error');
     }
   }

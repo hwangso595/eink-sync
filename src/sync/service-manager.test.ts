@@ -8,6 +8,7 @@ import {
   isServiceRunning,
   getSyncthingMemoryUsage,
   removeServices,
+  cleanupLegacyServices,
 } from './service-manager';
 import {
   SYNCTHING_BIN_PATH,
@@ -230,8 +231,9 @@ describe('deployServices', () => {
 
     await deployServices(ssh, createTestSyncConfig());
 
-    // First command should create the config directory
-    expect(executeCalls[0]).toContain(`mkdir -p ${SYNCTHING_CONFIG_DIR}`);
+    // Deploy should create the config directory at some point. (Index 0 is
+    // now the cleanupLegacyServices probe; the mkdir comes after.)
+    expect(executeCalls.some(c => c.includes(`mkdir -p ${SYNCTHING_CONFIG_DIR}`))).toBe(true);
   });
 
   it('writes all three files and reloads systemd', async () => {
@@ -264,6 +266,86 @@ describe('deployServices', () => {
     });
 
     await expect(deployServices(ssh, createTestSyncConfig())).rejects.toThrow(/Failed to write/);
+  });
+});
+
+describe('cleanupLegacyServices', () => {
+  it('is a no-op when no legacy units exist (probe returns nothing)', async () => {
+    const executeCalls: string[] = [];
+    const ssh: SSHExecutor = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn().mockResolvedValue(undefined),
+      ping: jest.fn().mockResolvedValue(true),
+      isConnected: jest.fn().mockReturnValue(true),
+      execute: jest.fn().mockImplementation((command: string) => {
+        executeCalls.push(command);
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+      }),
+    };
+
+    await cleanupLegacyServices(ssh);
+
+    // Only the probe should have run; no stop/disable/rm
+    expect(executeCalls).toHaveLength(1);
+    expect(executeCalls[0]).toContain('test -e /etc/systemd/system/remarkable-sync.service');
+    expect(executeCalls.some(c => c.includes('rm -f'))).toBe(false);
+    expect(executeCalls.some(c => c.includes('systemctl stop'))).toBe(false);
+  });
+
+  it('stops, disables, and removes legacy units when probe finds them', async () => {
+    const executeCalls: string[] = [];
+    let isProbe = true;
+    const ssh: SSHExecutor = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn().mockResolvedValue(undefined),
+      ping: jest.fn().mockResolvedValue(true),
+      isConnected: jest.fn().mockReturnValue(true),
+      execute: jest.fn().mockImplementation((command: string) => {
+        executeCalls.push(command);
+        // First call is the probe; report both legacy units present
+        if (isProbe) {
+          isProbe = false;
+          return Promise.resolve({
+            stdout: 'legacy_sync\nlegacy_watchdog\n',
+            stderr: '',
+            exitCode: 0,
+          });
+        }
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+      }),
+    };
+
+    await cleanupLegacyServices(ssh);
+
+    expect(executeCalls).toHaveLength(2);
+    const cleanup = executeCalls[1];
+    expect(cleanup).toContain('systemctl stop remarkable-sync-watchdog');
+    expect(cleanup).toContain('systemctl disable remarkable-sync-watchdog');
+    expect(cleanup).toContain('systemctl stop remarkable-sync');
+    expect(cleanup).toContain('systemctl disable remarkable-sync');
+    expect(cleanup).toContain('rm -f /etc/systemd/system/remarkable-sync.service /etc/systemd/system/remarkable-sync-watchdog.service');
+    expect(cleanup).toContain('systemctl daemon-reload');
+  });
+
+  it('runs as the first step of deployServices', async () => {
+    const executeCalls: string[] = [];
+    const ssh: SSHExecutor = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn().mockResolvedValue(undefined),
+      ping: jest.fn().mockResolvedValue(true),
+      isConnected: jest.fn().mockReturnValue(true),
+      execute: jest.fn().mockImplementation((command: string) => {
+        executeCalls.push(command);
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 0 });
+      }),
+    };
+
+    await deployServices(ssh, createTestSyncConfig());
+
+    // The legacy probe must run before mkdir of the config dir; otherwise a
+    // user upgrading from the old plugin would briefly have both sets of
+    // services racing during deploy.
+    expect(executeCalls[0]).toContain('test -e /etc/systemd/system/remarkable-sync.service');
   });
 });
 

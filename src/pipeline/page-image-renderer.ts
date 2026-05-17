@@ -17,19 +17,27 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PageDrawings } from './markdown-renderer';
+import type { ExtractedHighlight } from './types';
 import { logger } from '../utils/logger';
+
+/** Result of renderPageImages: page drawings map plus any renderer-extracted highlights. */
+export interface PageImageResult {
+  pageDrawings: PageDrawings;
+  rendererHighlights: ExtractedHighlight[];
+}
 
 /**
  * Render page images (PNGs) for a document that has pen strokes.
  *
- * Returns a Map from page number to PNG filename, or null if no strokes.
+ * Returns page drawings map and any highlight texts extracted by the renderer,
+ * or null if no strokes are found.
  */
 export async function renderPageImages(
   doc: { uuid: string; visibleName: string },
   xochitlPath: string,
   drawingsPath: string | undefined,
   pluginDir?: string,
-): Promise<PageDrawings | null> {
+): Promise<PageImageResult | null> {
   if (!drawingsPath) return null;
 
   const rmDir = path.join(xochitlPath, doc.uuid);
@@ -94,7 +102,7 @@ export async function renderPageImages(
   logger.info(`Rendering page images: ${doc.visibleName}, python=${pythonExe}`);
 
   try {
-    const pageMap = await new Promise<PageDrawings>((resolve, reject) => {
+    const pageMap = await new Promise<PageImageResult>((resolve, reject) => {
       const proc = spawn(pythonExe, [
         scriptPath,
         '--xochitl-path', xochitlPath,
@@ -142,14 +150,25 @@ export async function renderPageImages(
                 page_number: number;
                 filename: string;
                 has_strokes: boolean;
+                highlight_texts?: string[];
               }>;
               const map: PageDrawings = new Map();
+              const rendererHighlights: ExtractedHighlight[] = [];
               for (const page of pages) {
                 if (page.has_strokes) {
                   map.set(page.page_number, page.filename);
                 }
+                for (const text of page.highlight_texts ?? []) {
+                  rendererHighlights.push({
+                    text,
+                    pageNumber: page.page_number,
+                    color: 'yellow',
+                    bounds: null,
+                    createdAt: null,
+                  });
+                }
               }
-              resolve(map);
+              resolve({ pageDrawings: map, rendererHighlights });
             } else {
               const errors = parsed.errors as string[] | undefined;
               reject(new Error(errors?.join('; ') || 'render_pages failed'));
@@ -168,8 +187,8 @@ export async function renderPageImages(
       });
     });
 
-    logger.info(`Page images rendered: ${pageMap.size} page(s) with strokes`);
-    return pageMap.size > 0 ? pageMap : null;
+    logger.info(`Page images rendered: ${pageMap.pageDrawings.size} page(s) with strokes, ${pageMap.rendererHighlights.length} renderer highlight(s)`);
+    return pageMap.pageDrawings.size > 0 || pageMap.rendererHighlights.length > 0 ? pageMap : null;
   } catch (err) {
     logger.warn(`Page image rendering failed for ${doc.visibleName}: ${err}`);
     return null;

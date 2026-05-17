@@ -31,9 +31,9 @@ export class SyncStatusModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.addClass('remarkable-sync-status-modal');
+    contentEl.addClass('eink-sync-status-modal');
 
-    contentEl.createEl('h2', { text: 'Sync Status' });
+    new Setting(contentEl).setName('Sync Status').setHeading();
 
     const { summary, documents } = this.buildCurrentSummary();
     this.loadedDocuments = documents;
@@ -78,20 +78,20 @@ export class SyncStatusModal extends Modal {
   }
 
   private renderConnectionStatus(container: HTMLElement, summary: LibrarySyncSummary): void {
-    const statusRow = container.createDiv({ cls: 'remarkable-sync-status-row' });
+    const statusRow = container.createDiv({ cls: 'eink-sync-status-row' });
 
-    const indicator = statusRow.createSpan({ cls: 'remarkable-sync-status-indicator' });
-    const dotCls = summary.connectionHealthy ? 'remarkable-sync-dot--synced' : 'remarkable-sync-dot--error';
-    indicator.createSpan({ cls: `remarkable-sync-dot ${dotCls}` });
+    const indicator = statusRow.createSpan({ cls: 'eink-sync-status-indicator' });
+    const dotCls = summary.connectionHealthy ? 'eink-sync-dot--synced' : 'eink-sync-dot--error';
+    indicator.createSpan({ cls: `eink-sync-dot ${dotCls}` });
 
     statusRow.createSpan({
-      cls: 'remarkable-sync-status-text',
+      cls: 'eink-sync-status-text',
       text: summary.connectionHealthy ? 'Setup complete' : 'Not configured',
     });
   }
 
   private renderSyncDetails(container: HTMLElement, summary: LibrarySyncSummary): void {
-    const details = container.createDiv({ cls: 'remarkable-sync-details' });
+    const details = container.createDiv({ cls: 'eink-sync-details' });
 
     // Last sync time
     this.renderDetailRow(details, 'Last sync', this.formatSyncTime(summary.lastSyncTime));
@@ -138,7 +138,7 @@ export class SyncStatusModal extends Modal {
   private renderDocumentBreakdown(container: HTMLElement, summary: LibrarySyncSummary): void {
     if (summary.totalDocuments === 0) return;
 
-    container.createEl('h3', { text: 'Document Types' });
+    new Setting(container).setName('Document Types').setHeading();
 
     // Reuse documents loaded in buildCurrentSummary() -- no second filesystem scan.
     const typeCounts = new Map<string, number>();
@@ -147,14 +147,14 @@ export class SyncStatusModal extends Modal {
       typeCounts.set(doc.type, count + 1);
     }
 
-    const breakdown = container.createDiv({ cls: 'remarkable-sync-details' });
+    const breakdown = container.createDiv({ cls: 'eink-sync-details' });
     for (const [type, count] of typeCounts) {
       this.renderDetailRow(breakdown, type.toUpperCase(), `${count}`);
     }
   }
 
   private renderActions(container: HTMLElement): void {
-    container.createEl('h3', { text: 'Actions' });
+    new Setting(container).setName('Actions').setHeading();
 
     new Setting(container)
       .setName('Run extraction')

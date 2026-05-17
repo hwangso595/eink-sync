@@ -135,7 +135,7 @@ export class SetupWizardModal extends Modal {
    */
   private renderStepIndicator(containerEl: HTMLElement): void {
     const headerEl = containerEl.createDiv({ cls: 'remarkable-wizard-header' });
-    headerEl.createEl('h2', { text: 'reMarkable Bridge Setup' });
+    new Setting(headerEl).setName('E-Ink Sync Setup').setHeading();
 
     const stepsEl = headerEl.createDiv({ cls: 'remarkable-wizard-steps' });
     const stepLabels: Record<number, string> = {
@@ -167,7 +167,7 @@ export class SetupWizardModal extends Modal {
   // Step 1: SSH Connection Test
   // -------------------------------------------------------------------
   private renderStep1(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: 'Step 1: Connect to your reMarkable' });
+    new Setting(containerEl).setName('Step 1: Connect to your reMarkable').setHeading();
     containerEl.createEl('p', {
       text:
         'Connect your tablet via USB and enter the root password. ' +
@@ -289,7 +289,7 @@ export class SetupWizardModal extends Modal {
   // Step 2: Firmware Detection & Preflight
   // -------------------------------------------------------------------
   private renderStep2(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: 'Step 2: Device Detection' });
+    new Setting(containerEl).setName('Step 2: Device Detection').setHeading();
 
     if (!this.deviceInfo) {
       containerEl.createEl('p', {
@@ -329,7 +329,7 @@ export class SetupWizardModal extends Modal {
     const report = step2.data?.preflightReport as { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | undefined;
 
     if (report) {
-      containerEl.createEl('h4', { text: 'Pre-flight Checks' });
+      new Setting(containerEl).setName('Pre-flight Checks').setHeading();
       const checksEl = containerEl.createDiv({ cls: 'remarkable-wizard-checks' });
 
       for (const check of report.checks) {
@@ -370,7 +370,7 @@ export class SetupWizardModal extends Modal {
   // Step 3: Sync Method Selection
   // -------------------------------------------------------------------
   private renderStep3(containerEl: HTMLElement): void {
-    containerEl.createEl('h3', { text: 'Step 3: Install Syncthing' });
+    new Setting(containerEl).setName('Step 3: Install Syncthing').setHeading();
     containerEl.createEl('p', {
       text:
         'Syncthing provides automatic background sync between your reMarkable ' +
@@ -451,7 +451,7 @@ export class SetupWizardModal extends Modal {
   private renderStep4(containerEl: HTMLElement): void {
     const state = this.stepStates.get(4)!;
 
-    containerEl.createEl('h3', { text: 'Step 4: Configure Syncthing' });
+    new Setting(containerEl).setName('Step 4: Configure Syncthing').setHeading();
 
     containerEl.createEl('p', {
       text: 'You need to pair Syncthing on your computer with the tablet. Follow these steps:',
@@ -597,7 +597,7 @@ export class SetupWizardModal extends Modal {
   // -------------------------------------------------------------------
   private renderStep5(containerEl: HTMLElement): void {
     const stepLabel = this.isSftpMode ? 'Step 3: Review & Finish' : 'Step 5: Review & Finish';
-    containerEl.createEl('h3', { text: stepLabel });
+    new Setting(containerEl).setName(stepLabel).setHeading();
     containerEl.createEl('p', {
       text: 'Review your setup and verify everything works.',
     });
@@ -634,7 +634,7 @@ export class SetupWizardModal extends Modal {
 
     // Summary card
     const summaryEl = containerEl.createDiv({ cls: 'remarkable-wizard-summary' });
-    summaryEl.createEl('h4', { text: 'Setup Summary' });
+    new Setting(summaryEl).setName('Setup Summary').setHeading();
 
     const syncMethodLabel = this.isSftpMode ? 'SFTP (direct SSH)' : 'Syncthing';
     const summaryItems: [string, string][] = [
@@ -708,9 +708,9 @@ export class SetupWizardModal extends Modal {
               this.plugin.toggleAutoSyncTimer();
 
               state.verified = true;
-              state.message = 'Setup complete. Your reMarkable Bridge is ready.';
+              state.message = 'Setup complete. E-Ink Sync is ready.';
 
-              new Notice('reMarkable Bridge setup complete!');
+              new Notice('E-Ink Sync setup complete!');
             } catch (err) {
               state.verified = false;
               state.message = err instanceof Error ? err.message : 'Verification failed.';

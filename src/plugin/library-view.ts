@@ -14,7 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { ItemView, TFile, WorkspaceLeaf, setIcon, Menu, Notice } from 'obsidian';
+import { ItemView, TFile, WorkspaceLeaf, setIcon, Menu, Notice, Setting } from 'obsidian';
 import { logger } from '../utils/logger';
 import type ReMarkableBridgePlugin from './plugin';
 import type {
@@ -474,7 +474,7 @@ export class ReMarkableLibraryView extends ItemView {
       const archived = filtered.filter(d => d.syncStatus === 'archived');
       if (archived.length > 0) {
         const archiveSection = this.contentContainer.createDiv({ cls: 'remarkable-library-archive-section' });
-        archiveSection.createEl('h6', { text: 'Archived', cls: 'remarkable-library-section-header' });
+        new Setting(archiveSection).setName('Archived').setHeading();
         for (const doc of archived) {
           this.renderDocumentItem(archiveSection, doc, false);
         }
@@ -724,7 +724,7 @@ export class ReMarkableLibraryView extends ItemView {
 
   private renderSyncStatusDot(container: HTMLElement, status: DocumentSyncStatus): void {
     const dot = container.createSpan({
-      cls: `remarkable-sync-dot remarkable-sync-dot--${status}`,
+      cls: `eink-sync-dot eink-sync-dot--${status}`,
       attr: { 'aria-label': `Sync status: ${status}` },
     });
     dot.setAttribute('title', this.getSyncStatusLabel(status));

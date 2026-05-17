@@ -1,15 +1,16 @@
 {
-  "name": "remarkable-obsidian-bridge",
+  "name": "eink-sync",
   "version": "0.1.0",
   "description": "ReMarkable-to-Obsidian bridge: local-first highlight extraction without cloud dependency",
-  "main": "dist/main.js",
+  "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs --watch",
     "test": "jest --config jest.config.js",
     "test:watch": "jest --config jest.config.js --watch",
     "lint": "eslint src/ --ext .ts",
-    "install-plugin": "node scripts/install-plugin.mjs"
+    "install-plugin": "node scripts/install-plugin.mjs",
+    "release": "node scripts/release.mjs"
   },
   "keywords": [
     "obsidian",

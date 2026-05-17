@@ -1,5 +1,5 @@
 /**
- * Obsidian settings tab for the reMarkable Bridge plugin.
+ * Obsidian settings tab for the E-Ink Sync plugin.
  *
  * Simplified into two sections:
  *   1. Main -- the essential settings most users need
@@ -132,8 +132,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   }
 
   private renderMainSection(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: 'reMarkable Bridge' });
-
+    // Per Obsidian style guidance, the top-level heading is omitted — the
+    // plugin name is already shown in the settings tab title.
     const isSyncthing = (this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing';
     const isSftp = !isSyncthing;
     const isWifi = this.plugin.settings.connectionMethod === 'wifi';
@@ -220,17 +220,17 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               if (wantsRemove) {
                 try {
                   await oldProvider.remove();
-                  new Notice('reMarkable Bridge: Syncthing removed from tablet.');
+                  new Notice('E-Ink Sync: Syncthing removed from tablet.');
                 } catch {
                   new Notice(
-                    'reMarkable Bridge: Could not reach tablet to remove Syncthing — you can remove it later.',
+                    'E-Ink Sync: Could not reach tablet to remove Syncthing — you can remove it later.',
                   );
                 }
               } else {
                 // Just pause the host-side folder
                 try {
                   await oldProvider.pause();
-                  new Notice('reMarkable Bridge: Syncthing folder paused on this computer.');
+                  new Notice('E-Ink Sync: Syncthing folder paused on this computer.');
                 } catch {
                   // Syncthing not running on host or API unreachable — that's fine
                 }
@@ -249,7 +249,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               // Try to resume the host-side folder
               try {
                 await newProvider.resume();
-                new Notice('reMarkable Bridge: Syncthing folder resumed.');
+                new Notice('E-Ink Sync: Syncthing folder resumed.');
               } catch {
                 // Syncthing not running — wizard will handle setup
               }
@@ -266,11 +266,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               if (tabletHasSyncthing && syncthingApiKey) {
                 // Syncthing already set up on both sides — just switch
                 this.plugin.settings.setupComplete = true;
-                new Notice('reMarkable Bridge: Switched to Syncthing mode.');
+                new Notice('E-Ink Sync: Switched to Syncthing mode.');
               } else {
                 // Need to install Syncthing on tablet
                 this.plugin.settings.setupComplete = false;
-                new Notice('reMarkable Bridge: Syncthing needs to be set up on your tablet. Opening the setup wizard.');
+                new Notice('E-Ink Sync: Syncthing needs to be set up on your tablet. Opening the setup wizard.');
                 this.plugin.openSetupWizard();
               }
               await this.plugin.saveSettings();
@@ -437,7 +437,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   // -------------------------------------------------------------------
 
   private renderSyncSourcesSection(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: 'Sync Sources' });
+    new Setting(containerEl).setName('Sync Sources').setHeading();
 
     const sources = this.plugin.getSyncSources();
 
@@ -566,7 +566,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         .onClick(async () => {
           this.plugin.resetExtractionTimestamp(source.id);
           new Notice(
-            `reMarkable Bridge: Extraction state reset for "${source.label}". ` +
+            `E-Ink Sync: Extraction state reset for "${source.label}". ` +
             'Next extraction will re-process all documents.',
           );
           button.setButtonText('Done');
@@ -593,7 +593,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           const updated = this.plugin.getSyncSources().filter((s) => s.id !== source.id);
           await this.plugin.updateSyncSources(updated);
           this.plugin.restartFileWatcher();
-          new Notice(`reMarkable Bridge: Source "${source.label}" removed.`);
+          new Notice(`E-Ink Sync: Source "${source.label}" removed.`);
           this.display();
         }),
     );
@@ -630,7 +630,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         // Reset extraction timestamp for this source
         this.plugin.resetExtractionTimestamp(source.id);
         new Notice(
-          `reMarkable Bridge: Source "${source.label}" folder changed. ` +
+          `E-Ink Sync: Source "${source.label}" folder changed. ` +
           'Extraction state reset. All documents in the new folder will be processed on next run.',
         );
 
@@ -650,9 +650,9 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           );
 
           if (result.success) {
-            new Notice('reMarkable Bridge: Syncthing folder path updated.');
+            new Notice('E-Ink Sync: Syncthing folder path updated.');
           } else {
-            new Notice(`reMarkable Bridge: Could not update Syncthing. ${result.error}`);
+            new Notice(`E-Ink Sync: Could not update Syncthing. ${result.error}`);
           }
         }
 
@@ -667,7 +667,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
-    containerEl.createEl('h2', { text: 'Actions' });
+    new Setting(containerEl).setName('Actions').setHeading();
 
     new Setting(containerEl)
       .setName('Test connection')
@@ -724,7 +724,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       );
 
     // ----- Folders -----
-    containerEl.createEl('h3', { text: 'Folders' });
+    new Setting(containerEl).setName('Folders').setHeading();
 
     // Validation — check all source sync folders against highlights/archive
     // Shown BEFORE folder inputs so warnings are visible immediately
@@ -842,7 +842,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     const isSyncthing = (this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing';
 
     // ----- SSH -----
-    advancedEl.createEl('h3', { text: 'SSH' });
+    new Setting(advancedEl).setName('SSH').setHeading();
 
     new Setting(advancedEl)
       .setName('SSH port')
@@ -876,7 +876,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
     // ----- Syncthing (only shown when using Syncthing) -----
     if (isSyncthing) {
-      advancedEl.createEl('h3', { text: 'Syncthing' });
+      new Setting(advancedEl).setName('Syncthing').setHeading();
 
       new Setting(advancedEl)
         .setName('Syncthing URL')
@@ -906,7 +906,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     }
 
     // ----- Extraction -----
-    advancedEl.createEl('h3', { text: 'Extraction' });
+    new Setting(advancedEl).setName('Extraction').setHeading();
 
     new Setting(advancedEl)
       .setName('Tags (optional)')
@@ -934,7 +934,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .onClick(async () => {
             this.plugin.resetExtractionTimestamp();
             new Notice(
-              'reMarkable Bridge: Extraction state reset. Next extraction will re-process all documents.',
+              'E-Ink Sync: Extraction state reset. Next extraction will re-process all documents.',
             );
             button.setButtonText('Done');
             button.setDisabled(true);
@@ -946,7 +946,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       );
 
     // ----- Storage Management -----
-    advancedEl.createEl('h3', { text: 'Storage Management' });
+    new Setting(advancedEl).setName('Storage Management').setHeading();
 
     new Setting(advancedEl)
       .setName('Auto-archive old documents')
@@ -1009,7 +1009,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       );
 
     // ----- UI -----
-    advancedEl.createEl('h3', { text: 'UI' });
+    new Setting(advancedEl).setName('UI').setHeading();
 
     new Setting(advancedEl)
       .setName('Show status bar')
@@ -1063,7 +1063,7 @@ class AddSourceModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: 'Add Sync Source' });
+    new Setting(contentEl).setName('Add Sync Source').setHeading();
 
     new Setting(contentEl)
       .setName('Label')

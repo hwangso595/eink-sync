@@ -3,16 +3,23 @@ dist/
 build/
 *.js
 *.js.map
+*.map
 *.d.ts
 !jest.config.js
 !esbuild.config.mjs
 !scripts/*.mjs
+
+# Obsidian per-plugin user data (written at runtime)
+data.json
 
 # IDE
 .idea/
 *.swp
 *.swo
 .vscode/
+
+# Claude Code / harness local config (per-user, never committed)
+.claude/
 
 # OS
 .DS_Store
@@ -48,17 +55,41 @@ sweep*.py
 sweep*-results/
 sweep*-results-multi/
 
-# Temporary render files
+# Temporary render files (root-level scratch from rendering experiments)
 *.tmp
 test-*.png
+test_*.png
 p2-*.png
 p3-*.png
+p?_*.png
 verify*.png
 cmp-*.png
+cmp_*.png
 chk-*.png
 diff-*.png
 final-*.png
 check-*.png
+agz_*.png
+agz5_*.png
+chess_*.png
+polyline_*.png
+render_*.png
+sweep_*.png
+lj_*.png
+_debug_*.png
+_test_*.png
+_cmp_tmp/
+_sweep_tmp/
 
 # Evaluator feedback (regenerated)
 .feedback
+
+# Scratch / dev-only Python utilities in extraction/.
+# Underscore-prefixed (except __init__.py) = throwaway experiments.
+# Named exclusions for explicit dev tools we don't ship.
+extraction/_apply_*.py
+extraction/_p[0-9]*_*.py
+extraction/align_tool.py
+extraction/compare_params.py
+extraction/debug_rm.py
+extraction/test_agz_page5.py

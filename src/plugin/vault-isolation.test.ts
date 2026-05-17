@@ -55,10 +55,10 @@ describe('buildClaimContents', () => {
   it('should produce valid claim contents with required fields', () => {
     const contents = buildClaimContents('/vault/path');
     expect(contents.vaultPath).toBe('/vault/path');
-    expect(contents.pluginId).toBe('remarkable-bridge');
+    expect(contents.pluginId).toBe('eink-sync');
     expect(typeof contents.timestamp).toBe('number');
     expect(contents.timestamp).toBeGreaterThan(0);
-    expect(contents._note).toContain('reMarkable Bridge');
+    expect(contents._note).toContain('E-Ink Sync');
   });
 
   it('should use current time as timestamp', () => {
@@ -92,7 +92,7 @@ describe('claim file lifecycle (legacy — in managed folder)', () => {
     const claim = readClaimFile(tempDir);
     expect(claim).not.toBeNull();
     expect(claim!.vaultPath).toBe('/my/vault');
-    expect(claim!.pluginId).toBe('remarkable-bridge');
+    expect(claim!.pluginId).toBe('eink-sync');
     expect(typeof claim!.timestamp).toBe('number');
   });
 

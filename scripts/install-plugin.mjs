@@ -3,7 +3,7 @@
  * Install (or update) the plugin into an Obsidian vault.
  *
  * Copies the built plugin files to:
- *   <vault>/.obsidian/plugins/remarkable-obsidian-bridge/
+ *   <vault>/.obsidian/plugins/eink-sync/
  *
  * Usage:
  *   node scripts/install-plugin.mjs                    # prompts for vault path
@@ -22,11 +22,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
-const PLUGIN_ID = 'remarkable-obsidian-bridge';
+const PLUGIN_ID = 'eink-sync';
 
 /** Files and directories to copy into the plugin folder. */
 const ITEMS = [
-  { src: 'dist/main.js', dest: 'main.js' },
+  { src: 'main.js', dest: 'main.js' },
   { src: 'manifest.json', dest: 'manifest.json' },
   { src: 'styles.css', dest: 'styles.css' },
   { src: 'extraction', dest: 'extraction', isDir: true },
@@ -86,9 +86,9 @@ async function main() {
   fs.mkdirSync(pluginDir, { recursive: true });
 
   // Check that build output exists
-  const mainJs = path.join(PROJECT_ROOT, 'dist', 'main.js');
+  const mainJs = path.join(PROJECT_ROOT, 'main.js');
   if (!fs.existsSync(mainJs)) {
-    console.error('Error: dist/main.js not found. Run "npm run build" first.');
+    console.error('Error: main.js not found. Run "npm run build" first.');
     process.exit(1);
   }
 

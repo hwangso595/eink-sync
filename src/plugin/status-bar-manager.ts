@@ -5,24 +5,25 @@
  * health checks, and document count caching.
  */
 
-import type { Plugin } from 'obsidian';
+import type { App } from 'obsidian';
 import { SyncStatusModal } from './sync-status-modal';
 import { buildLibrary } from './library-data';
 import { resolvePath, formatRelativeTime } from './helpers';
 import type { SyncSource } from './settings';
+import type ReMarkableBridgePlugin from './plugin';
 
 type StatusState = 'idle' | 'connected' | 'syncing' | 'extracting' | 'error' | 'disconnected';
 
 export class StatusBarManager {
   private statusBarEl: HTMLElement | null = null;
-  private statusCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private statusCheckInterval: number | null = null;
   /** Cached document count to avoid synchronous FS reads on every status bar update. */
   private cachedDocCount: number | null = null;
   private cachedDocCountExpiry = 0;
 
   constructor(
-    private plugin: Plugin,
-    private getApp: () => any,
+    private plugin: ReMarkableBridgePlugin,
+    private getApp: () => App,
     private getSettings: () => { showStatusBar: boolean; setupComplete: boolean; lastSyncTimestamp: number | null },
     private getSyncSources: () => SyncSource[],
     private onStatusCheck: () => void,
@@ -38,7 +39,7 @@ export class StatusBarManager {
     this.update('idle');
 
     this.statusBarEl.addEventListener('click', () => {
-      new SyncStatusModal(this.getApp(), this.plugin as any).open();
+      new SyncStatusModal(this.getApp(), this.plugin).open();
     });
   }
 
@@ -105,7 +106,7 @@ export class StatusBarManager {
       this.statusBarEl.addClass('remarkable-status-bar');
       this.update('idle');
       this.statusBarEl.addEventListener('click', () => {
-        new SyncStatusModal(this.getApp(), this.plugin as any).open();
+        new SyncStatusModal(this.getApp(), this.plugin).open();
       });
       if (settings.setupComplete) {
         this.startChecks();
@@ -120,17 +121,19 @@ export class StatusBarManager {
   /** Start periodic status checks. */
   startChecks(): void {
     if (this.statusCheckInterval) return;
-    this.statusCheckInterval = setInterval(() => {
+    const handle = window.setInterval(() => {
       this.invalidateCache();
       this.update('idle');
       this.onStatusCheck();
     }, 60_000);
+    this.statusCheckInterval = handle;
+    this.plugin.registerInterval(handle);
   }
 
   /** Stop periodic status checks. */
   stopChecks(): void {
-    if (this.statusCheckInterval) {
-      clearInterval(this.statusCheckInterval);
+    if (this.statusCheckInterval !== null) {
+      window.clearInterval(this.statusCheckInterval);
       this.statusCheckInterval = null;
     }
   }

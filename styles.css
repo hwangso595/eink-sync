@@ -1,5 +1,5 @@
 /**
- * reMarkable Bridge plugin styles.
+ * E-Ink Sync plugin styles.
  *
  * Uses Obsidian's CSS variables exclusively -- no custom color palette.
  * Respects dark/light theme automatically.
@@ -490,7 +490,7 @@
 }
 
 /* Sync status dots */
-.remarkable-sync-dot {
+.eink-sync-dot {
   display: inline-block;
   width: 8px;
   height: 8px;
@@ -498,24 +498,24 @@
   flex-shrink: 0;
 }
 
-.remarkable-sync-dot--synced {
+.eink-sync-dot--synced {
   background: var(--text-success);
 }
 
-.remarkable-sync-dot--pending {
+.eink-sync-dot--pending {
   background: var(--text-warning);
 }
 
-.remarkable-sync-dot--extracting {
+.eink-sync-dot--extracting {
   background: var(--text-accent);
   animation: remarkable-pulse 1.5s ease-in-out infinite;
 }
 
-.remarkable-sync-dot--error {
+.eink-sync-dot--error {
   background: var(--text-error);
 }
 
-.remarkable-sync-dot--unknown {
+.eink-sync-dot--unknown {
   background: var(--text-faint);
 }
 
@@ -626,11 +626,11 @@
 
 /* ===== Sync Status Modal ===== */
 
-.remarkable-sync-status-modal {
+.eink-sync-status-modal {
   max-width: 480px;
 }
 
-.remarkable-sync-status-row {
+.eink-sync-status-row {
   display: flex;
   align-items: center;
   gap: var(--size-4-2);
@@ -638,12 +638,12 @@
   margin-bottom: var(--size-4-2);
 }
 
-.remarkable-sync-status-indicator {
+.eink-sync-status-indicator {
   display: flex;
   align-items: center;
 }
 
-.remarkable-sync-status-indicator .remarkable-sync-dot {
+.eink-sync-status-indicator .eink-sync-dot {
   width: 10px;
   height: 10px;
 }
@@ -660,7 +660,7 @@
   margin-bottom: var(--size-4-3);
 }
 
-.remarkable-sync-status-modal h3 {
+.eink-sync-status-modal h3 {
   font-size: var(--font-ui-small);
   color: var(--text-muted);
   text-transform: uppercase;
@@ -721,4 +721,10 @@
   border-left: 2px solid var(--interactive-accent);
   padding-left: 12px;
   margin-bottom: 16px;
+}
+
+/* Folder migration modal: note about sync folder reset */
+.eink-sync-folder-migration-note {
+  margin-top: var(--size-4-2);
+  color: var(--text-muted);
 }

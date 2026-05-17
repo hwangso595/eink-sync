@@ -31,6 +31,8 @@ from stroke_renderer import (
     Stroke,
     StrokePoint,
     extract_strokes,
+    extract_glyph_highlights,
+    GlyphHighlight,
     HIGHLIGHTER_PEN_TYPES,
     HIGHLIGHTER_OPACITY,
     COLOR_TO_HEX,
@@ -81,7 +83,10 @@ def _segment_width(point: StrokePoint, stroke: Stroke, tilt_override: float = -1
 
     # Pencil types use higher pressure width scale (tuned via multi-page sweep)
     pws = 1.21 if stroke.pen_type in (1, 7, 13, 14, 23) else PRESSURE_WIDTH_SCALE
-    width = base * pen_factor * pws * pen_scale
+    # Non-pencil strokes are rendered as pixmap circles; 0.5 scale matched
+    # by visual sweep against the tablet's own thumbnail.
+    non_pencil_scale = 0.5 if stroke.pen_type not in (1, 7, 13, 14, 23) else 1.0
+    width = base * pen_factor * pws * pen_scale * non_pencil_scale
 
     # Tilt = wider stroke (side of pencil). rM1 tilt ranges 0-255
     tilt = tilt_override if tilt_override >= 0 else point.tilt
@@ -91,33 +96,65 @@ def _segment_width(point: StrokePoint, stroke: Stroke, tilt_override: float = -1
         width *= tilt_factor
 
     if stroke.is_highlighter:
-        return max(8.0, width)
+        # Highlighter has fixed width stored in stroke.stroke_width (in pt).
+        # point.width for highlights is an internal tablet value unrelated to
+        # visible width — using it would produce ~200px wide highlights.
+        return max(8.0, stroke.stroke_width)
     return max(0.5, min(width, 25.0))
 
 
-def _compute_offsets(strokes: list[Stroke]) -> tuple[float, float]:
+def _smooth_widths(points: list[StrokePoint], stroke: Stroke) -> list[float]:
+    """Smooth per-point widths with a small moving average to reduce jaggedness."""
+    raw = [_segment_width(p, stroke) for p in points]
+    if len(raw) < 3:
+        return raw
+    smoothed = raw[:]
+    window = 5
+    half = window // 2
+    for i in range(len(raw)):
+        start = max(0, i - half)
+        end = min(len(raw), i + half + 1)
+        smoothed[i] = sum(raw[start:end]) / (end - start)
+    return smoothed
+
+
+def _compute_offsets(strokes: list[Stroke],
+                     canvas_w: float = RM_SCREEN_WIDTH,
+                     canvas_h: float = RM_SCREEN_HEIGHT) -> tuple[float, float]:
     """
     Compute minimal offsets so content fits in the canvas.
 
-    Small negative coordinates (margin annotations) are clipped — matching
-    the tablet's behavior. Only shift when content extends far off-canvas.
-    Threshold: only offset if min coordinate is below -200 (significant content
-    outside the visible area).
+    Only shifts an axis when:
+      1. Content extends to the negative side (min < -50), AND
+      2. Shifting would NOT push the positive-side content off canvas.
+
+    This prevents left-margin annotations (large negative x) from displacing
+    on-page content off the right edge.
     """
-    min_x = 0.0
-    min_y = 0.0
+    min_x = min_y = 0.0
+    max_x = max_y = 0.0
     for stroke in strokes:
         if stroke.is_eraser:
             continue
         for pt in stroke.points:
             if pt.x < min_x:
                 min_x = pt.x
+            if pt.x > max_x:
+                max_x = pt.x
             if pt.y < min_y:
                 min_y = pt.y
-    # Only offset if content extends significantly beyond the canvas
-    offset_x = -min_x if min_x < -200 else 0.0
-    offset_y = -min_y if min_y < -200 else 0.0
-    return offset_x, offset_y
+            if pt.y > max_y:
+                max_y = pt.y
+
+    shift_x = -min_x if min_x < -50 else 0.0
+    if shift_x > 0 and max_x + shift_x > canvas_w:
+        shift_x = 0.0  # shifting would push positive content off the right edge
+
+    shift_y = -min_y if min_y < -50 else 0.0
+    if shift_y > 0 and max_y + shift_y > canvas_h:
+        shift_y = 0.0  # shifting would push positive content off the bottom
+
+    return shift_x, shift_y
 
 
 def _scatter_particles_on_segment(
@@ -232,6 +269,100 @@ def _scatter_particles_on_segment(
             samples[idx + 2] = int(samples[idx + 2] * (1 - alpha) + b * alpha)
 
 
+def _draw_solid_circles_on_pixmap(
+    pixmap: "fitz.Pixmap",
+    canvas_pts: list,
+    smooth_ws: list[float],
+    color: tuple[int, int, int],
+    opacity: float = 1.0,
+) -> None:
+    """
+    Render a non-pencil stroke as overlapping filled circles on the pixmap.
+
+    Painting directly on the pixmap (like the pencil scatter pass) avoids
+    PyMuPDF's Shape API entirely, sidestepping:
+      - The lineJoin bug (inserts literal keyword into PDF stream)
+      - Miter-joint spikes at sharp V-turns
+      - PDF winding-rule fill that turns closed-loop doodles into solid blobs
+
+    Adjacent circles overlap and create a solid-looking stroke. Because this
+    is direct pixel blending (not PDF path fill), enclosed areas stay empty.
+    """
+    w = pixmap.width
+    h = pixmap.height
+    n = pixmap.n
+    samples = pixmap.samples_mv
+    r_c, g_c, b_c = color
+
+    def _paint_circle(cx: float, cy: float, radius: float) -> None:
+        # Expand by 1 px for the anti-aliasing fringe
+        outer = radius + 1.0
+        ix0 = max(0, int(cx - outer))
+        ix1 = min(w - 1, int(cx + outer) + 1)
+        iy0 = max(0, int(cy - outer))
+        iy1 = min(h - 1, int(cy + outer) + 1)
+        for iy in range(iy0, iy1 + 1):
+            dy = iy - cy
+            dy2 = dy * dy
+            if dy2 > outer * outer:
+                continue
+            row_base = iy * w * n
+            for ix in range(ix0, ix1 + 1):
+                dist2 = (ix - cx) ** 2 + dy2
+                if dist2 <= radius * radius:
+                    # Fully inside — apply at full opacity
+                    a = opacity
+                elif dist2 <= outer * outer:
+                    # Anti-aliasing fringe: linearly fade over the last pixel
+                    dist = math.sqrt(dist2)
+                    a = opacity * max(0.0, outer - dist)
+                else:
+                    continue
+                if a <= 0.0:
+                    continue
+                idx = row_base + ix * n
+                inv = 1.0 - a
+                samples[idx]     = int(samples[idx]     * inv + r_c * a)
+                samples[idx + 1] = int(samples[idx + 1] * inv + g_c * a)
+                samples[idx + 2] = int(samples[idx + 2] * inv + b_c * a)
+
+    if not canvas_pts:
+        return
+
+    # Paint the first point unconditionally.
+    r0 = max(smooth_ws[0] * 0.5, 0.5)
+    _paint_circle(canvas_pts[0].x, canvas_pts[0].y, r0)
+    last_cx, last_cy, last_r = canvas_pts[0].x, canvas_pts[0].y, r0
+
+    for i in range(1, len(canvas_pts)):
+        pt = canvas_pts[i]
+        cx = pt.x
+        cy = pt.y
+        radius = max(smooth_ws[i] * 0.5, 0.5)
+
+        dx_step = cx - last_cx
+        dy_step = cy - last_cy
+        dist = math.sqrt(dx_step * dx_step + dy_step * dy_step)
+
+        if dist < radius * 0.5:
+            # Too close — earlier circle already covers this; skip.
+            continue
+
+        if dist > last_r:
+            # Gap between consecutive sample points: interpolate circles
+            # spaced every half-radius to ensure continuous coverage.
+            step_size = max(last_r * 0.5, 0.5)
+            steps = max(1, int(dist / step_size))
+            for s in range(1, steps):
+                t = s / steps
+                _paint_circle(last_cx + dx_step * t,
+                               last_cy + dy_step * t,
+                               last_r + (radius - last_r) * t)
+
+        _paint_circle(cx, cy, radius)
+        last_cx, last_cy, last_r = cx, cy, radius
+
+
 def _smooth_tilts(points: list[StrokePoint]) -> list[float]:
     """
     Smooth tilt values across a stroke to avoid hard transitions.
@@ -279,6 +410,8 @@ def render_strokes_to_png(
     transparent_bg: bool = False,
     pdf_path: str = None,
     page_index: int = 0,
+    coord_scale: float = None,
+    glyph_highlights: list = None,
 ) -> int:
     """
     Render a list of strokes as a PNG image using PyMuPDF.
@@ -287,22 +420,40 @@ def render_strokes_to_png(
     - Pencil/shader types: particle-scatter for graphite texture
     - Other types: Shape API line drawing
 
+    coord_scale: stroke coordinate scale factor. Pass 226/300 for PDF documents,
+    1.0 for notebooks. If None, falls back to auto-detection (unreliable for PDF
+    pages where strokes don't happen to exceed canvas height).
+
     Returns number of strokes actually drawn.
     """
     _require_fitz()
 
-    if not strokes:
-        return 0
-
     # Filter out erasers early
-    renderable = [s for s in strokes if not s.is_eraser]
-    if not renderable:
+    renderable = [s for s in strokes if not s.is_eraser] if strokes else []
+    if not renderable and not glyph_highlights:
         return 0
 
     canvas_w = RM_SCREEN_WIDTH
     canvas_h = RM_SCREEN_HEIGHT
 
-    offset_x, offset_y = _compute_offsets(renderable)
+    # reMarkable coordinate system:
+    #   x=0 is the horizontal centre of the page (negative = left, positive = right)
+    #   y=0 is the top of the UI including toolbar; strokes start below the toolbar
+    #
+    # PDF documents use a 300-DPI logical space (scale=226/300≈0.753).
+    # Notebooks use 1:1 screen-pixel coordinates (scale=1.0).
+    # Callers should pass coord_scale explicitly; auto-detect is a fallback only.
+    if coord_scale is not None:
+        COORD_SCALE = coord_scale
+    else:
+        all_ys = [pt.y for s in renderable for pt in s.points]
+        max_stroke_y = max(all_ys) if all_ys else 0.0
+        COORD_SCALE = (226 / 300) if max_stroke_y > canvas_h * 1.05 else 1.0
+
+    # x: centre-origin → shift by half the canvas width
+    # y: no per-stroke offset; the PDF background carries the toolbar offset below
+    x_origin = canvas_w / 2  # coord x=0 maps to the horizontal centre of the canvas
+    offset_x, offset_y = x_origin, 0.0
     # Keep canvas at native resolution — don't expand for negative coordinates
     canvas_w_int = int(canvas_w)
     canvas_h_int = int(canvas_h)
@@ -317,15 +468,16 @@ def render_strokes_to_png(
                 pdf_page = pdf_doc[page_index]
                 pdf_rect = pdf_page.rect
 
-                # bestFit: scale PDF to fit canvas width with toolbar offset.
-                # The reMarkable has a ~230px toolbar at the top that pushes
-                # PDF content down. Stroke coordinates include this offset.
-                RM_TOOLBAR_OFFSET = 230
+                # bestFit: scale PDF to fit canvas width.
+                # The toolbar occupies the top ~130 canvas-px; the PDF starts below it.
+                # Strokes are in a coordinate system where y=0 is the screen top
+                # (toolbar included), so placing the PDF at y_offset=130 aligns them.
+                RM_TOOLBAR_HEIGHT = 0  # calibrated by visual sweep: cs=0.73, tb=0
                 scale = canvas_w_int / pdf_rect.width
                 scaled_w = canvas_w_int
                 scaled_h = pdf_rect.height * scale
                 x_offset = 0
-                y_offset = RM_TOOLBAR_OFFSET
+                y_offset = RM_TOOLBAR_HEIGHT
 
                 mat = fitz.Matrix(scale, scale)
                 pix = pdf_page.get_pixmap(matrix=mat)
@@ -363,9 +515,16 @@ def render_strokes_to_png(
         pdf_doc.close()
 
     drawn = 0
+    # Queue for non-pencil strokes rendered on pixmap in pass 2
+    _non_pencil_queue: list = []
+    # Queue for highlight strokes rendered last on pixmap (so they sit on top)
+    _highlight_queue: list = []
 
-    # First pass: draw ALL strokes using Shape API
-    # Pencil/shader get semi-transparent base lines; particles added in second pass
+    def _cx(v): return v * COORD_SCALE + offset_x   # offset_x = canvas_w/2
+    def _cy(v): return v * COORD_SCALE + offset_y   # offset_y = 0
+
+    # First pass: classify strokes into queues. Highlights go last so they
+    # aren't covered by opaque non-pencil circles from pass 2.
     for stroke in renderable:
         points = stroke.points
         if not points:
@@ -374,62 +533,31 @@ def render_strokes_to_png(
         is_pencil = stroke.pen_type in PENCIL_PEN_TYPES
         is_shader = stroke.pen_type == SHADER_PEN_TYPE
         is_brush = stroke.pen_type in BRUSH_PEN_TYPES
-
-        # Color
-        rgb = _hex_to_rgb(stroke.hex_color)
         is_hl = stroke.is_highlighter
 
-        if len(points) == 1:
-            pt = points[0]
-            px = pt.x + offset_x
-            py = pt.y + offset_y
-            r = _segment_width(pt, stroke) * 0.5
-            shape = page.new_shape()
-            shape.draw_circle(fitz.Point(px, py), max(r, 0.5))
-            shape.finish(color=rgb, fill=rgb, width=0)
-            shape.commit(overlay=True)
-            drawn += 1
-            continue
-
         if is_hl:
-            avg_w = sum(_segment_width(p, stroke) for p in points) / len(points)
-            shape = page.new_shape()
-            scaled_points = [
-                fitz.Point(p.x + offset_x, p.y + offset_y) for p in points
-            ]
-            shape.draw_polyline(scaled_points)
-            hl_rgb = _hex_to_rgb("#FFD700")
-            shape.finish(
-                color=hl_rgb, width=avg_w,
-                stroke_opacity=HIGHLIGHTER_OPACITY, closePath=False,
-            )
-            shape.commit(overlay=True)
+            smooth_ws = [_segment_width(p, stroke) for p in points]
+            canvas_pts = [fitz.Point(_cx(pt.x), _cy(pt.y)) for pt in points]
+            _highlight_queue.append((canvas_pts, smooth_ws))
             drawn += 1
             continue
 
-        # Pencil/shader: draw semi-transparent base line for consistent thickness
-        # Particles will be added on top in the second pass for texture
+        # Pencil/shader rendered entirely via particle scatter in pass 2
         if is_pencil or is_shader:
-            # Pencil/shader rendered entirely via particle scatter in pass 2
-            # No base line needed — particles provide both coverage and texture
             continue
 
-        # Non-pencil strokes: draw as polyline for smooth continuous stroke
+        # Non-pencil strokes are queued for pixmap rendering in pass 2.
+        rgb = _hex_to_rgb(stroke.hex_color)
         brush_opacity = 0.7 if is_brush else 1.0
-        avg_w = sum(_segment_width(p, stroke) for p in points) / len(points)
-
-        shape = page.new_shape()
-        poly_points = [fitz.Point(p.x + offset_x, p.y + offset_y) for p in points]
-        shape.draw_polyline(poly_points)
-        shape.finish(
-            color=rgb, width=avg_w, closePath=False,
-            lineCap=1, stroke_opacity=brush_opacity,
-        )
-        shape.commit(overlay=True)
+        smooth_ws = _smooth_widths(points, stroke)
+        canvas_pts = [fitz.Point(_cx(pt.x), _cy(pt.y)) for pt in points]
+        _non_pencil_queue.append((stroke, canvas_pts, smooth_ws, rgb, brush_opacity))
 
         drawn += 1
 
-    # Render to pixmap for particle-based pencil/shader strokes
+    # Render to pixmap for particle-based pencil/shader strokes AND
+    # non-pencil strokes (also rendered directly on pixmap to avoid
+    # PyMuPDF Shape API bugs: lineJoin spikes, PDF-fill blobs).
     if transparent_bg:
         pixmap = page.get_pixmap(alpha=True)
     else:
@@ -446,8 +574,8 @@ def render_strokes_to_png(
                 if len(points) == 1:
                     # Single dot
                     pt = points[0]
-                    px = int(pt.x + offset_x)
-                    py = int(pt.y + offset_y)
+                    px = int(pt.x * COORD_SCALE + offset_x)
+                    py = int(pt.y * COORD_SCALE + offset_y)
                     if 0 <= px < pixmap.width and 0 <= py < pixmap.height:
                         idx = (py * pixmap.width + px) * pixmap.n
                         if pixmap.n >= 3:
@@ -474,10 +602,10 @@ def render_strokes_to_png(
             for i in range(len(points) - 1):
                 p0 = points[i]
                 p1 = points[i + 1]
-                x0 = p0.x + offset_x
-                y0 = p0.y + offset_y
-                x1 = p1.x + offset_x
-                y1 = p1.y + offset_y
+                x0 = p0.x * COORD_SCALE + offset_x
+                y0 = p0.y * COORD_SCALE + offset_y
+                x1 = p1.x * COORD_SCALE + offset_x
+                y1 = p1.y * COORD_SCALE + offset_y
                 smooth_tilt = smoothed_tilts[i]
                 w = _segment_width(p0, stroke, tilt_override=smooth_tilt)
 
@@ -489,11 +617,226 @@ def render_strokes_to_png(
 
             drawn += 1
 
+    # Non-pencil strokes: solid filled circles on pixmap.
+    # Done after pencil pass so both share the same final pixmap.
+    for stroke, canvas_pts, smooth_ws, rgb, brush_opacity in _non_pencil_queue:
+        hex_c = stroke.hex_color.lstrip("#")
+        color = (
+            int(hex_c[0:2], 16),
+            int(hex_c[2:4], 16),
+            int(hex_c[4:6], 16),
+        )
+        _draw_solid_circles_on_pixmap(pixmap, canvas_pts, smooth_ws, color,
+                                      opacity=brush_opacity)
+
+    # Highlight pass: painted last so they sit on top of all drawings.
+    hl_color = (255, 215, 0)  # #FFD700 gold yellow
+
+    # Stroke-based highlights (pen_type 5/18): circle rendering with gap-fill.
+    if _highlight_queue:
+        for canvas_pts, smooth_ws in _highlight_queue:
+            _draw_solid_circles_on_pixmap(
+                pixmap, canvas_pts, smooth_ws, hl_color,
+                opacity=HIGHLIGHTER_OPACITY,
+            )
+
+    # Glyph-range highlights (SceneGlyphItemBlock): filled rectangles.
+    # These are the text-selection highlights that reMarkable stores as
+    # GlyphRange objects (with exact rectangles and text), NOT as strokes.
+    if glyph_highlights:
+        w = pixmap.width
+        h = pixmap.height
+        n = pixmap.n
+        samples = pixmap.samples_mv
+        r_c, g_c, b_c = hl_color
+        a = HIGHLIGHTER_OPACITY
+        inv = 1.0 - a
+        for gh in glyph_highlights:
+            for (rx, ry, rw, rh) in gh.rectangles:
+                # Convert from reMarkable logical coords to canvas pixels.
+                # x is center-origin; y is top-origin.
+                cx0 = int(rx * COORD_SCALE + offset_x)
+                cy0 = int(ry * COORD_SCALE + offset_y)
+                cx1 = int((rx + rw) * COORD_SCALE + offset_x)
+                cy1 = int((ry + rh) * COORD_SCALE + offset_y)
+                cx0 = max(0, min(cx0, w - 1))
+                cy0 = max(0, min(cy0, h - 1))
+                cx1 = max(0, min(cx1, w - 1))
+                cy1 = max(0, min(cy1, h - 1))
+                for iy in range(cy0, cy1 + 1):
+                    row_base = iy * w * n
+                    for ix in range(cx0, cx1 + 1):
+                        idx = row_base + ix * n
+                        samples[idx]     = int(samples[idx]     * inv + r_c * a)
+                        samples[idx + 1] = int(samples[idx + 1] * inv + g_c * a)
+                        samples[idx + 2] = int(samples[idx + 2] * inv + b_c * a)
+
     # Save
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     pixmap.save(output_path)
     doc.close()
     return drawn
+
+
+def extract_highlight_texts(
+    strokes: list[Stroke],
+    pdf_path: str,
+    page_index: int,
+    canvas_w: float = RM_SCREEN_WIDTH,
+    canvas_h: float = RM_SCREEN_HEIGHT,
+    toolbar_height: int = 0,
+    coord_scale: float = None,
+) -> list[str]:
+    """
+    Extract the PDF text that falls under each highlight stroke.
+
+    Converts highlight stroke canvas coordinates back to PDF point coordinates
+    using the inverse of the rendering transform, then uses PyMuPDF's
+    get_text(clip=...) to pull the text from each highlighted region.
+
+    Returns a list of non-empty text strings, one per highlight stroke that
+    overlaps with PDF content.
+    """
+    _require_fitz()
+
+    highlights = [s for s in strokes if s.is_highlighter]
+    if not highlights or not pdf_path or not os.path.exists(pdf_path):
+        return []
+
+    try:
+        pdf_doc = fitz.open(pdf_path)
+        if page_index >= len(pdf_doc):
+            pdf_doc.close()
+            return []
+        pdf_page = pdf_doc[page_index]
+        pdf_rect = pdf_page.rect
+    except Exception:
+        return []
+
+    canvas_w_int = int(canvas_w)
+
+    # Determine COORD_SCALE: use caller-supplied value, or fall back to auto-detect.
+    if coord_scale is not None:
+        COORD_SCALE = coord_scale
+    else:
+        all_ys = [pt.y for s in strokes for pt in s.points]
+        max_stroke_y = max(all_ys) if all_ys else 0.0
+        COORD_SCALE = (226 / 300) if max_stroke_y > canvas_h * 1.05 else 1.0
+
+    x_origin = canvas_w / 2
+    scale = canvas_w_int / pdf_rect.width  # canvas px per PDF pt
+    x_offset = 0
+    y_offset = toolbar_height
+
+    # Inverse transform: canvas px → PDF pt
+    # canvas_x = raw_x * COORD_SCALE + x_origin  →  pdf_x = (canvas_x - x_offset) / scale
+    # canvas_y = raw_y * COORD_SCALE              →  pdf_y = (canvas_y - y_offset) / scale
+
+    texts = []
+    for stroke in highlights:
+        if not stroke.points:
+            continue
+
+        # Bounding box of this stroke in canvas coordinates
+        xs = [pt.x * COORD_SCALE + x_origin for pt in stroke.points]
+        ys = [pt.y * COORD_SCALE for pt in stroke.points]
+
+        # Expand by half the highlight width for full text coverage
+        half_w = _segment_width(stroke.points[0], stroke) * 0.5
+
+        cx0 = min(xs) - half_w
+        cy0 = min(ys) - half_w
+        cx1 = max(xs) + half_w
+        cy1 = max(ys) + half_w
+
+        # Convert to PDF point coordinates
+        px0 = (cx0 - x_offset) / scale
+        py0 = (cy0 - y_offset) / scale
+        px1 = (cx1 - x_offset) / scale
+        py1 = (cy1 - y_offset) / scale
+
+        clip = fitz.Rect(px0, py0, px1, py1)
+        clip &= pdf_rect  # clamp to page bounds
+        if clip.is_empty:
+            continue
+
+        text = pdf_page.get_text("text", clip=clip).strip()
+        if text:
+            texts.append(text)
+
+    pdf_doc.close()
+    return texts
+
+
+def extract_glyph_highlight_texts(
+    glyph_highlights: list,
+    pdf_path: str,
+    page_index: int,
+    canvas_w: float = RM_SCREEN_WIDTH,
+    coord_scale: float = None,
+) -> list[str]:
+    """
+    Extract clean PDF text for glyph-range highlights using their rectangle bounds.
+
+    GlyphRange.text is unreliable: one user highlight creates one GlyphRange per
+    PDF text run, producing many fragments with broken ligatures. Using PyMuPDF
+    to clip text from the rectangle gives clean, reading-order text instead.
+
+    Groups all rectangles per GlyphHighlight into one bounding clip, then calls
+    pdf_page.get_text("text", clip=...) to get the text in one shot.
+    """
+    _require_fitz()
+
+    if not glyph_highlights or not pdf_path or not os.path.exists(pdf_path):
+        return []
+
+    try:
+        pdf_doc = fitz.open(pdf_path)
+        if page_index >= len(pdf_doc):
+            pdf_doc.close()
+            return []
+        pdf_page = pdf_doc[page_index]
+        pdf_rect = pdf_page.rect
+    except Exception:
+        return []
+
+    cs = coord_scale if coord_scale is not None else (226 / 300)
+    canvas_w_int = int(canvas_w)
+    x_origin = canvas_w / 2
+    scale = canvas_w_int / pdf_rect.width  # canvas px per PDF pt
+
+    texts = []
+    for gh in glyph_highlights:
+        if not gh.rectangles:
+            continue
+        # Union bounding box of all rects (in logical coords)
+        rxs = [r[0] for r in gh.rectangles] + [r[0] + r[2] for r in gh.rectangles]
+        rys = [r[1] for r in gh.rectangles] + [r[1] + r[3] for r in gh.rectangles]
+        rx0, ry0, rx1, ry1 = min(rxs), min(rys), max(rxs), max(rys)
+
+        # Logical → canvas pixels
+        cx0 = rx0 * cs + x_origin
+        cy0 = ry0 * cs
+        cx1 = rx1 * cs + x_origin
+        cy1 = ry1 * cs
+
+        # Canvas pixels → PDF points
+        px0 = cx0 / scale
+        py0 = cy0 / scale
+        px1 = cx1 / scale
+        py1 = cy1 / scale
+
+        clip = fitz.Rect(px0, py0, px1, py1)
+        clip &= pdf_rect
+        if clip.is_empty:
+            continue
+
+        text = pdf_page.get_text("text", clip=clip).strip()
+        if text:
+            texts.append(text)
+
+    pdf_doc.close()
+    return texts
 
 
 def render_rm_file_to_png(
@@ -502,14 +845,20 @@ def render_rm_file_to_png(
     transparent_bg: bool = False,
     pdf_path: str = None,
     page_index: int = 0,
+    coord_scale: float = None,
 ) -> int:
     """
     Convenience: parse an .rm file and render its strokes as a PNG.
     For PDF documents, pass pdf_path and page_index to render strokes
-    on top of the PDF page content.
+    on top of the PDF page content. Pass coord_scale=226/300 for PDFs,
+    1.0 for notebooks (defaults to auto-detect if omitted).
+    Also renders glyph-range highlights (text selections) as filled rectangles.
     """
     strokes = extract_strokes(rm_path)
-    if not strokes:
+    glyph_hls = extract_glyph_highlights(rm_path)
+    if not strokes and not glyph_hls:
         return 0
     return render_strokes_to_png(strokes, output_path, transparent_bg,
-                                 pdf_path=pdf_path, page_index=page_index)
+                                 pdf_path=pdf_path, page_index=page_index,
+                                 coord_scale=coord_scale,
+                                 glyph_highlights=glyph_hls)

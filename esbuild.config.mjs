@@ -26,7 +26,7 @@ const context = await esbuild.context({
   plugins: [nativeNodePlugin],
   format: 'cjs',
   target: 'es2020',
-  outfile: 'dist/main.js',
+  outfile: 'main.js',
   sourcemap: 'inline',
   platform: 'node',
   logLevel: 'info',

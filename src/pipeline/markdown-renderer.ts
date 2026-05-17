@@ -20,6 +20,8 @@ import { logger } from '../utils/logger';
 import {
   HIGHLIGHTS_SECTION_START,
   HIGHLIGHTS_SECTION_END,
+  findHighlightsStart,
+  findHighlightsEnd,
 } from '../plugin/highlight-markers';
 
 /** Default frontmatter template fields. */
@@ -288,8 +290,8 @@ export function mergeWithExistingNote(
   renderOptions?: RenderMarkdownOptions,
 ): string {
   const pdfName = sourcePdfName ?? ensurePdfExtension(result.document.visibleName);
-  const startIdx = existingContent.indexOf(HIGHLIGHTS_SECTION_START);
-  const endIdx = existingContent.indexOf(HIGHLIGHTS_SECTION_END);
+  const start = findHighlightsStart(existingContent);
+  const end = findHighlightsEnd(existingContent);
 
   const isNotebook = result.document.type === 'notebook';
   const sectionOpts: HighlightsSectionOptions = {
@@ -299,10 +301,11 @@ export function mergeWithExistingNote(
   };
   const newSection = buildHighlightsSection(result.highlights, pdfName, pageDrawings, isNotebook, undefined, sectionOpts);
 
-  // If markers exist, replace the section between them
-  if (startIdx !== -1 && endIdx !== -1) {
-    const before = existingContent.substring(0, startIdx);
-    const after = existingContent.substring(endIdx + HIGHLIGHTS_SECTION_END.length);
+  // If markers exist, replace the section between them (legacy markers migrate
+  // to current ones because newSection always uses HIGHLIGHTS_SECTION_*).
+  if (start && end) {
+    const before = existingContent.substring(0, start.index);
+    const after = existingContent.substring(end.index + end.marker.length);
 
     // Update frontmatter highlight count if present
     const updatedBefore = updateFrontmatterCount(before, result.highlights.length);

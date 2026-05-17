@@ -1,9 +1,10 @@
 {
-  "id": "remarkable-obsidian-bridge",
-  "name": "reMarkable Bridge",
+  "id": "eink-sync",
+  "name": "E-Ink Sync",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
   "description": "Local-first bridge between reMarkable tablet and Obsidian. Extract PDF highlights as markdown without cloud dependency.",
-  "author": "remarkable-obsidian-bridge contributors",
+  "author": "hwansung595",
+  "authorUrl": "https://github.com/hwansung595",
   "isDesktopOnly": true
 }

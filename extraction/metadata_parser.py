@@ -137,6 +137,12 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
         # Legacy format uses pages array directly
         elif "pages" in data:
             page_uuids = data["pages"]
+            # Legacy format may have redirectionPageMap as a flat array
+            redir_arr = data.get("redirectionPageMap")
+            if isinstance(redir_arr, list):
+                for i, pdf_idx in enumerate(redir_arr):
+                    if isinstance(pdf_idx, int):
+                        page_redir[i] = pdf_idx
 
         page_count = data.get("pageCount", len(page_uuids))
 

@@ -28,6 +28,8 @@ import { logger } from '../utils/logger';
 import {
   HIGHLIGHTS_SECTION_START,
   HIGHLIGHTS_SECTION_END,
+  findHighlightsStart,
+  findHighlightsEnd,
 } from '../plugin/highlight-markers';
 
 /** Per-page data structure used by {{#each pages}} template blocks. */
@@ -315,7 +317,7 @@ highlight_count: {{highlight_count}}
 remarkable_uuid: {{uuid}}
 ---
 
-<!-- remarkable-bridge:start -->
+<!-- eink-sync:start -->
 {{#each pages}}
 ### Page {{page_number}}
 
@@ -333,7 +335,7 @@ remarkable_uuid: {{uuid}}
 {{/if}}
 
 {{/each_pages}}
-<!-- remarkable-bridge:end -->
+<!-- eink-sync:end -->
 
 `;
 
@@ -352,7 +354,7 @@ export function validateTemplate(template: string): { valid: boolean; warnings: 
     warnings.push('Template is missing {{#each highlights}} block. Highlights will not be rendered.');
   }
 
-  if (!template.includes('remarkable-bridge:start')) {
+  if (!template.includes('eink-sync:start') && !template.includes('remarkable-bridge:start')) {
     warnings.push(
       'Template is missing the highlights section markers. ' +
       'Incremental updates will not work correctly.',
@@ -467,24 +469,24 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     sourcePdfName: string,
     pageDrawings?: PageDrawings | null,
   ): string {
-    const startIdx = existingContent.indexOf(HIGHLIGHTS_SECTION_START);
-    const endIdx = existingContent.indexOf(HIGHLIGHTS_SECTION_END);
+    const start = findHighlightsStart(existingContent);
+    const end = findHighlightsEnd(existingContent);
 
     // Render fresh content
     const fresh = this.render(result, sourcePdfName, pageDrawings);
 
-    if (startIdx === -1 || endIdx === -1) {
+    if (!start || !end) {
       // No markers — use fresh render
       return fresh;
     }
 
-    // Extract user notes from the existing section
+    // Extract user notes from the existing section (using whichever marker pair was found)
     const existingSection = existingContent.substring(
-      startIdx, endIdx + HIGHLIGHTS_SECTION_END.length
+      start.index, end.index + end.marker.length
     );
     const preservedNotes = extractNoteBlocks(existingSection);
 
-    // Get the new section from the fresh render
+    // Get the new section from the fresh render (always uses current markers)
     const newStartIdx = fresh.indexOf(HIGHLIGHTS_SECTION_START);
     const newEndIdx = fresh.indexOf(HIGHLIGHTS_SECTION_END);
     if (newStartIdx === -1 || newEndIdx === -1) {
@@ -508,8 +510,8 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     });
 
     // Reassemble: before markers + new section + after markers
-    const before = existingContent.substring(0, startIdx);
-    const after = existingContent.substring(endIdx + HIGHLIGHTS_SECTION_END.length);
+    const before = existingContent.substring(0, start.index);
+    const after = existingContent.substring(end.index + end.marker.length);
 
     const updatedBefore = before.replace(
       /^highlight_count:\s*\d+$/m,

@@ -5,6 +5,18 @@
  * Uses a real temporary directory for filesystem operations.
  */
 
+// Polyfill `window` for the Node test runner. The production code uses
+// `window.setTimeout`/`window.clearTimeout` because Obsidian's review bot
+// flags bare `setTimeout`. Avoids pulling in jsdom just for this.
+if (typeof (globalThis as { window?: unknown }).window === 'undefined') {
+  (globalThis as { window?: unknown }).window = {
+    setTimeout: setTimeout.bind(globalThis),
+    clearTimeout: clearTimeout.bind(globalThis),
+    setInterval: setInterval.bind(globalThis),
+    clearInterval: clearInterval.bind(globalThis),
+  };
+}
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

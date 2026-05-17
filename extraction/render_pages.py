@@ -37,6 +37,8 @@ _original_stdout_fd = os.dup(1)
 os.dup2(2, 1)
 
 from metadata_parser import parse_metadata_file, parse_content_file
+from png_renderer import render_rm_file_to_png, extract_highlight_texts, extract_glyph_highlight_texts
+from stroke_renderer import extract_strokes, extract_glyph_highlights, HIGHLIGHTER_PEN_TYPES, ERASER_PEN_TYPES
 
 
 def _print_json(data: dict) -> None:
@@ -133,20 +135,6 @@ def main() -> None:
         if not has_strokes:
             continue
 
-        # Check if this page has actual pen drawings (not just highlights)
-        from stroke_renderer import extract_strokes as _extract, HIGHLIGHTER_PEN_TYPES as _HL, ERASER_PEN_TYPES as _ER
-        _page_strokes = _extract(rm_path)
-        _has_pen = any(
-            s.pen_type not in _HL and s.pen_type not in _ER
-            for s in _page_strokes
-        )
-        if not _has_pen:
-            print(
-                f"Page {page_number}: only highlights, skipping annotation image",
-                file=sys.stderr, flush=True,
-            )
-            continue
-
         # Get .rm file modification time for staleness comparison
         rm_mtime = os.path.getmtime(rm_path)
 
@@ -174,46 +162,20 @@ def main() -> None:
                 except OSError:
                     pass
 
-        # Try 1: Tablet's own cache PNG (1404x1872, pixel-perfect)
-        cache_png = os.path.join(cache_dir, f"{page_uuid}.png")
-        if has_cache and os.path.exists(cache_png):
-            cache_size = os.path.getsize(cache_png)
-            cache_mtime = os.path.getmtime(cache_png)
-            if cache_size > 1000 and cache_mtime >= rm_mtime - 2.0:
-                shutil.copy2(cache_png, out_path)
-                print(
-                    f"Page {page_number}: tablet cache ({cache_size} bytes)",
-                    file=sys.stderr, flush=True,
-                )
-                output["pages"].append({
-                    "page_number": page_number,
-                    "filename": filename,
-                    "has_strokes": True,
-                })
-                pages_collected += 1
-                continue
-            else:
-                print(
-                    f"Page {page_number}: cache is stale ({int(rm_mtime - cache_mtime)}s behind .rm), using renderer",
-                    file=sys.stderr, flush=True,
-                )
+        # Tablet cache skipped: the cache PNG doesn't include glyph highlights
+        # (text-selection highlights are a UI overlay, not baked into the cache).
+        # Our renderer handles both strokes and glyph highlights correctly.
 
-        # Try 2: Tablet's thumbnail PNG (384x512, lower res but tablet-rendered)
-        thumb_png = os.path.join(thumb_dir, f"{page_uuid}.png")
-        if has_thumbs and os.path.exists(thumb_png):
-            thumb_mtime = os.path.getmtime(thumb_png)
-            if thumb_mtime >= rm_mtime - 2.0:
-                shutil.copy2(thumb_png, out_path)
-                print(
-                    f"Page {page_number}: tablet thumbnail ({os.path.getsize(thumb_png)} bytes)",
-                    file=sys.stderr, flush=True,
-                )
-                output["pages"].append({
-                    "page_number": page_number,
-                    "filename": filename,
-                    "has_strokes": True,
-                })
-                pages_collected += 1
+        # Skip thumbnails — our renderer produces higher resolution (1404x1872)
+        # than the tablet's thumbnails (384x512). Cache is still preferred when
+        # fresh since it's tablet-rendered at full resolution.
+        if False:  # Thumbnail rendering disabled
+            thumb_png = os.path.join(thumb_dir, f"{page_uuid}.png")
+            if has_thumbs and os.path.exists(thumb_png):
+                thumb_mtime = os.path.getmtime(thumb_png)
+                if thumb_mtime >= rm_mtime - 2.0:
+                    shutil.copy2(thumb_png, out_path)
+                    pages_collected += 1
                 continue
             else:
                 print(
@@ -223,43 +185,56 @@ def main() -> None:
 
         # Try 3: Fall back to our own renderer
         try:
-            from png_renderer import render_rm_file_to_png
-            from stroke_renderer import extract_strokes, HIGHLIGHTER_PEN_TYPES, ERASER_PEN_TYPES
+            # PDF documents use 300-DPI logical coordinates; notebooks use 1:1 pixels.
+            doc_coord_scale = 0.73 if not is_notebook else 1.0
 
             strokes = extract_strokes(rm_path)
-            # Skip pages with only highlighter/eraser strokes (no actual pen drawings)
-            has_pen_strokes = any(
-                s.pen_type not in HIGHLIGHTER_PEN_TYPES and s.pen_type not in ERASER_PEN_TYPES
-                for s in strokes
-            )
-            if not has_pen_strokes:
-                print(
-                    f"Page {page_number}: only highlights, no pen drawings — skipping",
-                    file=sys.stderr, flush=True,
-                )
-                continue
+            glyph_hls = extract_glyph_highlights(rm_path)
 
-            if strokes:
+            if strokes or glyph_hls:
                 # Use page redirect map for correct PDF page index
                 # If redir is missing for this page, it's an inserted notebook page
                 # (no PDF backing) — render on white background
                 page_pdf = None
                 pdf_page_idx = 0
-                if source_pdf and content.page_redir and page_idx in content.page_redir:
-                    page_pdf = source_pdf
-                    pdf_page_idx = content.page_redir[page_idx]
+                if source_pdf:
+                    if content.page_redir is not None:
+                        if page_idx in content.page_redir:
+                            page_pdf = source_pdf
+                            pdf_page_idx = content.page_redir[page_idx]
+                    else:
+                        page_pdf = source_pdf
+                        pdf_page_idx = page_idx
                 drawn = render_rm_file_to_png(rm_path, out_path,
                                               pdf_path=page_pdf,
-                                              page_index=pdf_page_idx)
-                if drawn > 0:
+                                              page_index=pdf_page_idx,
+                                              coord_scale=doc_coord_scale)
+                if drawn > 0 or glyph_hls:
                     print(
-                        f"Page {page_number}: rendered {drawn} strokes",
+                        f"Page {page_number}: rendered {drawn} strokes, {len(glyph_hls)} glyph highlight(s)",
                         file=sys.stderr, flush=True,
                     )
+                    # Glyph highlight text is already extracted by highlight_extractor.py
+                    # via the Python bridge — skip it here to avoid duplicates.
+                    # Only extract text under stroke-based highlights (PDF pages only),
+                    # which highlight_extractor.py does NOT handle.
+                    highlight_texts = []
+                    if page_pdf and strokes:
+                        stroke_hl_texts = extract_highlight_texts(
+                            strokes, page_pdf, pdf_page_idx,
+                            coord_scale=doc_coord_scale,
+                        )
+                        highlight_texts.extend(stroke_hl_texts)
+                    if highlight_texts:
+                        print(
+                            f"Page {page_number}: {len(highlight_texts)} highlighted text(s)",
+                            file=sys.stderr, flush=True,
+                        )
                     output["pages"].append({
                         "page_number": page_number,
                         "filename": filename,
                         "has_strokes": True,
+                        "highlight_texts": highlight_texts,
                     })
                     pages_collected += 1
         except Exception as e:

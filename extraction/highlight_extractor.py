@@ -31,16 +31,20 @@ except ImportError:
 
 try:
     from rmscene import read_blocks
-    from rmscene.scene_items import GlyphRange, ParagraphStyle
+    from rmscene.scene_items import GlyphRange, Line, ParagraphStyle
     from rmscene import scene_items as si
 except ImportError:
     read_blocks = None  # type: ignore[assignment]
+    Line = None  # type: ignore[assignment]
 
 try:
     from legacy_rm_parser import parse_legacy_rm_file, LegacyHighlightRegion
 except ImportError:
     parse_legacy_rm_file = None  # type: ignore[assignment]
     LegacyHighlightRegion = None  # type: ignore[assignment]
+
+from highlight_merger import merge_fragmented_highlights
+from stroke_renderer import HIGHLIGHTER_PEN_TYPES
 
 
 @dataclass
@@ -307,7 +311,9 @@ def _process_v6_page(
 ) -> None:
     """
     Process a single v6-format .rm page: parse GlyphRange blocks and extract
-    highlighted text from the corresponding PDF page.
+    highlighted text from the corresponding PDF page. Also pulls text from
+    highlighter-pen strokes (pen types 5 and 18) drawn over the PDF — see
+    _process_highlighter_strokes for the why.
 
     Results are appended in-place to the highlights and warnings lists.
     """
@@ -315,9 +321,6 @@ def _process_v6_page(
         glyph_ranges = _extract_highlights_from_rm_file(rm_path)
     except (ValueError, ImportError) as e:
         warnings.append(f"Page {page_index + 1}: {e}")
-        return
-
-    if not glyph_ranges:
         return
 
     for gr in glyph_ranges:
@@ -347,6 +350,157 @@ def _process_v6_page(
                 color=gr.get("color", "yellow"),
                 bounds=bounds,
                 created_at=None,  # GlyphRange does not store timestamps
+            )
+        )
+
+    # Highlighter-pen strokes: text the user marked by DRAWING with the
+    # highlighter tool (pen 5/18) instead of tap-to-select-text. Stored as
+    # Line blocks, not GlyphRange. Without this pass these annotations appear
+    # in the rendered page PNG but never as text quotes in the markdown.
+    _process_highlighter_strokes(rm_path, pdf_doc, page_index, highlights, warnings)
+
+
+# Empirically calibrated against the AlphaGo Zero paper (page 26): rmscene
+# v6 stroke/glyph coordinates live in a logical space sized at
+# canvas * 300/226 (i.e. PDF pages of 612x792 pt map onto an
+# (1404*300/226) x (1872*300/226) ≈ 1863 x 2485 logical grid).
+# Verified by comparing GR#1 rm_y=437 to PDF "action is selected" at y=139.9
+# (ratio matches 226/300 * 792/1872 to within 0.5%).
+_V6_LOGICAL_DPI = 300
+_V6_PHYSICAL_DPI = 226
+
+
+def _v6_rm_rect_to_pdf_rect(
+    rm_x: float, rm_y: float, rm_w: float, rm_h: float,
+    pdf_w: float, pdf_h: float,
+) -> dict:
+    """Convert a v6 rm-space rectangle (center-origin x, top-origin y) to PDF pt."""
+    canvas_logical_w = RM_SCREEN_WIDTH * (_V6_LOGICAL_DPI / _V6_PHYSICAL_DPI)
+    canvas_logical_h = RM_SCREEN_HEIGHT * (_V6_LOGICAL_DPI / _V6_PHYSICAL_DPI)
+    sx = pdf_w / canvas_logical_w
+    sy = pdf_h / canvas_logical_h
+    return {
+        "x": (rm_x + canvas_logical_w / 2) * sx,
+        "y": rm_y * sy,
+        "width": rm_w * sx,
+        "height": rm_h * sy,
+    }
+
+
+def _extract_highlighter_strokes_from_rm_file(rm_path: str) -> list[dict]:
+    """
+    Parse a v6 .rm file and return every highlighter-pen stroke's bounding box.
+
+    Returns a list of dicts with keys: pen_type, color, rm_bbox (x, y, w, h).
+    Coordinates are in rm-space (will be converted per-page later because the
+    conversion needs the PDF page dimensions).
+    """
+    if read_blocks is None or Line is None:
+        return []
+
+    strokes: list[dict] = []
+    try:
+        with open(rm_path, "rb") as f:
+            blocks = list(read_blocks(f))
+    except Exception:
+        return []
+
+    for block in blocks:
+        item = getattr(block, "item", None)
+        val = getattr(item, "value", None) if item else getattr(block, "value", None)
+        if not isinstance(val, Line):
+            continue
+        tool = getattr(val, "tool", None)
+        pen_type = getattr(tool, "value", tool)
+        if pen_type not in HIGHLIGHTER_PEN_TYPES:
+            continue
+        pts = getattr(val, "points", None) or []
+        if not pts:
+            continue
+        xs = [p.x for p in pts]
+        ys = [p.y for p in pts]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        # Skip negligibly-small strokes (accidental taps). The highlighter is
+        # ~10-15pt wide in PDF; a stroke smaller than ~5pt either dimension
+        # in rm-space (i.e. roughly a single pixel) is not a real highlight.
+        if (x1 - x0) < 5 and (y1 - y0) < 5:
+            continue
+        color = getattr(val, "color", None)
+        color_val = getattr(color, "value", color) if color is not None else None
+        strokes.append({
+            "pen_type": pen_type,
+            "color": _color_id_to_name(color_val) if color_val is not None else "yellow",
+            "rm_bbox": (x0, y0, x1 - x0, y1 - y0),
+        })
+
+    return strokes
+
+
+def _process_highlighter_strokes(
+    rm_path: str,
+    pdf_doc: "fitz.Document",
+    page_index: int,
+    highlights: list[ExtractedHighlight],
+    warnings: list[str],
+) -> None:
+    """
+    Extract text from highlighter-pen strokes on a v6 page.
+
+    The reMarkable user can highlight text in two ways:
+      1. Tap a word, choose a color  → stored as GlyphRange (handled by
+         _process_v6_page above).
+      2. Select the highlighter tool, drag across text → stored as a Line
+         block with pen_type 5 or 18. The .rm file has no record of what
+         text the user crossed; we have to reconstruct it by overlapping the
+         stroke's bounding box against PDF text positions.
+
+    This function performs path 2.
+    """
+    if page_index < 0 or page_index >= len(pdf_doc):
+        return
+    strokes = _extract_highlighter_strokes_from_rm_file(rm_path)
+    if not strokes:
+        return
+
+    page = pdf_doc[page_index]
+    pdf_w, pdf_h = page.rect.width, page.rect.height
+
+    # Add a small vertical pad so a stroke drawn slightly above or below the
+    # text x-height (a normal human-aim error) still picks up the right line.
+    Y_PAD_PT = 3.0
+
+    for s in strokes:
+        x, y, w, h = s["rm_bbox"]
+        # PDF rect is only used to query text — convert from rm to PDF coords.
+        pdf_rect = _v6_rm_rect_to_pdf_rect(x, y, w, h, pdf_w, pdf_h)
+        pdf_rect["y"] -= Y_PAD_PT
+        pdf_rect["height"] += 2 * Y_PAD_PT
+        pdf_rect["x"] = max(0.0, pdf_rect["x"])
+        pdf_rect["y"] = max(0.0, pdf_rect["y"])
+        if pdf_rect["x"] + pdf_rect["width"] > pdf_w:
+            pdf_rect["width"] = pdf_w - pdf_rect["x"]
+        if pdf_rect["y"] + pdf_rect["height"] > pdf_h:
+            pdf_rect["height"] = pdf_h - pdf_rect["y"]
+
+        text = _extract_text_by_rectangle(pdf_doc, page_index, [pdf_rect])
+        if not text:
+            warnings.append(
+                f"Page {page_index + 1}: highlighter stroke at "
+                f"PDF y={pdf_rect['y']:.1f} matched no text"
+            )
+            continue
+
+        # Bounds are stored in RM coords to match GlyphRange-derived bounds,
+        # so the merger's per-page sort and gap heuristics treat both kinds
+        # of highlights consistently.
+        highlights.append(
+            ExtractedHighlight(
+                text=text,
+                page_number=page_index + 1,
+                color=s["color"],
+                bounds={"x": x, "y": y, "width": w, "height": h},
+                created_at=None,
             )
         )
 
@@ -413,7 +567,7 @@ def extract_highlights_for_document(
     finally:
         pdf_doc.close()
 
-    return highlights, warnings
+    return merge_fragmented_highlights(highlights), warnings
 
 
 def _detect_rm_format(rm_path: str) -> str:
@@ -570,4 +724,4 @@ def extract_highlights_for_document_auto(
     finally:
         pdf_doc.close()
 
-    return highlights, warnings
+    return merge_fragmented_highlights(highlights), warnings

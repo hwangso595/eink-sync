@@ -15,9 +15,9 @@ import * as path from 'path';
 
 describe('resolveScriptPath', () => {
   it('returns path to extraction/extract.py relative to plugin dir', () => {
-    const result = resolveScriptPath('/home/user/.obsidian/plugins/remarkable-bridge');
+    const result = resolveScriptPath('/home/user/.obsidian/plugins/eink-sync');
     expect(result).toBe(
-      path.join('/home/user/.obsidian/plugins/remarkable-bridge', 'extraction', 'extract.py'),
+      path.join('/home/user/.obsidian/plugins/eink-sync', 'extraction', 'extract.py'),
     );
   });
 

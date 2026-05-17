@@ -35,7 +35,7 @@ import { XochitlDocumentDiscovery } from './document-discovery';
 import { PythonHighlightExtractor } from './python-bridge';
 import { DefaultMarkdownRenderer, generateOutputFilename, type PageDrawings } from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
-import { renderPageImages } from './page-image-renderer';
+import { renderPageImages, type PageImageResult } from './page-image-renderer';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
 
@@ -389,9 +389,22 @@ export async function runExtractionPipeline(
 
       let pageDrawings: PageDrawings | null = null;
       try {
-        pageDrawings = await renderPageImages(
+        const imageResult: PageImageResult | null = await renderPageImages(
           doc, config.xochitlPath, config.drawingsPath, config.pluginDir,
         );
+        if (imageResult) {
+          pageDrawings = imageResult.pageDrawings;
+          // Merge renderer-extracted highlights (from handwritten highlights on PDF)
+          // into the extraction result. These come from stroke bounding boxes
+          // intersected with PDF text, complementing the PDF-annotation highlights.
+          if (imageResult.rendererHighlights.length > 0) {
+            extractionResult.highlights = [
+              ...extractionResult.highlights,
+              ...imageResult.rendererHighlights,
+            ];
+            logger.info(`${doc.visibleName}: merged ${imageResult.rendererHighlights.length} renderer highlight(s)`);
+          }
+        }
       } catch (drawErr) {
         logger.error(`renderPageImages failed for ${doc.visibleName}: ${drawErr}`);
       }

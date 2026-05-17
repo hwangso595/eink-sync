@@ -18,7 +18,7 @@ tags:
 
 **Source:** [[{{source_pdf}}]]
 
-%%--- remarkable-bridge highlights start ---%%
+%%--- eink-sync highlights start ---%%
 ## Highlights
 
 {{#each highlights}}
@@ -26,7 +26,7 @@ tags:
 > -- {{pdf_link}}
 
 {{/each}}
-%%--- remarkable-bridge highlights end ---%%
+%%--- eink-sync highlights end ---%%
 
 ## Notes
 

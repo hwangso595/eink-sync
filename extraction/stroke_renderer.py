@@ -433,6 +433,70 @@ def extract_strokes(rm_path: str) -> list[Stroke]:
         raise ValueError(f"Unsupported .rm format '{fmt}' for: {rm_path}")
 
 
+@dataclass
+class GlyphHighlight:
+    """
+    A text-selection highlight stored as GlyphRange in v6 .rm files.
+
+    Unlike stroke-based highlights (pen_type 5/18), these are stored as
+    rectangular regions over specific PDF text runs. The `text` field
+    contains the highlighted text directly, so no PDF clipping is needed.
+    """
+    text: str
+    # Each rect: (x, y, w, h) in reMarkable logical coordinates.
+    # x is center-origin (x=0 = horizontal centre of page).
+    # y is top-origin.
+    rectangles: list[tuple[float, float, float, float]] = field(default_factory=list)
+
+
+def extract_glyph_highlights(rm_path: str) -> list[GlyphHighlight]:
+    """
+    Extract glyph-range (text-selection) highlights from a v6 .rm file.
+
+    These are stored as SceneGlyphItemBlock entries with GlyphRange values,
+    NOT as stroke data. extract_strokes() will never see them.
+
+    Returns an empty list for non-v6 files or when rmscene is unavailable.
+    """
+    if read_blocks is None:
+        return []
+    fmt = detect_rm_format(rm_path)
+    if fmt != "v6":
+        return []
+
+    highlights: list[GlyphHighlight] = []
+    try:
+        with open(rm_path, "rb") as f:
+            blocks = list(read_blocks(f))
+    except Exception:
+        return []
+
+    for block in blocks:
+        # SceneGlyphItemBlock has .item.value which is a GlyphRange
+        item = getattr(block, "item", None)
+        if item is None:
+            continue
+        val = getattr(item, "value", None)
+        if val is None:
+            continue
+        # GlyphRange has .text and .rectangles
+        text = getattr(val, "text", None)
+        rects_raw = getattr(val, "rectangles", None)
+        if text is None or rects_raw is None:
+            continue
+        rects = []
+        for r in rects_raw:
+            x = float(getattr(r, "x", 0.0))
+            y = float(getattr(r, "y", 0.0))
+            w = float(getattr(r, "w", 0.0))
+            h = float(getattr(r, "h", 0.0))
+            rects.append((x, y, w, h))
+        if rects:
+            highlights.append(GlyphHighlight(text=text, rectangles=rects))
+
+    return highlights
+
+
 # ---------------------------------------------------------------------------
 # SVG rendering
 # ---------------------------------------------------------------------------

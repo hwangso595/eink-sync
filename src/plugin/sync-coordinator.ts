@@ -23,11 +23,13 @@ export interface SyncCoordinatorDeps {
   testConnection(): Promise<boolean>;
   syncViaSftp(): Promise<unknown>;
   updateStatusBar(state: 'idle' | 'syncing' | 'error'): void;
+  /** Pass-through to Plugin#registerInterval so the timer is cleared on unload. */
+  registerInterval(handle: number): number;
 }
 
 export class SyncCoordinator {
   /** Handle for the auto-sync timer (SFTP periodic sync). */
-  private autoSyncTimerHandle: ReturnType<typeof setInterval> | null = null;
+  private autoSyncTimerHandle: number | null = null;
   /** Whether an auto-sync is currently in progress (prevents overlapping runs). */
   private autoSyncInProgress = false;
 
@@ -46,7 +48,7 @@ export class SyncCoordinator {
 
     logger.info(`Auto-sync timer started: every ${this.plugin.settings.autoSyncIntervalMinutes} minutes`);
 
-    this.autoSyncTimerHandle = setInterval(async () => {
+    const handle = window.setInterval(async () => {
       if (this.autoSyncInProgress) {
         logger.debug('Auto-sync: previous run still in progress, skipping');
         return;
@@ -87,12 +89,14 @@ export class SyncCoordinator {
         this.autoSyncInProgress = false;
       }
     }, intervalMs);
+    this.autoSyncTimerHandle = handle;
+    this.plugin.registerInterval(handle);
   }
 
   /** Stop the auto-sync timer. */
   stop(): void {
-    if (this.autoSyncTimerHandle) {
-      clearInterval(this.autoSyncTimerHandle);
+    if (this.autoSyncTimerHandle !== null) {
+      window.clearInterval(this.autoSyncTimerHandle);
       this.autoSyncTimerHandle = null;
       logger.info('Auto-sync timer stopped');
     }

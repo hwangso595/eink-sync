@@ -23,6 +23,7 @@ import type { SyncConfig, SyncMethod, SyncStatus, SyncthingConfig } from './type
 import {
   createDefaultSyncConfig,
   SYNCTHING_CONFIG_DIR,
+  SYNCTHING_SERVICE_NAME,
   XOCHITL_SYNC_PATH,
 } from './types';
 
@@ -483,7 +484,7 @@ export async function restartSync(
   config: SyncConfig,
 ): Promise<void> {
   if (config.method === 'syncthing') {
-    await ssh.execute('systemctl restart remarkable-sync', SERVICE_RESTART_TIMEOUT_MS);
+    await ssh.execute(`systemctl restart ${SYNCTHING_SERVICE_NAME}`, SERVICE_RESTART_TIMEOUT_MS);
     logger.info('Syncthing service restarted');
   } else {
     logger.info('rsync does not run as a daemon; no restart needed');

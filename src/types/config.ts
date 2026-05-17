@@ -1,7 +1,7 @@
 /**
  * Configuration types for the reMarkable-Obsidian bridge.
  *
- * The config file lives in the Obsidian vault at .remarkable-bridge/config.json
+ * The config file lives in the Obsidian vault at .eink-sync/config.json
  * for portability, as specified in the product spec.
  */
 

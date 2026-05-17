@@ -1,4 +1,4 @@
-# reMarkable Bridge for Obsidian
+# E-Ink Sync
 
 Local-first bridge between your reMarkable tablet and Obsidian. Extract PDF highlights as linked markdown -- no cloud, no subscription, no data leaving your network.
 
@@ -13,12 +13,20 @@ Works with reMarkable 1 (512MB RAM) and reMarkable 2. Supports firmware 3.0+ (v6
 
 ---
 
+## Why this plugin needs Python
+
+Most Obsidian plugins are pure JavaScript. This one isn't — and the answer to "why?" is short: the reMarkable's v6 `.rm` binary format has exactly one mature parser, [`rmscene`](https://github.com/ricklupton/rmscene), and it's Python. There's no JavaScript port. Similarly, [`PyMuPDF`](https://pymupdf.readthedocs.io/) is the only library that reliably extracts PDF text *together with* its bounding-box coordinates — which is what makes correlating a highlight rectangle back to the underlying text actually work. `pdf.js` exposes text but not coordinates cleanly.
+
+The plugin spawns Python only when you trigger sync or extraction; if Python isn't installed, the plugin still loads and surfaces a clear error in the setup wizard rather than silently breaking.
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Why |
 |-------------|---------|-----|
 | **Obsidian** | 1.5.0+ | Plugin host |
-| **Python** | 3.8+ | Highlight extraction and page rendering |
+| **Python** | 3.8+ | Highlight extraction and page rendering (see above) |
 | **rmscene** | latest | Parses v6 .rm annotation files |
 | **PyMuPDF** | latest | Extracts text from PDF pages, renders page images |
 | **Syncthing** | any | Syncs files between tablet and computer (local network) |
@@ -61,7 +69,7 @@ npm run install-plugin -- /path/to/your/vault
 OBSIDIAN_VAULT=/path/to/your/vault npm run install-plugin
 ```
 
-The script copies `dist/main.js`, `manifest.json`, `styles.css`, `extraction/`, and `templates/` into `<vault>/.obsidian/plugins/remarkable-obsidian-bridge/`. Re-run it after each `npm run build` to update.
+The script copies `main.js`, `manifest.json`, `styles.css`, `extraction/`, and `templates/` into `<vault>/.obsidian/plugins/eink-sync/`. Re-run it after each `npm run build` to update.
 
 **Alternative: symlink for live development**
 
@@ -69,10 +77,10 @@ If you prefer changes to appear immediately without re-running the install scrip
 
 ```bash
 # Mac/Linux
-ln -s "$(pwd)" "<vault>/.obsidian/plugins/remarkable-obsidian-bridge"
+ln -s "$(pwd)" "<vault>/.obsidian/plugins/eink-sync"
 
 # Windows (PowerShell, run as Admin)
-New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\remarkable-obsidian-bridge" -Target "$(Get-Location)"
+New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target "$(Get-Location)"
 ```
 
 ### First-time setup
@@ -103,7 +111,7 @@ Click the reMarkable icon in the sidebar to open the library view, then click th
 3. Runs the Python extraction pipeline
 4. Updates your highlight notes
 
-You can also use the command palette: **reMarkable Bridge: Extract highlights**.
+You can also use the command palette: **E-Ink Sync: Extract highlights**.
 
 ### What gets extracted
 
@@ -128,17 +136,17 @@ highlight_count: 3
 remarkable_uuid: abc-123
 ---
 
-<!-- remarkable-bridge:start -->
+<!-- eink-sync:start -->
 ### Page 5
 
 > The highlighted text passage
 > -- [[uuid.pdf#page=5|Page 5]]
 
 ![[Paper Title_p5.png|500]]
-<!-- remarkable-bridge:end -->
+<!-- eink-sync:end -->
 ```
 
-Everything between the `<!-- remarkable-bridge:start/end -->` markers is managed by the plugin. Content outside the markers (your own notes) is preserved across re-extractions.
+Everything between the `<!-- eink-sync:start/end -->` markers is managed by the plugin. Content outside the markers (your own notes) is preserved across re-extractions. Notes written by the pre-rename plugin (which used `<!-- remarkable-bridge:start/end -->`) are still recognised and migrated to the new markers on the next extraction.
 
 ---
 

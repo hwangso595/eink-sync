@@ -122,7 +122,7 @@ export async function isXochitlRunning(ssh: SSHExecutor): Promise<boolean> {
 type SyncthingFolderType = 'sendreceive' | 'sendonly';
 
 /** Path to the temporary JSON file written on the tablet for safe curl payloads. */
-const TEMP_CONFIG_PATH = '/tmp/remarkable-bridge-folder-config.json';
+const TEMP_CONFIG_PATH = '/tmp/eink-sync-folder-config.json';
 
 /**
  * Escape a string for safe inclusion in a single-quoted shell argument.

@@ -12,7 +12,7 @@ export enum LogLevel {
   ERROR = 3,
 }
 
-const LOG_PREFIX = '[remarkable-bridge]';
+const LOG_PREFIX = '[eink-sync]';
 
 let currentLevel: LogLevel = LogLevel.INFO;
 
@@ -33,7 +33,7 @@ export const logger = {
 
   info(message: string, ...args: unknown[]): void {
     if (currentLevel <= LogLevel.INFO) {
-      console.info(`${LOG_PREFIX} ${message}`, ...args);
+      console.debug(`${LOG_PREFIX} ${message}`, ...args);
     }
   },
 

@@ -317,8 +317,8 @@ describe('TemplateMarkdownRenderer', () => {
     expect(output).toContain('highlight_count: 1');
     expect(output).toContain('> Important finding');
     expect(output).toContain('[[Test Document.pdf#page=5|Page 5]]');
-    expect(output).toContain('remarkable-bridge:start');
-    expect(output).toContain('remarkable-bridge:end');
+    expect(output).toContain('eink-sync:start');
+    expect(output).toContain('eink-sync:end');
   });
 
   // -----------------------------------------------------------------
@@ -338,7 +338,7 @@ describe('TemplateMarkdownRenderer', () => {
       'highlight_count: 1',
       '---',
       '',
-      '<!-- remarkable-bridge:start -->',
+      '<!-- eink-sync:start -->',
       '### Page 1',
       '',
       '> Highlight A',
@@ -346,7 +346,7 @@ describe('TemplateMarkdownRenderer', () => {
       '<!-- notes -->',
       '<!-- /notes -->',
       '',
-      '<!-- remarkable-bridge:end -->',
+      '<!-- eink-sync:end -->',
     ].join('\n');
 
     const merged = renderer.mergeWithExisting(existing, result, 'Test.pdf');
@@ -369,7 +369,7 @@ describe('TemplateMarkdownRenderer', () => {
       'highlight_count: 1',
       '---',
       '',
-      '<!-- remarkable-bridge:start -->',
+      '<!-- eink-sync:start -->',
       '### Page 1',
       '',
       '> Old highlight',
@@ -378,7 +378,7 @@ describe('TemplateMarkdownRenderer', () => {
       'My important thought about this passage.',
       '<!-- /notes -->',
       '',
-      '<!-- remarkable-bridge:end -->',
+      '<!-- eink-sync:end -->',
     ].join('\n');
 
     const merged = renderer.mergeWithExisting(existing, result, 'Test.pdf');
@@ -401,7 +401,7 @@ describe('TemplateMarkdownRenderer', () => {
       'highlight_count: 2',
       '---',
       '',
-      '<!-- remarkable-bridge:start -->',
+      '<!-- eink-sync:start -->',
       '### Page 1',
       '',
       '> Highlight 1',
@@ -418,7 +418,7 @@ describe('TemplateMarkdownRenderer', () => {
       'Note for page 2 highlight',
       '<!-- /notes -->',
       '',
-      '<!-- remarkable-bridge:end -->',
+      '<!-- eink-sync:end -->',
     ].join('\n');
 
     const merged = renderer.mergeWithExisting(existing, result, 'Test.pdf');
@@ -444,13 +444,13 @@ describe('TemplateMarkdownRenderer', () => {
       '',
       '# Test Document',
       '',
-      '<!-- remarkable-bridge:start -->',
+      '<!-- eink-sync:start -->',
       '## Highlights',
       '',
       '> Old highlight',
       '> -- [[Test Document.pdf#page=1|Page 1]]',
       '',
-      '<!-- remarkable-bridge:end -->',
+      '<!-- eink-sync:end -->',
       '',
       '## My Notes',
       'This is my personal note.',

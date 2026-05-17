@@ -269,7 +269,7 @@ tags:
 
 # My Paper Title
 
-%%--- remarkable-bridge highlights start ---%%
+%%--- eink-sync highlights start ---%%
 ## Highlights
 
 ### Page 5
@@ -282,7 +282,7 @@ tags:
 > Another highlighted passage here
 > -- [[My Paper Title.pdf#page=12|Page 12]]
 
-%%--- remarkable-bridge highlights end ---%%
+%%--- eink-sync highlights end ---%%
 ```
 
 The `[[My Paper Title.pdf#page=5|Page 5]]` links are PDF++ compatible. Clicking them in Obsidian (with PDF++ installed) opens the PDF at that page.

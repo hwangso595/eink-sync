@@ -25,10 +25,10 @@ const ENTWARE_BIN_PATH = '/home/root/.entware/bin';
 const SYNCTHING_BINARY_PATH = '/home/root/.entware/bin/syncthing';
 
 /** Systemd service file location. */
-const SYNCTHING_SERVICE_PATH = '/etc/systemd/system/remarkable-sync.service';
+const SYNCTHING_SERVICE_PATH = '/etc/systemd/system/eink-sync.service';
 
 /** Backup location for the service file (on /home, survives OTA). */
-const SYNCTHING_SERVICE_BACKUP_PATH = '/home/root/.entware/remarkable-sync.service.bak';
+const SYNCTHING_SERVICE_BACKUP_PATH = '/home/root/.entware/eink-sync.service.bak';
 
 /** Syncthing config directory (on /home, survives OTA). */
 const SYNCTHING_CONFIG_PATH = '/home/root/.config/syncthing';
@@ -155,7 +155,7 @@ async function checkSyncthingBinary(ssh: SSHExecutor): Promise<HealthCheckItem> 
  */
 async function checkSyncthingService(ssh: SSHExecutor): Promise<HealthCheckItem> {
   const fileExists = await serviceFileExists(ssh, SYNCTHING_SERVICE_PATH);
-  const isActive = await isServiceActive(ssh, 'remarkable-sync');
+  const isActive = await isServiceActive(ssh, 'eink-sync');
 
   if (isActive) {
     return {
@@ -170,7 +170,7 @@ async function checkSyncthingService(ssh: SSHExecutor): Promise<HealthCheckItem>
       name: 'Syncthing service',
       status: 'warn',
       message: 'Syncthing service file exists but service is not running',
-      recoveryHint: 'Try: systemctl enable --now remarkable-sync',
+      recoveryHint: 'Try: systemctl enable --now eink-sync',
     };
   }
 
@@ -184,7 +184,7 @@ async function checkSyncthingService(ssh: SSHExecutor): Promise<HealthCheckItem>
       message: 'Syncthing service file was removed (likely by firmware update). Backup found.',
       recoveryHint:
         `Restore with: cp ${SYNCTHING_SERVICE_BACKUP_PATH} ${SYNCTHING_SERVICE_PATH} && ` +
-        'systemctl daemon-reload && systemctl enable --now remarkable-sync',
+        'systemctl daemon-reload && systemctl enable --now eink-sync',
     };
   }
 
@@ -343,7 +343,7 @@ function buildRecoverySteps(serviceCheck: HealthCheckItem): string[] {
       'Step 1: Restore the service file from backup:',
       `  ${serviceCheck.recoveryHint?.split('&&')[0]?.trim()}`,
       'Step 2: Reload systemd and start the service:',
-      '  systemctl daemon-reload && systemctl enable --now remarkable-sync',
+      '  systemctl daemon-reload && systemctl enable --now eink-sync',
     );
   } else {
     steps.push(

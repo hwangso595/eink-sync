@@ -70,7 +70,7 @@ export class FolderMigrationModal extends Modal {
     contentEl.addClass('remarkable-folder-migration-modal');
 
     const label = FOLDER_LABELS[this.folderKey];
-    contentEl.createEl('h2', { text: `Change ${label}` });
+    new Setting(contentEl).setName(`Change ${label}`).setHeading();
 
     // Description
     const desc = contentEl.createDiv({ cls: 'setting-item-description' });
@@ -95,9 +95,7 @@ export class FolderMigrationModal extends Modal {
 
     // Extra note for syncFolder changes
     if (this.folderKey === 'syncFolder') {
-      const syncNote = contentEl.createDiv({ cls: 'setting-item-description' });
-      syncNote.style.marginTop = '8px';
-      syncNote.style.color = 'var(--text-muted)';
+      const syncNote = contentEl.createDiv({ cls: 'setting-item-description eink-sync-folder-migration-note' });
       syncNote.setText(
         'Note: Changing the sync folder will reset the extraction timestamp. ' +
         'All documents in the new folder will be processed on the next extraction run.',
@@ -165,7 +163,7 @@ export class FolderMigrationModal extends Modal {
 
       if (result.success) {
         new Notice(
-          `reMarkable Bridge: Moved ${result.filesMoved} file(s) to "${this.newPath}".`,
+          `E-Ink Sync: Moved ${result.filesMoved} file(s) to "${this.newPath}".`,
         );
         logger.info(
           `Folder migration complete: ${result.filesMoved} files, ${result.foldersMoved} folders ` +
@@ -173,7 +171,7 @@ export class FolderMigrationModal extends Modal {
         );
       } else {
         new Notice(
-          `reMarkable Bridge: Migration partially completed. ${result.filesMoved} file(s) moved. ` +
+          `E-Ink Sync: Migration partially completed. ${result.filesMoved} file(s) moved. ` +
           `Some errors occurred: ${result.error}`,
           10000,
         );
@@ -184,7 +182,7 @@ export class FolderMigrationModal extends Modal {
       this.close();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`reMarkable Bridge: Migration failed. ${msg}`, 10000);
+      new Notice(`E-Ink Sync: Migration failed. ${msg}`, 10000);
       logger.error(`Folder migration failed: ${msg}`);
       this.buttonsDisabled = false;
     }
@@ -193,7 +191,7 @@ export class FolderMigrationModal extends Modal {
   private handleKeep(): void {
     if (this.buttonsDisabled) return;
     new Notice(
-      `reMarkable Bridge: Folder changed to "${this.newPath}". ` +
+      `E-Ink Sync: Folder changed to "${this.newPath}". ` +
       `Previous files remain at "${this.oldPath}".`,
     );
     this.onChoice('keep');

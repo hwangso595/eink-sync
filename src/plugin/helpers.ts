@@ -1,5 +1,5 @@
 /**
- * Shared helper utilities for the reMarkable Bridge plugin.
+ * Shared helper utilities for the E-Ink Sync plugin.
  *
  * Centralises logic that was previously duplicated across
  * library-view.ts, sync-status-modal.ts, library-data.ts, and plugin.ts.
