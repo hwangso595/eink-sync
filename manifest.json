@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
   "description": "Local-first bridge between reMarkable tablet and Obsidian. Extract PDF highlights as markdown without cloud dependency.",
-  "author": "hwansung595",
-  "authorUrl": "https://github.com/hwansung595",
+  "author": "hwangso595",
+  "authorUrl": "https://github.com/hwangso595",
   "isDesktopOnly": true
 }

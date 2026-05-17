@@ -57,7 +57,7 @@ export function generateSyncthingServiceUnit(config: SyncConfig): string {
 
   return `[Unit]
 Description=Syncthing file sync for reMarkable-Obsidian bridge
-Documentation=https://github.com/hwansung595/eink-sync
+Documentation=https://github.com/hwangso595/eink-sync
 After=network-online.target
 Wants=network-online.target
 
@@ -148,7 +148,7 @@ export function generateWatchdogScript(config: SyncConfig): string {
 export function generateWatchdogServiceUnit(): string {
   return `[Unit]
 Description=Memory watchdog for reMarkable-Obsidian bridge
-Documentation=https://github.com/hwansung595/eink-sync
+Documentation=https://github.com/hwangso595/eink-sync
 After=${SYNCTHING_SERVICE_NAME}.service
 BindsTo=${SYNCTHING_SERVICE_NAME}.service
 

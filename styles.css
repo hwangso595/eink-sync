@@ -648,12 +648,12 @@
   height: 10px;
 }
 
-.remarkable-sync-status-text {
+.eink-sync-status-text {
   font-size: var(--font-ui-medium);
   font-weight: var(--font-semibold);
 }
 
-.remarkable-sync-details {
+.eink-sync-details {
   background: var(--background-secondary);
   border-radius: var(--radius-s);
   padding: var(--size-4-2) var(--size-4-3);
