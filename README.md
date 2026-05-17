@@ -297,6 +297,21 @@ The pipeline delegates to Python for two tasks: (1) parsing .rm files via `rmsce
 
 ---
 
+## Permissions & data access
+
+This plugin requests broader access than a typical Obsidian plugin because it bridges your tablet (an external device on your local network) to your vault. Here's exactly what it does and why:
+
+| Capability | Why it's needed |
+|---|---|
+| **Filesystem access outside the vault** | Reads `.rm`/`.metadata`/`.content` files from the Syncthing sync folder (which lives outside your vault, since Syncthing manages it). Writes rendered PNGs and extracted markdown into your vault. |
+| **Shell execution** (`child_process`) | Spawns Python for highlight extraction (`rmscene` + `PyMuPDF`) and SSH for one-time tablet setup. Both are essential -- there's no JavaScript equivalent for parsing reMarkable's v6 `.rm` binary format. |
+| **Hostname read** (`os.hostname`) | Scopes the "last extracted at" timestamp per machine, so if you sync your vault between two computers via Syncthing they don't fight over `data.json` and produce sync-conflict files. |
+| **Vault file enumeration** | Used by the "Send document to reMarkable" command to find PDFs/EPUBs in your vault. |
+
+The plugin **never** makes external network requests. All sync happens over your local network via Syncthing or SSH to your tablet. No data goes to reMarkable Cloud, no telemetry, no analytics, no third-party servers.
+
+---
+
 ## Known limitations
 
 - **Pen-stroke text extraction**: Highlights drawn with a pen or the pen-style highlighter tool are captured as images, not text. Only text-selection highlights (GlyphRange) produce searchable text.
