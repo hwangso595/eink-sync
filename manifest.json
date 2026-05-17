@@ -3,7 +3,7 @@
   "name": "E-Ink Sync",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "Local-first bridge between reMarkable tablet and Obsidian. Extract PDF highlights as markdown without cloud dependency.",
+  "description": "Sync reMarkable tablet highlights to your vault as markdown notes. Local-first, no cloud.",
   "author": "hwangso595",
   "authorUrl": "https://github.com/hwangso595",
   "isDesktopOnly": true
