@@ -33,7 +33,7 @@ export class SyncStatusModal extends Modal {
     contentEl.empty();
     contentEl.addClass('eink-sync-status-modal');
 
-    new Setting(contentEl).setName('Sync Status').setHeading();
+    new Setting(contentEl).setName('Sync status').setHeading();
 
     const { summary, documents } = this.buildCurrentSummary();
     this.loadedDocuments = documents;
@@ -138,7 +138,7 @@ export class SyncStatusModal extends Modal {
   private renderDocumentBreakdown(container: HTMLElement, summary: LibrarySyncSummary): void {
     if (summary.totalDocuments === 0) return;
 
-    new Setting(container).setName('Document Types').setHeading();
+    new Setting(container).setName('Document types').setHeading();
 
     // Reuse documents loaded in buildCurrentSummary() -- no second filesystem scan.
     const typeCounts = new Map<string, number>();

@@ -437,7 +437,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   // -------------------------------------------------------------------
 
   private renderSyncSourcesSection(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName('Sync Sources').setHeading();
+    new Setting(containerEl).setName('Sync sources').setHeading();
 
     const sources = this.plugin.getSyncSources();
 
@@ -946,7 +946,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       );
 
     // ----- Storage Management -----
-    new Setting(advancedEl).setName('Storage Management').setHeading();
+    new Setting(advancedEl).setName('Storage management').setHeading();
 
     new Setting(advancedEl)
       .setName('Auto-archive old documents')
@@ -1063,7 +1063,7 @@ class AddSourceModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    new Setting(contentEl).setName('Add Sync Source').setHeading();
+    new Setting(contentEl).setName('Add sync source').setHeading();
 
     new Setting(contentEl)
       .setName('Label')

@@ -289,7 +289,7 @@ export class ReMarkableLibraryView extends ItemView {
     // Only show filter if there are multiple sources
     const filterContainer = this.sourceFilterEl.parentElement;
     if (filterContainer) {
-      filterContainer.style.display = sources.length > 1 ? '' : 'none';
+      filterContainer.toggle(sources.length > 1);
     }
 
     // Preserve current selection
@@ -360,7 +360,7 @@ export class ReMarkableLibraryView extends ItemView {
 
     // Hide if only one source
     if (sources.length <= 1) {
-      sourceFilterWrap.style.display = 'none';
+      sourceFilterWrap.hide();
     }
 
     this.sourceFilterEl.addEventListener('change', () => {
@@ -523,7 +523,8 @@ export class ReMarkableLibraryView extends ItemView {
 
     const folderEl = container.createDiv({ cls: 'remarkable-library-folder' });
     if (depth > 0) {
-      folderEl.style.paddingLeft = `${depth * 12}px`;
+      // Dynamic indent via CSS custom property so styling stays themeable
+      folderEl.style.setProperty('--eink-sync-folder-depth', String(depth));
     }
 
     // Folder header

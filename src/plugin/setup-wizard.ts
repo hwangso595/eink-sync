@@ -634,7 +634,7 @@ export class SetupWizardModal extends Modal {
 
     // Summary card
     const summaryEl = containerEl.createDiv({ cls: 'remarkable-wizard-summary' });
-    new Setting(summaryEl).setName('Setup Summary').setHeading();
+    new Setting(summaryEl).setName('Setup summary').setHeading();
 
     const syncMethodLabel = this.isSftpMode ? 'SFTP (direct SSH)' : 'Syncthing';
     const summaryItems: [string, string][] = [

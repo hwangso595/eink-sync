@@ -332,7 +332,9 @@
 
 /* Folder tree */
 .remarkable-library-folder {
-  /* No extra margin -- structure handled by padding-left on nested levels */
+  /* Indent nested folders. Depth is set via the `--eink-sync-folder-depth`
+     custom property on each folder element; default 0 keeps top-level flush. */
+  padding-left: calc(var(--eink-sync-folder-depth, 0) * 12px);
 }
 
 .remarkable-library-folder-header {
