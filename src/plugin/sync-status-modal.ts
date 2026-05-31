@@ -12,7 +12,7 @@
  * No custom colors -- all Obsidian CSS variables.
  */
 
-import { App, Modal, Setting } from 'obsidian';
+import { App, Modal, Notice, Setting } from 'obsidian';
 import type ReMarkableBridgePlugin from './plugin';
 import type { LibraryDocument, LibrarySyncSummary } from './library-types';
 import { buildLibrary, buildSyncSummary } from './library-data';
@@ -88,6 +88,17 @@ export class SyncStatusModal extends Modal {
       cls: 'eink-sync-status-text',
       text: summary.connectionHealthy ? 'Setup complete' : 'Not configured',
     });
+
+    // If the last sync/connection attempt failed, show why — otherwise a
+    // silent timeout looks identical to "everything is fine, no new docs".
+    const lastErr = this.plugin.getLastSyncError();
+    if (lastErr) {
+      const errRow = container.createDiv({ cls: 'eink-sync-error-row' });
+      errRow.createSpan({
+        cls: 'eink-sync-status-text mod-warning',
+        text: `Last sync failed: ${lastErr.message.split('\n')[0]}`,
+      });
+    }
   }
 
   private renderSyncDetails(container: HTMLElement, summary: LibrarySyncSummary): void {
@@ -192,10 +203,16 @@ export class SyncStatusModal extends Modal {
           btn.setDisabled(true);
           btn.setButtonText('Testing...');
           try {
-            const ok = await this.plugin.testConnection();
-            btn.setButtonText(ok ? 'Connected' : 'Failed');
-          } catch {
+            const result = await this.plugin.testConnectionDetailed();
+            btn.setButtonText(result.ok ? 'Connected' : 'Failed');
+            if (!result.ok && result.error) {
+              // Tell the user the specific reason, not just "Failed".
+              new Notice(`E-Ink Sync: ${result.error.toUserMessage()}`, 8000);
+            }
+          } catch (err) {
             btn.setButtonText('Error');
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`E-Ink Sync: ${msg}`, 6000);
           }
           setTimeout(() => {
             btn.setDisabled(false);

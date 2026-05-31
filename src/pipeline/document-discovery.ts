@@ -156,14 +156,21 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
     }
   }
 
-  // Phase 2: Parse .content files for non-deleted documents
+  // Phase 2: Parse .content files for non-deleted documents.
+  // Track two distinct failure modes so Phase 3 can give the user an
+  // actionable signal instead of silently dropping the document:
+  //   - content file absent  -> doc not yet flushed (still open on tablet)
+  //   - content file present but unparseable -> torn/partial sync
   const contentMap = new Map<string, ParsedContent>();
+  const corruptContent = new Set<string>();
   for (const uuid of metadataMap.keys()) {
     const contentPath = path.join(xochitlPath, `${uuid}.content`);
     if (fs.existsSync(contentPath)) {
       const content = parseContentFile(contentPath);
       if (content) {
         contentMap.set(uuid, content);
+      } else {
+        corruptContent.add(uuid);
       }
     }
   }
@@ -174,7 +181,22 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
     if (meta.docType === 'CollectionType') continue;
 
     const content = contentMap.get(uuid);
-    if (!content) continue;
+    if (!content) {
+      // The document is on the tablet but has no usable .content yet. Tell the
+      // user why it won't appear, instead of dropping it silently.
+      if (corruptContent.has(uuid)) {
+        logger.warn(
+          `Document "${meta.visibleName}" (${uuid}) has a partial/corrupt .content file ` +
+          `— likely mid-sync. It will be picked up on the next sync once the file finishes transferring.`,
+        );
+      } else {
+        logger.warn(
+          `Document "${meta.visibleName}" (${uuid}) is on the tablet but its content isn't flushed yet. ` +
+          `Close the document on the tablet, then sync again so it can be extracted.`,
+        );
+      }
+      continue;
+    }
 
     const isPdf = content.fileType === 'pdf';
     const isEpub = content.fileType === 'epub';
