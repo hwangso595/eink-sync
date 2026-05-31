@@ -39,9 +39,12 @@ import type { DeviceInfo } from '../types/device';
 import {
   connectAndVerify,
   testConnection,
+  testConnectionDetailed,
   type ConnectionResult,
+  type ConnectionTestResult,
   type ProgressCallback,
 } from '../ssh/connection-manager';
+import { initHostKeyStore } from '../ssh/host-key-store';
 
 // Sprint 2 imports
 import {
@@ -73,6 +76,7 @@ import { SyncthingProvider } from '../sync/syncthing-provider';
 
 // File watcher
 import { XochitlFileWatcher } from '../pipeline/file-watcher';
+import { discoverDocuments } from '../pipeline/document-discovery';
 
 // Archive manager
 import { archiveOldDocuments as runArchive } from './archive-manager';
@@ -139,6 +143,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
   private xochitlRestartInProgress = false;
   /** Timestamp of the last periodic archive check, used for 30-minute cooldown. */
   private lastArchiveCheckTimestamp = 0;
+  /**
+   * The most recent sync/connection failure, surfaced in the status bar tooltip
+   * and the sync status modal so a silent timeout no longer looks like "no new
+   * docs". Cleared on the next successful sync.
+   */
+  private _lastSyncError: { message: string; at: number } | null = null;
   // Auto-sync timer state is now managed by SyncCoordinator.
   // These fields are kept for backward compatibility but delegate to the coordinator.
 
@@ -166,6 +176,16 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // Load persisted settings
     await this.loadSettings();
     this.applyLogLevel();
+
+    // Initialise the SSH host-key store (TOFU) so the tablet's key is pinned
+    // and key changes are surfaced to the user rather than silently trusted.
+    initHostKeyStore(`${this.getPluginDir()}/known-hosts.json`, (host) => {
+      new Notice(
+        `E-Ink Sync: the SSH host key for ${host} changed. If you didn't reflash ` +
+        `the tablet, this could mean another device is impersonating it.`,
+        12000,
+      );
+    });
 
     // Ensure folders exist
     await ensureFolders(this.app,
@@ -651,16 +671,55 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
-   * Detect the tablet's WiFi IP address via SSH.
-   * Connects using current settings (typically USB at 10.11.99.1) and
-   * reads the wlan0 interface IP. Returns null if tablet is not on WiFi.
+   * Connection test that preserves the specific failure reason, so UI surfaces
+   * can tell the user *why* (timeout at IP vs. wrong password vs. refused)
+   * instead of a bare "Failed".
    */
-  async detectTabletWifiIp(): Promise<string | null> {
-    return this.withSSH(async (ssh) => {
+  async testConnectionDetailed(): Promise<ConnectionTestResult> {
+    const config = this.buildSSHConfig();
+    return testConnectionDetailed(config);
+  }
+
+  /** The most recent sync/connection failure (for status bar + modal). */
+  getLastSyncError(): { message: string; at: number } | null {
+    return this._lastSyncError;
+  }
+
+  /** Record a sync/connection failure for later display. */
+  recordSyncError(err: unknown): void {
+    const message = err instanceof BridgeError
+      ? err.toUserMessage()
+      : (err instanceof Error ? err.message : String(err));
+    this._lastSyncError = { message, at: Date.now() };
+  }
+
+  /** Clear the last sync error after a successful sync. */
+  clearSyncError(): void {
+    this._lastSyncError = null;
+  }
+
+  /**
+   * Detect the tablet's WiFi IP address via SSH and read the wlan0 interface IP.
+   * Returns null if the tablet is not on WiFi.
+   *
+   * @param overrideHost - Connect to this host instead of the saved tablet IP.
+   *   Used by the "find tablet via USB" recovery flow: when the saved WiFi IP is
+   *   stale (e.g. after a network change), we connect over USB (10.11.99.1) to
+   *   ask the tablet what its current WiFi IP actually is.
+   */
+  async detectTabletWifiIp(overrideHost?: string): Promise<string | null> {
+    const config = this.buildSSHConfig();
+    const ssh = new ReMarkableSSHClient(
+      overrideHost ? { ...config, host: overrideHost, method: 'usb' } : config,
+    );
+    try {
+      await ssh.connect();
       const result = await ssh.execute('ip -4 addr show wlan0 2>/dev/null');
       const match = result.stdout.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
-    });
+    } finally {
+      await ssh.disconnect();
+    }
   }
 
   /** Full connection + device detection + preflight check. */
@@ -721,6 +780,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
     const syncResult = await engine.sync(onProgress);
 
+    // Record a failed transfer distinctly from "synced OK, 0 new docs" so the
+    // status bar / modal don't mislead the user into thinking nothing changed
+    // when the tablet was actually unreachable.
+    if (!syncResult.success) {
+      this.recordSyncError(new Error(syncResult.summary || 'SFTP sync failed'));
+    } else {
+      this.clearSyncError();
+    }
+
     // Run extraction after sync completes (even if some files had errors)
     let extractionResult: PipelineRunResult | null = null;
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
@@ -732,9 +800,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
       }
     }
 
-    // Update last sync timestamp
-    this.settings.lastSyncTimestamp = Date.now();
-    await this.saveSettings();
+    // Only advance the "last synced" timestamp on a successful transfer — a
+    // failed sync should not look recent/healthy.
+    if (syncResult.success) {
+      this.settings.lastSyncTimestamp = Date.now();
+      await this.saveSettings();
+    }
 
     return { syncResult, extractionResult };
   }
@@ -836,6 +907,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
     for (const source of targetSources) {
       try {
+        // Capture the incremental cursor BEFORE extraction, from the tablet's
+        // own clock domain. The previous code stored Date.now() (the host PC's
+        // clock) and compared it against each doc's metadata.lastModified (the
+        // tablet's clock). An offline rM1 whose clock lags the host would make
+        // genuinely-new docs look "older than the cursor" and silently drop
+        // them from every future incremental run. Using max(observed
+        // lastModified) keeps the comparison tablet-vs-tablet, and capturing it
+        // pre-run means a doc modified during extraction stays > cursor and is
+        // re-picked-up next run rather than being skipped.
+        const observedCursor = this.computeMaxObservedTimestamp(source.syncFolder);
+
         const sourceResult = await this.runExtractionForSource(
           source, forceAll, template, docUuid,
         );
@@ -848,8 +930,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
         aggregateResult.documentResults.push(...sourceResult.documentResults);
         aggregateResult.errors.push(...sourceResult.errors);
 
-        // Update per-source timestamp in device state (NOT data.json)
-        this.deviceStateManager.setSourceTimestamp(source.id, Date.now());
+        // Advance the per-source cursor monotonically in tablet-clock domain.
+        // (NOT data.json — stored in per-device state.) Never move it backwards,
+        // and don't regress when a run observed no documents (observedCursor 0).
+        const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
+        this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
         this.deviceStateManager.setSourcePathHash(source.id, hashString(source.syncFolder));
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -912,6 +997,28 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * Run extraction for a single sync source.
    * Handles per-source path-hash validation and timestamp management.
    */
+  /**
+   * Compute the newest `lastModified` (tablet-clock, epoch-ms) across all
+   * discoverable documents in a source's synced folder. Used as the
+   * incremental-extraction cursor so the comparison stays in the tablet's own
+   * clock domain. Returns 0 if the folder is empty/unreadable (callers must
+   * treat 0 as "no advance", never as "epoch").
+   */
+  private computeMaxObservedTimestamp(syncFolder: string): number {
+    try {
+      const docs = discoverDocuments(resolvePath(this.app, syncFolder));
+      let max = 0;
+      for (const doc of docs) {
+        if (doc.lastModified > max) max = doc.lastModified;
+      }
+      return max;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Could not compute extraction cursor for "${syncFolder}": ${msg}`);
+      return 0;
+    }
+  }
+
   private async runExtractionForSource(
     source: SyncSource,
     forceAll: boolean,
@@ -1442,11 +1549,19 @@ export default class ReMarkableBridgePlugin extends Plugin {
    */
   async archiveOldDocuments(force = false): Promise<number> {
     try {
+      // Resolve the local synced copy so archive can verify a backup exists
+      // before deleting anything from the tablet.
+      const sources = this._pluginData.syncSources;
+      const localSyncDir = sources[0]?.syncFolder
+        ? resolvePath(this.app, sources[0].syncFolder)
+        : resolvePath(this.app, this.settings.syncFolder);
+
       const archived = await this.withSSH(async (ssh) => {
         return runArchive(ssh, {
           thresholdPercent: this.settings.archiveThresholdPercent,
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
+          localSyncDir,
         }, () => this.scheduleXochitlRestart());
       });
 

@@ -17,11 +17,22 @@
  * the stock SSH server.
  */
 
+import * as os from 'os';
+import * as path from 'path';
 import type { SSHExecutor, CommandResult } from '../ssh/ssh-client';
 import type { SyncConfig, SyncStatus } from './types';
 import { XOCHITL_SYNC_PATH } from './types';
 import { BridgeError, ErrorCode } from '../types/errors';
 import { logger } from '../utils/logger';
+
+/**
+ * Persistent known_hosts file for the rsync transport. Using `accept-new`
+ * against a stable file gives TOFU semantics (pin on first connect, reject on
+ * change) instead of the previous `StrictHostKeyChecking=no` + /dev/null, which
+ * trusted any host and so could leak the password to an impersonator. To
+ * recover after a legitimate tablet key change, delete this file.
+ */
+const RSYNC_KNOWN_HOSTS = path.join(os.tmpdir(), 'eink-sync-known_hosts');
 
 /** Timeout for rsync operations (can be slow over WiFi with large files). */
 const RSYNC_TIMEOUT_MS = 300_000; // 5 minutes
@@ -78,8 +89,9 @@ export function buildRsyncArgs(
     '--exclude=*.tmp',
     '--exclude=.stfolder',
     '--exclude=.stignore',
-    // SSH transport with strict host key checking disabled for ease of use
-    '-e', `ssh -p ${sshPort} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR`,
+    // SSH transport with TOFU host-key pinning (accept-new pins on first
+    // connect, rejects a changed key) against a persistent known_hosts file.
+    '-e', `ssh -p ${sshPort} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${RSYNC_KNOWN_HOSTS} -o LogLevel=ERROR`,
     // Source: tablet xochitl directory (trailing slash = contents, not directory itself)
     `root@${sshHost}:${tabletPath}/`,
     // Destination: local host sync folder

@@ -7,6 +7,8 @@
  * Privacy: All operations happen over SSH to the user's own tablet.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { logger } from '../utils/logger';
 import { isValidUuid } from './uuid-validation';
@@ -20,8 +22,63 @@ export interface ArchiveOptions {
   thresholdPercent: number;
   /** Minimum age in days before a document is eligible for archiving. */
   minAgeDays: number;
-  /** If true, ignore the disk usage threshold and archive all eligible docs. */
+  /**
+   * If true, ignore the disk usage threshold and archive all eligible docs.
+   * NOTE: `force` only bypasses the disk-usage gate. It does NOT bypass the
+   * local-backup verification below — archiving deletes from the tablet, so we
+   * never delete a document we can't prove is already in the vault.
+   */
   force: boolean;
+  /**
+   * Absolute path to the local synced copy of the xochitl directory. Required:
+   * before deleting any document from the tablet, we confirm its files exist
+   * (and are non-empty) here. Without a confirmed backup, "archive" would be
+   * "delete forever".
+   */
+  localSyncDir: string;
+}
+
+/**
+ * Confirm a document is safely backed up in the local sync folder before we
+ * delete it from the tablet. Requires the metadata + content sidecars and the
+ * actual document body (the source PDF/EPUB, or — for notebooks — the page
+ * directory with at least one stroke file).
+ *
+ * Conservative by design: any doubt returns false, so the doc is kept on the
+ * tablet rather than risked.
+ */
+export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
+  const nonEmptyFile = (p: string): boolean => {
+    try {
+      const st = fs.statSync(p);
+      return st.isFile() && st.size > 0;
+    } catch {
+      return false;
+    }
+  };
+  const nonEmptyDir = (p: string): boolean => {
+    try {
+      const st = fs.statSync(p);
+      return st.isDirectory() && fs.readdirSync(p).length > 0;
+    } catch {
+      return false;
+    }
+  };
+
+  const base = path.join(localSyncDir, uuid);
+
+  // Sidecars must be present and non-empty.
+  if (!nonEmptyFile(`${base}.metadata`)) return false;
+  if (!nonEmptyFile(`${base}.content`)) return false;
+
+  // Document body: a synced source file, or a non-empty annotation dir
+  // (notebooks have no source file — their content lives entirely in {uuid}/).
+  const hasBody =
+    nonEmptyFile(`${base}.pdf`) ||
+    nonEmptyFile(`${base}.epub`) ||
+    nonEmptyDir(base);
+
+  return hasBody;
 }
 
 /**
@@ -43,8 +100,13 @@ export async function archiveOldDocuments(
   options: ArchiveOptions,
   onNeedsXochitlRestart?: () => void,
 ): Promise<number> {
-  const { thresholdPercent, minAgeDays, force } = options;
+  const { thresholdPercent, minAgeDays, force, localSyncDir } = options;
   const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
+
+  if (!localSyncDir) {
+    logger.warn('Archive aborted: no local sync directory provided — refusing to delete unverified documents');
+    return 0;
+  }
 
   // Step 1: Check /home disk usage
   const dfResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
@@ -120,14 +182,31 @@ export async function archiveOldDocuments(
       continue;
     }
 
+    // SAFETY GATE: never delete from the tablet unless we can prove the
+    // document is already backed up locally. Applies even when force=true.
+    if (!hasLocalBackup(localSyncDir, doc.uuid)) {
+      logger.warn(
+        `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
+        `Sync this document to the vault before archiving.`,
+      );
+      continue;
+    }
+
     // Add to .stignore so Syncthing won't try to re-sync from vault
     await ssh.execute(
       `echo '${doc.uuid}*' >> ${XOCHITL_DIR}/.stignore && echo '${doc.uuid}/' >> ${XOCHITL_DIR}/.stignore`
     );
 
-    // Delete from tablet
+    // Delete from tablet — explicit, auditable file list (no glob).
+    // Covers every sidecar/dir xochitl creates for a document.
+    const u = doc.uuid;
+    const targets = [
+      `${u}.metadata`, `${u}.content`, `${u}.pdf`, `${u}.epub`,
+      `${u}.pagedata`, `${u}.local`,
+      u, `${u}.cache`, `${u}.thumbnails`, `${u}.textconversion`, `${u}.highlights`,
+    ].join(' ');
     await ssh.execute(
-      `cd ${XOCHITL_DIR} && rm -rf ${doc.uuid}* 2>/dev/null; rm -rf ${doc.uuid} 2>/dev/null; true`
+      `cd ${XOCHITL_DIR} && rm -rf ${targets} 2>/dev/null; true`
     );
 
     archivedCount++;

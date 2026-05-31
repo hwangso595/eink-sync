@@ -28,6 +28,9 @@ Thumbs.db
 # Generator notes (internal)
 .generator/
 
+# Local dev/debug scripts that read tablet credentials — never commit
+probe-tablet.mjs
+
 # Python
 __pycache__/
 *.pyc

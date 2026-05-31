@@ -9,7 +9,17 @@
  * testability and make dependencies explicit.
  */
 
+import { Notice } from 'obsidian';
 import { logger } from '../utils/logger';
+import type { ConnectionTestResult } from '../ssh/connection-manager';
+
+/**
+ * After this many consecutive unreachable auto-sync cycles, surface a single
+ * Notice. We don't notify on every cycle (that would spam every interval), and
+ * we don't notify on the first miss (the tablet sleeps constantly — a single
+ * miss is normal). Sustained failure is what the user needs to know about.
+ */
+const UNREACHABLE_NOTICE_THRESHOLD = 3;
 
 /** Narrow interface describing what SyncCoordinator needs from the plugin. */
 export interface SyncCoordinatorDeps {
@@ -19,10 +29,13 @@ export interface SyncCoordinatorDeps {
     syncMethod: string;
     connectionMethod: string;
     setupComplete: boolean;
+    tabletIp: string;
   };
-  testConnection(): Promise<boolean>;
+  testConnectionDetailed(): Promise<ConnectionTestResult>;
   syncViaSftp(): Promise<unknown>;
   updateStatusBar(state: 'idle' | 'syncing' | 'error'): void;
+  recordSyncError(err: unknown): void;
+  clearSyncError(): void;
   /** Pass-through to Plugin#registerInterval so the timer is cleared on unload. */
   registerInterval(handle: number): number;
 }
@@ -32,6 +45,10 @@ export class SyncCoordinator {
   private autoSyncTimerHandle: number | null = null;
   /** Whether an auto-sync is currently in progress (prevents overlapping runs). */
   private autoSyncInProgress = false;
+  /** Count of consecutive cycles where the tablet was unreachable. */
+  private consecutiveUnreachable = 0;
+  /** Whether we've already shown the "auto-sync paused" Notice this outage. */
+  private unreachableNotified = false;
 
   constructor(private plugin: SyncCoordinatorDeps) {}
 
@@ -67,12 +84,36 @@ export class SyncCoordinator {
 
       this.autoSyncInProgress = true;
       try {
-        // Quick ping to check if tablet is reachable
-        const reachable = await this.plugin.testConnection();
-        if (!reachable) {
-          logger.debug('Auto-sync: tablet not reachable, skipping');
+        // Check reachability, keeping the specific reason if it fails.
+        const result = await this.plugin.testConnectionDetailed();
+        if (!result.ok) {
+          this.consecutiveUnreachable++;
+          this.plugin.recordSyncError(result.error ?? new Error('Tablet not reachable'));
+          this.plugin.updateStatusBar('error');
+          logger.debug(
+            `Auto-sync: tablet not reachable (${this.consecutiveUnreachable} in a row), skipping`,
+          );
+          // Surface one Notice once the failure is clearly sustained, not on
+          // every cycle and not on a single expected sleep-miss.
+          if (
+            this.consecutiveUnreachable >= UNREACHABLE_NOTICE_THRESHOLD &&
+            !this.unreachableNotified
+          ) {
+            this.unreachableNotified = true;
+            const reason = result.error?.message ?? 'connection timed out';
+            new Notice(
+              `E-Ink Sync: can't reach your reMarkable at ${this.plugin.settings.tabletIp} ` +
+              `(${reason}). Auto-sync is paused until it's reachable. ` +
+              `If you changed Wi-Fi networks, update the tablet IP in settings.`,
+              10000,
+            );
+          }
           return;
         }
+
+        // Recovered (or first success): reset failure tracking.
+        this.consecutiveUnreachable = 0;
+        this.unreachableNotified = false;
 
         logger.info('Auto-sync: tablet reachable, starting SFTP sync');
         this.plugin.updateStatusBar('syncing');
@@ -84,6 +125,7 @@ export class SyncCoordinator {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`Auto-sync failed: ${msg}`);
+        this.plugin.recordSyncError(err);
         this.plugin.updateStatusBar('error');
       } finally {
         this.autoSyncInProgress = false;
