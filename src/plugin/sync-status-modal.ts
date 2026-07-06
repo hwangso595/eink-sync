@@ -57,15 +57,22 @@ export class SyncStatusModal extends Modal {
       connectionHealthy: false,
     };
 
-    const syncFolder = this.plugin.settings.syncFolder;
-    if (!syncFolder) {
+    // Aggregate across every configured source, not just the legacy single
+    // folder -- otherwise a multi-source setup silently under-reports.
+    const sources = this.plugin.getSyncSources();
+    if (sources.length === 0) {
       return { summary: emptySummary, documents: [] };
     }
 
     const outputPath = resolvePath(this.app, this.plugin.settings.highlightsFolder);
 
     try {
-      const { documents } = buildLibrary(resolvePath(this.app, syncFolder), outputPath);
+      const documents: LibraryDocument[] = [];
+      for (const source of sources) {
+        if (!source.syncFolder) continue;
+        const built = buildLibrary(resolvePath(this.app, source.syncFolder), outputPath);
+        documents.push(...built.documents);
+      }
       const summary = buildSyncSummary(
         documents,
         this.plugin.settings.lastSyncTimestamp,

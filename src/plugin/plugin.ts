@@ -626,6 +626,21 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
+   * Whether the active sync mode can push local changes back to the tablet.
+   *
+   * SFTP is pull-only: "Send to reMarkable", and per-document archive / delete /
+   * unarchive cannot affect the tablet in SFTP mode. Only Syncthing propagates
+   * local changes bidirectionally. UI surfaces branch on this so they never
+   * claim a tablet-side effect they can't deliver.
+   *
+   * (This is distinct from the SSH-based bulk "Archive old documents" command,
+   * which genuinely deletes from the tablet over SSH and works in either mode.)
+   */
+  isPushCapable(): boolean {
+    return (this.settings.syncMethod ?? 'sftp') === 'syncthing';
+  }
+
+  /**
    * Schedule a debounced xochitl restart on the tablet.
    *
    * Multiple callers (archive, delete, send-to-remarkable) may request
@@ -764,28 +779,52 @@ export default class ReMarkableBridgePlugin extends Plugin {
       throw new Error('No sync sources configured.');
     }
 
-    // Use first source's sync folder as the local target
-    // (multi-source SFTP would need per-source sync dirs)
-    const source = targetSources[0];
-    const localSyncDir = resolvePath(this.app, source.syncFolder);
+    // Sync every target source, each into its own local folder, and aggregate
+    // the results. Previously only the first source was synced while extraction
+    // scanned them all -- so extra sources looked "synced" but never were.
+    const syncResult: SftpSyncResult = {
+      success: true,
+      filesDownloaded: 0,
+      filesSkipped: 0,
+      bytesDownloaded: 0,
+      durationMs: 0,
+      errors: [],
+      summary: '',
+    };
+    const summaries: string[] = [];
 
-    const engine = new SftpSyncEngine({
-      host: this.settings.tabletIp,
-      port: this.settings.sshPort,
-      username: 'root',
-      password: this.settings.rootPassword,
-      timeoutMs: this.settings.sshTimeoutMs,
-      localSyncDir,
-      includeEpub: this.settings.includeEpub,
-    });
+    for (const src of targetSources) {
+      const engine = new SftpSyncEngine({
+        host: this.settings.tabletIp,
+        port: this.settings.sshPort,
+        username: 'root',
+        password: this.settings.rootPassword,
+        timeoutMs: this.settings.sshTimeoutMs,
+        localSyncDir: resolvePath(this.app, src.syncFolder),
+        includeEpub: this.settings.includeEpub,
+      });
 
-    const syncResult = await engine.sync(onProgress);
+      const r = await engine.sync(onProgress);
+      syncResult.filesDownloaded += r.filesDownloaded;
+      syncResult.filesSkipped += r.filesSkipped;
+      syncResult.bytesDownloaded += r.bytesDownloaded;
+      syncResult.durationMs += r.durationMs;
+      syncResult.errors.push(...r.errors);
+      if (!r.success) syncResult.success = false;
+      summaries.push(r.summary);
+    }
+
+    syncResult.summary = targetSources.length === 1
+      ? summaries[0]
+      : `Synced ${targetSources.length} sources: ${syncResult.filesDownloaded} downloaded, ` +
+        `${syncResult.filesSkipped} up to date` +
+        (syncResult.errors.length > 0 ? `, ${syncResult.errors.length} error(s)` : '') + '.';
 
     // Record a failed transfer distinctly from "synced OK, 0 new docs" so the
     // status bar / modal don't mislead the user into thinking nothing changed
     // when the tablet was actually unreachable.
     if (!syncResult.success) {
-      this.recordSyncError(new Error(syncResult.summary || 'SFTP sync failed'));
+      this.recordSyncError(new Error(syncResult.errors[0] || syncResult.summary || 'SFTP sync failed'));
     } else {
       this.clearSyncError();
     }
@@ -1302,6 +1341,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
   /** Let user pick a document from the vault and send it to reMarkable via sync folder. */
   async sendDocumentToRemarkable(): Promise<void> {
+    // SFTP is download-only. Writing files into the local sync folder does
+    // nothing on the tablet, so refuse rather than pretend the send worked.
+    if (!this.isPushCapable()) {
+      new Notice(
+        'E-Ink Sync: Sending documents to the tablet requires Syncthing sync mode. ' +
+        'SFTP is download-only. Switch to Syncthing in settings to enable this.',
+        10000,
+      );
+      return;
+    }
+
     const sources = this._pluginData.syncSources;
     if (sources.length === 0 || !sources[0].syncFolder) {
       new Notice('E-Ink Sync: No sync source configured. Run setup wizard first.');

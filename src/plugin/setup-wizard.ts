@@ -700,6 +700,23 @@ export class SetupWizardModal extends Modal {
                 await this.plugin.updateSyncSources([newSource]);
               }
 
+              // In Syncthing mode, an SSH ping is not enough: the plugin syncs
+              // through Syncthing's local REST API, so setup is only "complete"
+              // once that API is actually reachable and the folder is configured.
+              // Otherwise the user finishes the wizard with a provider that can
+              // never work.
+              if (!this.isSftpMode) {
+                statusEl.setText('Checking Syncthing API...');
+                const available = await this.plugin.getSyncProvider().isAvailable();
+                if (!available) {
+                  throw new Error(
+                    'Syncthing is not reachable yet. Open the Syncthing web UI, add the ' +
+                    'shared folder, then set the Syncthing URL, API key, and folder ID in ' +
+                    'settings and verify again.',
+                  );
+                }
+              }
+
               // Mark setup as complete
               this.plugin.settings.setupComplete = true;
               await this.plugin.saveSettings();
