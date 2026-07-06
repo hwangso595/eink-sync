@@ -205,7 +205,9 @@ export class ReMarkableLibraryView extends ItemView {
         statusEl.setText('Extracting highlights and annotations...');
 
         try {
-          const extractionResult = await this.plugin.runExtraction(true);
+          const extractionResult = await this.plugin.runExtraction(true, undefined, undefined, {
+            allowCursorAdvance: allSuccess,
+          });
           const base = extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0
             ? `${summary} ${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`
             : `${summary} No new highlights found.${partialSuffix}`;

@@ -94,21 +94,29 @@ describe('hasLocalBackup', () => {
 
 describe('tabletFilesBackedUpLocally', () => {
   const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+  // find output is "<size> <path>" per line (stat -c '%s %n').
 
   it('refuses when a tablet file (e.g. an annotation) is missing locally', async () => {
     const dir = tmpDir();
-    write(dir, `${uuid}.pdf`, '%PDF'); // only the PDF is synced locally
-    const ssh = mockSsh(`./${uuid}.pdf\n./${uuid}/page-1.rm\n`);
+    write(dir, `${uuid}.pdf`, 'PDFDATA'); // 7 bytes; only the PDF is synced locally
+    const ssh = mockSsh(`7 ./${uuid}.pdf\n5 ./${uuid}/page-1.rm\n`);
     expect(await tabletFilesBackedUpLocally(ssh, dir, uuid)).toBe(false);
   });
 
-  it('accepts when every tablet file is backed up locally', async () => {
+  it('accepts when every tablet file is backed up locally at the same size', async () => {
     const dir = tmpDir();
-    write(dir, `${uuid}.pdf`, '%PDF');
+    write(dir, `${uuid}.pdf`, 'PDFDATA'); // 7 bytes
     fs.mkdirSync(path.join(dir, uuid));
-    write(path.join(dir, uuid), 'page-1.rm');
-    const ssh = mockSsh(`./${uuid}.pdf\n./${uuid}/page-1.rm\n`);
+    write(path.join(dir, uuid), 'page-1.rm', 'RM'); // 2 bytes
+    const ssh = mockSsh(`7 ./${uuid}.pdf\n2 ./${uuid}/page-1.rm\n`);
     expect(await tabletFilesBackedUpLocally(ssh, dir, uuid)).toBe(true);
+  });
+
+  it('refuses when the local copy is truncated (size mismatch)', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.pdf`, 'PDFDATA'); // 7 bytes locally
+    const ssh = mockSsh(`9999 ./${uuid}.pdf\n`); // tablet is larger
+    expect(await tabletFilesBackedUpLocally(ssh, dir, uuid)).toBe(false);
   });
 
   it('refuses when the tablet listing fails', async () => {

@@ -94,29 +94,32 @@ export async function tabletFilesBackedUpLocally(
   localSyncDir: string,
   uuid: string,
 ): Promise<boolean> {
-  // Match every non-empty file the delete removes -- sidecar files, the {uuid}/
-  // strokes, and files inside sidecar dirs like {uuid}.highlights -- but skip
-  // regenerable caches so they don't block archiving.
+  // List every non-empty file the delete removes with its size -- sidecar
+  // files, {uuid}/ strokes, and files inside sidecar dirs like {uuid}.highlights
+  // -- skipping regenerable caches. Each must exist locally at the SAME size, so
+  // a truncated/partial local copy can't pass the gate.
   const find = await ssh.execute(
     `cd ${XOCHITL_DIR} && find . -maxdepth 3 -type f -size +0c ` +
     `\\( -path './${uuid}.*' -o -path './${uuid}/*' \\) ` +
     `-not -path './${uuid}.cache/*' ` +
     `-not -path './${uuid}.thumbnails/*' ` +
-    `-not -path './${uuid}.textconversion/*' 2>/dev/null`,
+    `-not -path './${uuid}.textconversion/*' ` +
+    `-exec stat -c '%s %n' {} \\; 2>/dev/null`,
   );
   if (find.exitCode !== 0) return false;
 
-  const rels = find.stdout
-    .trim()
-    .split('\n')
-    .map((s) => s.replace(/^\.\//, '').trim())
-    .filter(Boolean);
-  if (rels.length === 0) return false;
+  const lines = find.stdout.trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
 
-  for (const rel of rels) {
+  for (const line of lines) {
+    const sep = line.indexOf(' ');
+    if (sep < 0) return false;
+    const tabletSize = parseInt(line.slice(0, sep), 10);
+    const rel = line.slice(sep + 1).replace(/^\.\//, '');
+    if (!Number.isFinite(tabletSize) || !rel) return false;
     try {
       const st = fs.statSync(path.join(localSyncDir, rel));
-      if (!st.isFile() || st.size === 0) return false;
+      if (!st.isFile() || st.size !== tabletSize) return false;
     } catch {
       return false;
     }

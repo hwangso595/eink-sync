@@ -852,7 +852,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
     let extractionResult: PipelineRunResult | null = null;
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
       try {
-        extractionResult = await this.runExtraction(false, sourceId);
+        // Don't let a partial/failed transfer advance the cursor past docs whose
+        // download failed.
+        extractionResult = await this.runExtraction(false, sourceId, undefined, {
+          allowCursorAdvance: syncResult.success,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`Extraction after SFTP sync failed: ${msg}`);
@@ -897,7 +901,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * @param sourceId - If provided, only extract from this specific source.
    * @param docUuid - If provided, only extract this specific document.
    */
-  async runExtraction(forceAll = false, sourceId?: string, docUuid?: string): Promise<PipelineRunResult> {
+  async runExtraction(
+    forceAll = false,
+    sourceId?: string,
+    docUuid?: string,
+    opts?: { allowCursorAdvance?: boolean },
+  ): Promise<PipelineRunResult> {
+    // A failed transfer can leave disk not reflecting the tablet, so the caller
+    // may forbid advancing the incremental cursor (default: allowed).
+    const allowCursorAdvance = opts?.allowCursorAdvance ?? true;
     const sources = this._pluginData.syncSources;
 
     if (sources.length === 0) {
@@ -975,7 +987,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         // (pendingCount) left documents unprocessed; advancing past them would
         // silently skip them on future incremental runs.
         const cleanFullScan =
-          !docUuid && sourceResult.errors.length === 0 && pendingCount === 0;
+          allowCursorAdvance && !docUuid && sourceResult.errors.length === 0 && pendingCount === 0;
         if (cleanFullScan) {
           const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
           this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
