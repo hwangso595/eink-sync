@@ -53,28 +53,33 @@ export function getLogLevel(): LogLevel {
   return currentLevel;
 }
 
+/** Redact secrets from string args too (non-strings pass through). */
+function redactArgs(args: unknown[]): unknown[] {
+  return args.map((a) => (typeof a === 'string' ? redactSecrets(a) : a));
+}
+
 export const logger = {
   debug(message: string, ...args: unknown[]): void {
     if (currentLevel <= LogLevel.DEBUG) {
-      console.debug(`${LOG_PREFIX} ${redactSecrets(message)}`, ...args);
+      console.debug(`${LOG_PREFIX} ${redactSecrets(message)}`, ...redactArgs(args));
     }
   },
 
   info(message: string, ...args: unknown[]): void {
     if (currentLevel <= LogLevel.INFO) {
-      console.debug(`${LOG_PREFIX} ${redactSecrets(message)}`, ...args);
+      console.debug(`${LOG_PREFIX} ${redactSecrets(message)}`, ...redactArgs(args));
     }
   },
 
   warn(message: string, ...args: unknown[]): void {
     if (currentLevel <= LogLevel.WARN) {
-      console.warn(`${LOG_PREFIX} ${redactSecrets(message)}`, ...args);
+      console.warn(`${LOG_PREFIX} ${redactSecrets(message)}`, ...redactArgs(args));
     }
   },
 
   error(message: string, ...args: unknown[]): void {
     if (currentLevel <= LogLevel.ERROR) {
-      console.error(`${LOG_PREFIX} ${redactSecrets(message)}`, ...args);
+      console.error(`${LOG_PREFIX} ${redactSecrets(message)}`, ...redactArgs(args));
     }
   },
 };

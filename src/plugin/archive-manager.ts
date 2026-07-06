@@ -56,10 +56,12 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
       return false;
     }
   };
-  const nonEmptyDir = (p: string): boolean => {
+  // A directory counts only if it holds at least one non-empty file, so an
+  // empty .rm from a torn sync can't pass the gate.
+  const dirHasContent = (p: string): boolean => {
     try {
-      const st = fs.statSync(p);
-      return st.isDirectory() && fs.readdirSync(p).length > 0;
+      if (!fs.statSync(p).isDirectory()) return false;
+      return fs.readdirSync(p).some((name) => nonEmptyFile(path.join(p, name)));
     } catch {
       return false;
     }
@@ -76,7 +78,7 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
   const hasBody =
     nonEmptyFile(`${base}.pdf`) ||
     nonEmptyFile(`${base}.epub`) ||
-    nonEmptyDir(base);
+    dirHasContent(base);
 
   return hasBody;
 }

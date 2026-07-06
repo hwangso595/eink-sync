@@ -36,6 +36,15 @@ describe('hasLocalBackup', () => {
     expect(hasLocalBackup(dir, uuid)).toBe(true);
   });
 
+  it('refuses a notebook whose annotation dir holds only an empty stroke file (torn sync)', () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`);
+    write(dir, `${uuid}.content`);
+    fs.mkdirSync(path.join(dir, uuid));
+    write(path.join(dir, uuid), 'page-1.rm', '');
+    expect(hasLocalBackup(dir, uuid)).toBe(false);
+  });
+
   it('refuses when the content sidecar is missing (unflushed doc)', () => {
     const dir = tmpDir();
     write(dir, `${uuid}.metadata`);
