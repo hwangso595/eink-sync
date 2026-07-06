@@ -924,7 +924,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .setPlaceholder('22')
           .setValue(String(this.plugin.settings.sshPort))
           .onChange((value) => {
-            const port = parseInt(value, 10);
+            // Digits only -- parseInt would accept "22abc"/"1.5".
+            const port = /^\d+$/.test(value.trim()) ? parseInt(value.trim(), 10) : NaN;
             if (!isNaN(port) && port > 0 && port <= 65535) {
               portWarnEl.hide();
               this.plugin.settings.sshPort = port;
