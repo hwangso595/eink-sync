@@ -44,6 +44,9 @@ export function fingerprintFromKey(key: Buffer): string {
 export function initHostKeyStore(filePath: string, onMismatch?: HostKeyMismatchHandler): void {
   storePath = filePath;
   mismatchHandler = onMismatch ?? null;
+  // Start fresh so deleting known-hosts.json actually clears pins on re-init
+  // (e.g. after a legitimate host-key change), rather than keeping stale ones.
+  fingerprints = {};
   try {
     if (fs.existsSync(filePath)) {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

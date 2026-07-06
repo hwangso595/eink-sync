@@ -839,23 +839,21 @@ export default class ReMarkableBridgePlugin extends Plugin {
         `${syncResult.filesSkipped} up to date` +
         (syncResult.errors.length > 0 ? `, ${syncResult.errors.length} error(s)` : '') + '.';
 
-    // Record a failed transfer distinctly from "synced OK, 0 new docs" so the
-    // status bar / modal don't mislead the user into thinking nothing changed
-    // when the tablet was actually unreachable.
-    if (!syncResult.success) {
+    // A clean transfer is success AND no per-file errors. Anything less must
+    // not look healthy (no cleared error, advanced timestamp, or cursor).
+    const cleanTransfer = syncResult.success && syncResult.errors.length === 0;
+    if (!cleanTransfer) {
       this.recordSyncError(new Error(syncResult.errors[0] || syncResult.summary || 'SFTP sync failed'));
     } else {
       this.clearSyncError();
     }
 
-    // Run extraction after sync completes (even if some files had errors)
+    // Run extraction after sync completes (even if some files had errors).
     let extractionResult: PipelineRunResult | null = null;
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
       try {
-        // Don't let a partial/failed transfer advance the cursor past docs whose
-        // download failed (success:true can still carry per-file errors).
         extractionResult = await this.runExtraction(false, sourceId, undefined, {
-          allowCursorAdvance: syncResult.success && syncResult.errors.length === 0,
+          allowCursorAdvance: cleanTransfer,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -863,9 +861,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       }
     }
 
-    // Only advance the "last synced" timestamp on a successful transfer — a
-    // failed sync should not look recent/healthy.
-    if (syncResult.success) {
+    if (cleanTransfer) {
       this.settings.lastSyncTimestamp = Date.now();
       await this.saveSettings();
     }

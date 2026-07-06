@@ -32,7 +32,7 @@ export interface SyncCoordinatorDeps {
     tabletIp: string;
   };
   testConnectionDetailed(): Promise<ConnectionTestResult>;
-  syncViaSftp(): Promise<{ syncResult: { success: boolean } }>;
+  syncViaSftp(): Promise<{ syncResult: { success: boolean; errors: string[] } }>;
   updateStatusBar(state: 'idle' | 'syncing' | 'error'): void;
   recordSyncError(err: unknown): void;
   clearSyncError(): void;
@@ -123,7 +123,7 @@ export class SyncCoordinator {
         // records the error internally; here we just reflect it in the status.
         const { syncResult } = await this.plugin.syncViaSftp();
 
-        if (syncResult.success) {
+        if (syncResult.success && syncResult.errors.length === 0) {
           this.plugin.updateStatusBar('idle');
           logger.info('Auto-sync: complete');
         } else {

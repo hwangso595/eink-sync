@@ -53,9 +53,17 @@ export function getLogLevel(): LogLevel {
   return currentLevel;
 }
 
-/** Redact secrets from string args too (non-strings pass through). */
+/** Redact secrets from string and Error args (other types pass through). */
 function redactArgs(args: unknown[]): unknown[] {
-  return args.map((a) => (typeof a === 'string' ? redactSecrets(a) : a));
+  return args.map((a) => {
+    if (typeof a === 'string') return redactSecrets(a);
+    if (a instanceof Error) {
+      const e = new Error(redactSecrets(a.message));
+      if (a.stack) e.stack = redactSecrets(a.stack);
+      return e;
+    }
+    return a;
+  });
 }
 
 export const logger = {
