@@ -108,6 +108,18 @@ describe('page-render failure preservation', () => {
     expect(runResult.errors.join(' ')).toContain('page rendering failed');
   });
 
+  it('surfaces a render failure for a brand-new note (not silent)', async () => {
+    const d = doc();
+    mockedRender.mockRejectedValue(new Error('render_pages.py not found'));
+
+    const runResult = await runExtractionPipeline(
+      makeConfig(),
+      deps(d, [result(d, [{ text: 'some text', pageNumber: 1, color: null, bounds: null, createdAt: null }])]),
+    );
+
+    expect(runResult.errors.join(' ')).toContain('page rendering failed');
+  });
+
   it('still clears an existing note when the renderer SUCCEEDS but nothing remains', async () => {
     const d = doc();
     const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');

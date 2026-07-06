@@ -199,9 +199,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // and key changes are surfaced to the user rather than silently trusted.
     initHostKeyStore(`${this.getPluginDir()}/known-hosts.json`, (host) => {
       new Notice(
-        `E-Ink Sync: the SSH host key for ${host} changed. If you didn't reflash ` +
-        `the tablet, this could mean another device is impersonating it.`,
-        12000,
+        `E-Ink Sync: the SSH host key for ${host} changed, so the connection was ` +
+        `refused. If another device could be impersonating your tablet, do not ` +
+        `proceed. If you reflashed the tablet, remove ${host} from ` +
+        `known-hosts.json in the plugin folder to re-trust it.`,
+        15000,
       );
     });
 
@@ -967,12 +969,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
         aggregateResult.documentResults.push(...sourceResult.documentResults);
         aggregateResult.errors.push(...sourceResult.errors);
 
-        // Advance the per-source cursor monotonically in tablet-clock domain.
-        // (NOT data.json — stored in per-device state.) Never move it backwards,
-        // and don't regress when a run observed no documents (observedCursor 0).
-        const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
-        this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
-        this.deviceStateManager.setSourcePathHash(source.id, hashString(source.syncFolder));
+        // Only advance the cursor after a clean full scan. A targeted (docUuid)
+        // run or one with errors left documents unprocessed; advancing past them
+        // would silently skip them on future incremental runs.
+        const cleanFullScan = !docUuid && sourceResult.errors.length === 0;
+        if (cleanFullScan) {
+          const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
+          this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
+          this.deviceStateManager.setSourcePathHash(source.id, hashString(source.syncFolder));
+        }
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const msg = lastError.message;

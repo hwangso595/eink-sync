@@ -1,6 +1,6 @@
 /**
  * Tests for the TOFU SSH host-key store: pin on first sight, accept matching
- * keys, and notify-then-repin on change.
+ * keys, and notify-then-REFUSE on change (never silently re-pin).
  */
 
 import * as fs from 'fs';
@@ -29,18 +29,28 @@ describe('host-key-store', () => {
     expect(verifyHostKey('10.0.0.41', 'aaaa')).toBe(true);
   });
 
-  it('notifies once on a changed key, then re-pins to the new key', () => {
+  it('refuses a changed key (does not silently re-pin) and keeps the original pin', () => {
     const handler = jest.fn();
     initHostKeyStore(tmpStorePath(), handler);
 
-    expect(verifyHostKey('host', 'fp1')).toBe(true); // pin
-    expect(verifyHostKey('host', 'fp2')).toBe(true); // changed -> notify + repin
-    expect(handler).toHaveBeenCalledTimes(1);
+    expect(verifyHostKey('host', 'fp1')).toBe(true);  // pin
+    expect(verifyHostKey('host', 'fp2')).toBe(false); // changed -> notify + REFUSE
     expect(handler).toHaveBeenCalledWith('host', 'fp1', 'fp2');
 
-    // Re-pinned: the new key now verifies without further notifications.
+    // The original key still verifies; the changed key stays refused (no re-pin).
+    expect(verifyHostKey('host', 'fp1')).toBe(true);
+    expect(verifyHostKey('host', 'fp2')).toBe(false);
+  });
+
+  it('accepts a changed key only after an explicit resetHostKey', () => {
+    const handler = jest.fn();
+    initHostKeyStore(tmpStorePath(), handler);
+    expect(verifyHostKey('host', 'fp1')).toBe(true);
+    expect(verifyHostKey('host', 'fp2')).toBe(false);
+
+    resetHostKey('host');
+    // After an explicit reset the new key is first-sight again: pinned + accepted.
     expect(verifyHostKey('host', 'fp2')).toBe(true);
-    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('tracks hosts independently', () => {

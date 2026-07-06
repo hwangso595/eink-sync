@@ -89,11 +89,12 @@ export function verifyHostKey(host: string, keyHash: string): boolean {
     return true;
   }
 
-  // Key changed since we pinned it. Surface it, then re-pin so we don't nag on
-  // every subsequent connection.
+  // Key changed since we pinned it: refuse (possible MITM) rather than send
+  // credentials. Keep the original pin; a legit change (reflash) must be
+  // re-trusted via resetHostKey. Never silently re-pin.
   logger.warn(
     `SSH host key for ${host} changed (was ${known.slice(0, 16)}…, now ${keyHash.slice(0, 16)}…). ` +
-    `If you did not reflash the tablet, this could indicate someone impersonating it.`,
+    `Refusing the connection. If you reflashed the tablet, remove the pinned key to re-trust it.`,
   );
   if (mismatchHandler) {
     try {
@@ -102,9 +103,7 @@ export function verifyHostKey(host: string, keyHash: string): boolean {
       /* handler errors are non-fatal */
     }
   }
-  fingerprints[host] = keyHash;
-  persist();
-  return true;
+  return false;
 }
 
 /** Build an ssh2 `hostVerifier` callback bound to a specific host. */

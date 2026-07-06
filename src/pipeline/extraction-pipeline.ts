@@ -440,20 +440,22 @@ export async function runExtractionPipeline(
         `${pageDrawings ? pageDrawings.size : 0} page drawings`
       );
 
-      // If page rendering FAILED for a document that already has a note, leave
-      // the note untouched. Rewriting it now (with drawings unavailable) would
-      // drop drawings we simply couldn't re-render this run -- true even when new
-      // text highlights were found. A brand-new note has no drawings to lose, so
-      // it is allowed to proceed and will pick up drawings on a later run.
-      if (renderFailed && doc.type !== 'notebook' && fs.existsSync(outputFilePath)) {
-        const msg = `${doc.visibleName}: page rendering failed; existing note left unchanged.`;
+      // Always surface a render failure. Preserve an existing note (keeping its
+      // drawings) rather than rewriting it without them; a new note still gets
+      // written text-only, with the recorded error flagging the missing drawings.
+      if (renderFailed && doc.type !== 'notebook') {
+        const noteExists = fs.existsSync(outputFilePath);
+        const msg = `${doc.visibleName}: page rendering failed; ` +
+          (noteExists ? 'existing note left unchanged.' : 'note may be missing drawings.');
         logger.warn(msg);
         result.errors.push(msg);
-        docResult.warnings.push('Page rendering failed; note left unchanged.');
-        docResult.error = 'Page rendering failed';
-        result.documentsProcessed++;
-        result.documentResults.push(docResult);
-        continue;
+        docResult.warnings.push('Page rendering failed; drawings may be missing this run.');
+        if (noteExists) {
+          docResult.error = 'Page rendering failed';
+          result.documentsProcessed++;
+          result.documentResults.push(docResult);
+          continue;
+        }
       }
 
       // Nothing to show (no highlights AND no drawings). Only skip creating a
