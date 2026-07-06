@@ -206,7 +206,7 @@ export class ReMarkableLibraryView extends ItemView {
 
         try {
           const extractionResult = await this.plugin.runExtraction(true, undefined, undefined, {
-            allowCursorAdvance: allSuccess,
+            allowCursorAdvance: allSuccess && totalErrors === 0,
           });
           const base = extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0
             ? `${summary} ${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`

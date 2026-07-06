@@ -853,9 +853,9 @@ export default class ReMarkableBridgePlugin extends Plugin {
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
       try {
         // Don't let a partial/failed transfer advance the cursor past docs whose
-        // download failed.
+        // download failed (success:true can still carry per-file errors).
         extractionResult = await this.runExtraction(false, sourceId, undefined, {
-          allowCursorAdvance: syncResult.success,
+          allowCursorAdvance: syncResult.success && syncResult.errors.length === 0,
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
