@@ -81,7 +81,14 @@ export async function renderPageImages(
   const scriptPath = path.join(scriptDir, 'render_pages.py');
 
   if (!fs.existsSync(scriptPath)) {
-    logger.debug('render_pages.py script not found, skipping stroke rendering');
+    // The document HAS strokes to render but the renderer script is missing --
+    // this is a packaging/install fault, not a "nothing to do". Warn loudly so
+    // silently-dropped drawings are diagnosable rather than looking like success.
+    logger.warn(
+      `render_pages.py not found at ${scriptPath}; drawings for this document will be ` +
+      `skipped. This usually means the extraction scripts were not installed -- ` +
+      `reload the plugin so it can rewrite them.`,
+    );
     return null;
   }
 

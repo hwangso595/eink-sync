@@ -53,6 +53,7 @@ import {
   installSyncStack,
   type InstallProgressCallback,
 } from '../sync/installer';
+import { materializeExtractionAssets } from './extraction-assets';
 
 /**
  * Progress callback for the multi-phase install flow.
@@ -173,6 +174,22 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
   async onload(): Promise<void> {
     logger.info('Loading E-Ink Sync plugin');
+
+    // Write the embedded Python extraction scripts to disk. Obsidian's plugin
+    // auto-updater only delivers manifest.json/main.js/styles.css, so the
+    // scripts are bundled into main.js and materialized here; extraction would
+    // otherwise fail on an auto-updated install with no extraction/ folder.
+    try {
+      materializeExtractionAssets(this.getPluginDir());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Could not write extraction scripts to disk: ${msg}`);
+      new Notice(
+        `E-Ink Sync: could not install its extraction scripts (${msg}). ` +
+        `Highlight extraction will not work until this is resolved.`,
+        12000,
+      );
+    }
 
     // Load persisted settings
     await this.loadSettings();
