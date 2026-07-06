@@ -24,13 +24,6 @@ export {
   createDefaultSyncConfig,
 } from './types';
 
-// Syncthing config generator
-export {
-  generateSyncthingConfig,
-  generateApiKey,
-  isValidDeviceId,
-} from './syncthing-config';
-
 // Installer
 export {
   isEntwareInstalled,
@@ -42,39 +35,13 @@ export {
 } from './installer';
 export type { InstallProgressCallback, InstallResult } from './installer';
 
-// Service manager
-export {
-  generateSyncthingServiceUnit,
-  generateWatchdogScript,
-  generateWatchdogServiceUnit,
-  deployServices,
-  startServices,
-  stopServices,
-  isServiceRunning,
-  getSyncthingMemoryUsage,
-  removeServices,
-} from './service-manager';
+// Service manager (teardown only -- setup is done via Syncthing's own UI)
+export { stopServices, removeServices } from './service-manager';
 
-// Rsync fallback
-export {
-  isRsyncAvailable,
-  buildRsyncArgs,
-  buildRsyncCommand,
-  getHostRsyncCommand,
-  parseRsyncOutput,
-  verifyRsyncCapability,
-} from './rsync-fallback';
-export type { RsyncResult, HostRsyncCommand } from './rsync-fallback';
-
-// Sync manager (orchestrator)
-export {
-  recommendSyncMethod,
-  setupSync,
-  getSyncStatus,
-  stopSync,
-  restartSync,
-} from './sync-manager';
-export type { SetupProgressCallback, SyncSetupResult } from './sync-manager';
+// Sync providers (unified abstraction over SFTP and Syncthing)
+export type { SyncProvider, SyncResult, SyncProgressCallback } from './sync-provider';
+export { SftpProvider } from './sftp-provider';
+export { SyncthingProvider } from './syncthing-provider';
 
 // SFTP sync engine
 export { SftpSyncEngine } from './sftp-sync';

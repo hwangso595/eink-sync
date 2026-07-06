@@ -65,26 +65,6 @@ export type {
   DefaultDependenciesConfig,
 } from './extraction-pipeline';
 
-// Sprint 8: Stroke rendering and notebook support
-export {
-  renderDocumentStrokes,
-  resolveRenderScriptPath,
-} from './stroke-renderer-bridge';
-export type {
-  StrokeRenderOutput,
-  RenderedPage,
-  StrokeRenderOptions,
-} from './stroke-renderer-bridge';
-
-export {
-  renderNotebookMarkdown,
-  renderPdfAnnotationImage,
-} from './notebook-renderer';
-export type {
-  NotebookRenderConfig,
-  NotebookRenderResult,
-} from './notebook-renderer';
-
 // Sprint 9: File watcher
 export {
   XochitlFileWatcher,
@@ -94,18 +74,6 @@ export type {
   FileWatcherCallback,
   FileWatcherConfig,
 } from './file-watcher';
-
-// Sprint 9: Batch operations
-export {
-  extractAll,
-  reExtractWithTemplate,
-  extractSelected,
-  clearAndRebuild,
-} from './batch-operations';
-export type {
-  BatchExtractionOptions,
-  BatchOperationResult,
-} from './batch-operations';
 
 // Sprint 6: Template engine
 export {

@@ -48,16 +48,17 @@ import { initHostKeyStore } from '../ssh/host-key-store';
 
 // Sprint 2 imports
 import {
-  setupSync,
-  type SetupProgressCallback,
-  type SyncSetupResult,
-} from '../sync/sync-manager';
-import {
   isSyncthingInstalled,
   isEntwareInstalled,
   installSyncStack,
   type InstallProgressCallback,
 } from '../sync/installer';
+
+/**
+ * Progress callback for the multi-phase install flow.
+ * (phase, step, detail) -> void
+ */
+type SetupProgressCallback = (phase: string, step: string, detail: string) => void;
 
 // Sprint 3 imports
 import {
@@ -828,26 +829,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
       const entware = await isEntwareInstalled(ssh);
       const syncthing = await isSyncthingInstalled(ssh);
       return entware && syncthing;
-    });
-  }
-
-  /** Set up Syncthing pairing between tablet and host. */
-  async setupSyncPairing(
-    deviceInfo: DeviceInfo,
-    hostSyncPath: string,
-    hostDeviceId?: string,
-    hostAddress?: string,
-    onProgress?: SetupProgressCallback,
-  ): Promise<SyncSetupResult> {
-    return this.withSSH(async (ssh) => {
-      return setupSync(
-        ssh,
-        deviceInfo,
-        hostSyncPath,
-        hostDeviceId,
-        hostAddress,
-        onProgress,
-      );
     });
   }
 
