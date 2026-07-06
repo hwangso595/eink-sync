@@ -35,8 +35,11 @@ Two transport backends share a common **SyncProvider** interface:
 | `SyncthingProvider` | Syncthing REST API | Always-on background sync |
 
 - **SftpSyncEngine** -- incremental SFTP download (only changed files)
-- **installer / service-manager** -- install Syncthing + Entware on tablet
-- **sync-manager** -- orchestrates initial Syncthing setup
+- **installer** -- install Syncthing + Entware binaries on the tablet
+- **service-manager** -- stop/remove the tablet-side Syncthing systemd units
+
+Syncthing pairing/configuration is done through Syncthing's own web UI; the
+plugin then talks to it via the `SyncthingProvider` REST client.
 
 ### 3. Pipeline Layer (`src/pipeline/`)
 
