@@ -108,6 +108,19 @@ describe('page-render failure preservation', () => {
     expect(runResult.errors.join(' ')).toContain('page rendering failed');
   });
 
+  it('preserves an existing NOTEBOOK note when the renderer FAILS', async () => {
+    const d = doc({ uuid: 'nb-1', visibleName: 'Notebook', type: 'notebook' });
+    const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');
+    const drawings = new Map<number, string>([[1, 'nb-1_p1.png']]);
+    fs.writeFileSync(notePath, renderMarkdown(result(d, []), undefined, drawings), 'utf-8');
+    expect(fs.readFileSync(notePath, 'utf-8')).toContain('nb-1_p1.png');
+
+    mockedRender.mockRejectedValue(new Error('render_pages.py failed'));
+    await runExtractionPipeline(makeConfig(), deps(d, [result(d, [])]));
+
+    expect(fs.readFileSync(notePath, 'utf-8')).toContain('nb-1_p1.png'); // not wiped
+  });
+
   it('surfaces a render failure for a brand-new note (not silent)', async () => {
     const d = doc();
     mockedRender.mockRejectedValue(new Error('render_pages.py not found'));

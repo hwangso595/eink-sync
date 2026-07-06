@@ -94,9 +94,15 @@ export async function tabletFilesBackedUpLocally(
   localSyncDir: string,
   uuid: string,
 ): Promise<boolean> {
+  // Match every non-empty file the delete removes -- sidecar files, the {uuid}/
+  // strokes, and files inside sidecar dirs like {uuid}.highlights -- but skip
+  // regenerable caches so they don't block archiving.
   const find = await ssh.execute(
-    `cd ${XOCHITL_DIR} && find . -maxdepth 2 -type f -size +0c ` +
-    `\\( -name '${uuid}.*' -o -path './${uuid}/*' \\) 2>/dev/null`,
+    `cd ${XOCHITL_DIR} && find . -maxdepth 3 -type f -size +0c ` +
+    `\\( -path './${uuid}.*' -o -path './${uuid}/*' \\) ` +
+    `-not -path './${uuid}.cache/*' ` +
+    `-not -path './${uuid}.thumbnails/*' ` +
+    `-not -path './${uuid}.textconversion/*' 2>/dev/null`,
   );
   if (find.exitCode !== 0) return false;
 

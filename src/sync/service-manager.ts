@@ -59,5 +59,23 @@ export async function removeServices(ssh: SSHExecutor): Promise<void> {
     SERVICE_TIMEOUT_MS,
   );
 
+  await removeLegacyServices(ssh);
+
   logger.info('Syncthing service files removed');
+}
+
+/**
+ * Remove the pre-rename plugin's `remarkable-sync*` units so an upgraded user
+ * isn't left with an old daemon running after teardown. Best-effort/idempotent.
+ */
+async function removeLegacyServices(ssh: SSHExecutor): Promise<void> {
+  await ssh.execute(
+    'systemctl stop remarkable-sync-watchdog 2>/dev/null; ' +
+    'systemctl disable remarkable-sync-watchdog 2>/dev/null; ' +
+    'systemctl stop remarkable-sync 2>/dev/null; ' +
+    'systemctl disable remarkable-sync 2>/dev/null; ' +
+    'rm -f /etc/systemd/system/remarkable-sync.service /etc/systemd/system/remarkable-sync-watchdog.service; ' +
+    'systemctl daemon-reload 2>/dev/null; true',
+    SERVICE_TIMEOUT_MS,
+  );
 }

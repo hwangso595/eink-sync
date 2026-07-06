@@ -440,17 +440,18 @@ export async function runExtractionPipeline(
         `${pageDrawings ? pageDrawings.size : 0} page drawings`
       );
 
-      // Always surface a render failure. Preserve an existing note (keeping its
-      // drawings) rather than rewriting it without them; a new note still gets
-      // written text-only, with the recorded error flagging the missing drawings.
-      if (renderFailed && doc.type !== 'notebook') {
+      // Always surface a render failure. Preserve an existing note of ANY type
+      // (notebooks are entirely drawings) rather than rewriting it without the
+      // drawings we couldn't render. A new note with text is still written; a
+      // new note with nothing else to show is skipped, not created empty.
+      if (renderFailed) {
         const noteExists = fs.existsSync(outputFilePath);
         const msg = `${doc.visibleName}: page rendering failed; ` +
-          (noteExists ? 'existing note left unchanged.' : 'note may be missing drawings.');
+          (noteExists ? 'existing note left unchanged.' : 'drawings may be missing.');
         logger.warn(msg);
         result.errors.push(msg);
         docResult.warnings.push('Page rendering failed; drawings may be missing this run.');
-        if (noteExists) {
+        if (noteExists || extractionResult.highlights.length === 0) {
           docResult.error = 'Page rendering failed';
           result.documentsProcessed++;
           result.documentResults.push(docResult);
