@@ -32,7 +32,7 @@ export interface SyncCoordinatorDeps {
     tabletIp: string;
   };
   testConnectionDetailed(): Promise<ConnectionTestResult>;
-  syncViaSftp(): Promise<unknown>;
+  syncViaSftp(): Promise<{ syncResult: { success: boolean } }>;
   updateStatusBar(state: 'idle' | 'syncing' | 'error'): void;
   recordSyncError(err: unknown): void;
   clearSyncError(): void;
@@ -118,10 +118,18 @@ export class SyncCoordinator {
         logger.info('Auto-sync: tablet reachable, starting SFTP sync');
         this.plugin.updateStatusBar('syncing');
 
-        await this.plugin.syncViaSftp();
+        // syncViaSftp resolves (does not throw) on a failed transfer, so we
+        // must inspect the result rather than assuming success. It already
+        // records the error internally; here we just reflect it in the status.
+        const { syncResult } = await this.plugin.syncViaSftp();
 
-        this.plugin.updateStatusBar('idle');
-        logger.info('Auto-sync: complete');
+        if (syncResult.success) {
+          this.plugin.updateStatusBar('idle');
+          logger.info('Auto-sync: complete');
+        } else {
+          this.plugin.updateStatusBar('error');
+          logger.warn('Auto-sync: transfer reported failure');
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`Auto-sync failed: ${msg}`);

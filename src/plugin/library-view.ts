@@ -155,6 +155,22 @@ export class ReMarkableLibraryView extends ItemView {
         }
       });
 
+      // A failed transfer or API call must not be reported as success.
+      // Providers return failures in-band (they don't throw), so branch on
+      // the success flag before doing anything that implies the sync worked.
+      if (!syncResult.success) {
+        const detail = syncResult.errors[0] ? ` (${syncResult.errors[0]})` : '';
+        statusEl.setText(`Sync failed: ${syncResult.summary}${detail}`);
+        statusEl.removeClass('is-loading', 'is-success');
+        statusEl.addClass('is-error');
+        return;
+      }
+
+      // Partial success: the transfer succeeded overall but some files failed.
+      const partialSuffix = syncResult.errors.length > 0
+        ? ` (${syncResult.errors.length} file error(s) — see console)`
+        : '';
+
       // For SFTP, extraction happens inside syncViaSftp already.
       // For Syncthing (or if SFTP downloaded files), run extraction.
       if (!isSftp || syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
@@ -167,10 +183,10 @@ export class ReMarkableLibraryView extends ItemView {
           if (extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0) {
             statusEl.setText(
               `Done! ${syncResult.summary} ` +
-              `${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).`,
+              `${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`,
             );
           } else {
-            statusEl.setText(`${syncResult.summary} No new highlights found.`);
+            statusEl.setText(`${syncResult.summary} No new highlights found.${partialSuffix}`);
           }
           statusEl.removeClass('is-loading');
           statusEl.addClass('is-success');
@@ -181,7 +197,7 @@ export class ReMarkableLibraryView extends ItemView {
           statusEl.addClass('is-error');
         }
       } else {
-        statusEl.setText(syncResult.summary);
+        statusEl.setText(`${syncResult.summary}${partialSuffix}`);
         statusEl.removeClass('is-loading');
         statusEl.addClass('is-success');
       }
@@ -823,13 +839,20 @@ export class ReMarkableLibraryView extends ItemView {
   /** Sync from tablet, then extract highlights for a single document. */
   private async extractSingleDocument(doc: LibraryDocument): Promise<void> {
     try {
-      // Sync first — pull latest files from tablet via the unified provider
+      // Sync first — pull latest files from tablet via the unified provider.
+      // A failed sync is non-fatal here (we fall back to existing local files),
+      // but it must be surfaced rather than silently swallowed.
       new Notice(`Syncing "${doc.name}" from tablet...`);
       try {
         const provider = this.plugin.getSyncProvider(doc.sourceId);
-        await provider.sync();
-      } catch {
-        // Sync failed — still try extraction with existing local files
+        const syncResult = await provider.sync();
+        if (!syncResult.success) {
+          const detail = syncResult.errors[0] ? ` (${syncResult.errors[0]})` : '';
+          new Notice(`Sync failed${detail}. Extracting from existing local files.`, 8000);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`Sync failed (${msg}). Extracting from existing local files.`, 8000);
       }
 
       new Notice(`Extracting from "${doc.name}"...`);

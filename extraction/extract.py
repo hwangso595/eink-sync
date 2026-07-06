@@ -145,8 +145,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--doc-uuid",
+        action="append",
+        dest="doc_uuids",
         default=None,
-        help="Extract from a single document by UUID (optional)",
+        help="Restrict extraction to this document UUID. May be repeated to "
+             "select multiple documents. When omitted, all documents are processed.",
     )
     parser.add_argument(
         "--since",
@@ -183,14 +186,15 @@ def main() -> None:
             print(json.dumps(output), flush=True)
             return
 
-        # Filter by UUID if specified
-        if args.doc_uuid:
-            documents = [d for d in documents if d.uuid == args.doc_uuid]
+        # Filter by UUID(s) if specified. A full run passes every discovered
+        # UUID; a targeted "extract selected" run passes just the chosen ones.
+        # Miss-detection for an explicit selection is handled by the TypeScript
+        # pipeline, which alone knows whether the caller requested specific docs.
+        if args.doc_uuids:
+            wanted = set(args.doc_uuids)
+            documents = [d for d in documents if d.uuid in wanted]
             if not documents:
-                output["errors"].append(
-                    f"Document with UUID '{args.doc_uuid}' not found"
-                )
-                print(json.dumps(output), flush=True)
+                print(json.dumps(output, ensure_ascii=False), flush=True)
                 return
 
         # Filter by timestamp if specified
@@ -214,6 +218,12 @@ def main() -> None:
 
     # JSON output on stdout for TypeScript to parse
     print(json.dumps(output, ensure_ascii=False), flush=True)
+
+    # A logical pipeline failure exits non-zero as a second failure signal, in
+    # addition to success:false in the JSON, so the bridge cannot miss it even
+    # if stdout parsing changes.
+    if not output["success"]:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

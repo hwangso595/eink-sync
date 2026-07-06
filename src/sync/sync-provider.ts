@@ -26,6 +26,14 @@ export type SyncProgressCallback = (
 
 /** Result of a sync operation. */
 export interface SyncResult {
+  /**
+   * Whether the sync/transfer succeeded. False when the transfer or API call
+   * failed. `errors` may still be non-empty on a partial success (some files
+   * transferred, some failed), so callers should check both: treat
+   * `success === false` as a hard failure and a non-empty `errors` on success
+   * as a partial-failure warning.
+   */
+  success: boolean;
   /** Number of files downloaded from the tablet. */
   filesDownloaded: number;
   /** Number of files skipped (already up to date). */

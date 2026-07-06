@@ -957,14 +957,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // This is the critical change that prevents Syncthing conflicts on every extraction.
     await this.saveDeviceState();
 
-    // Notify user
+    // Notify user. Surface errors whenever present -- a run that produced no
+    // highlights *because* something failed must not read as a clean
+    // "No new highlights found."
     if (aggregateResult.totalHighlights > 0) {
       new Notice(
         `E-Ink Sync: Extracted ${aggregateResult.totalHighlights} highlight(s) from ${aggregateResult.documentsWithHighlights} document(s).`,
       );
-    } else if (aggregateResult.errors.length > 0 && targetSources.length > 1) {
+    } else if (aggregateResult.errors.length > 0) {
       new Notice(
-        `E-Ink Sync: Extraction completed with errors. ${aggregateResult.errors.length} source(s) had issues.`,
+        `E-Ink Sync: Extraction completed with ${aggregateResult.errors.length} error(s). See the console for details.`,
+        12000,
       );
     } else {
       new Notice('E-Ink Sync: No new highlights found.');

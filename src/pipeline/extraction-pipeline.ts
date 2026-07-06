@@ -248,12 +248,20 @@ export async function runExtractionPipeline(
     return result;
   }
 
-  // Apply UUID filter if provided (used by extractSelected for targeted extraction)
+  // Apply UUID filter if provided (targeted "extract selected document(s)").
+  // A requested document that is not present is a visible failure, not a silent
+  // no-op: record it in result.errors so the UI can surface it.
   if (config.uuidFilter && config.uuidFilter.length > 0) {
     const uuidSet = new Set(config.uuidFilter);
     documents = documents.filter((doc) => uuidSet.has(doc.uuid));
+    const foundUuids = new Set(documents.map((d) => d.uuid));
+    const missing = config.uuidFilter.filter((u) => !foundUuids.has(u));
+    if (missing.length > 0) {
+      const msg = `Selected document(s) not found in the sync folder: ${missing.join(', ')}`;
+      logger.warn(msg);
+      result.errors.push(msg);
+    }
     if (documents.length === 0) {
-      logger.info('No documents matched the UUID filter');
       return result;
     }
     logger.info(`UUID filter applied: ${documents.length} of ${config.uuidFilter.length} requested document(s) found`);
@@ -333,6 +341,15 @@ export async function runExtractionPipeline(
     }
   }
 
+  // Defense in depth: a targeted "extract selected" request may only write the
+  // requested document(s), even if the extractor returned more. Without this a
+  // bridge regression could overwrite every note in the vault for a single-doc
+  // request. Notebooks in the requested set are preserved by the same filter.
+  if (config.uuidFilter && config.uuidFilter.length > 0) {
+    const uuidSet = new Set(config.uuidFilter);
+    extractionResults = extractionResults.filter((r) => uuidSet.has(r.document.uuid));
+  }
+
   // Stage 3 & 4: Render and write each document
   const total = extractionResults.length;
   for (let i = 0; i < total; i++) {
@@ -357,6 +374,9 @@ export async function runExtractionPipeline(
         docResult.warnings = extractionResult.warnings;
         result.documentResults.push(docResult);
         result.documentsProcessed++;
+        // Surface at the pipeline level too, so a run where every document
+        // errored does not report as a bland "No new highlights found."
+        result.errors.push(`${doc.visibleName}: ${extractionResult.error}`);
         logger.warn(
           `Skipping ${doc.visibleName}: ${extractionResult.error} (graceful degradation)`,
         );
@@ -414,10 +434,14 @@ export async function runExtractionPipeline(
         `${pageDrawings ? pageDrawings.size : 0} page drawings`
       );
 
-      // Skip documents with nothing to show (no highlights AND no drawings)
+      // Nothing to show (no highlights AND no drawings). Only skip creating a
+      // *brand-new* note here -- avoids empty-note noise for untouched PDFs.
+      // If a note already exists it must fall through to the render/merge path
+      // so removing all highlights on the tablet clears the stale note instead
+      // of leaving old highlights in Obsidian forever.
       if (extractionResult.highlights.length === 0 && (!pageDrawings || pageDrawings.size === 0)) {
-        if (doc.type !== 'notebook') {
-          // For PDFs without highlights or drawings, skip creating a note
+        if (doc.type !== 'notebook' && !fs.existsSync(outputFilePath)) {
+          // Brand-new PDF with nothing to extract: don't create an empty note.
           result.documentsProcessed++;
           docResult.success = true;
           result.documentResults.push(docResult);

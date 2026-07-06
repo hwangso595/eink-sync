@@ -48,6 +48,7 @@ export class SftpProvider implements SyncProvider {
     const result = await engine.sync(sftpProgress);
 
     return {
+      success: result.success,
       filesDownloaded: result.filesDownloaded,
       filesSkipped: result.filesSkipped,
       summary: result.summary,

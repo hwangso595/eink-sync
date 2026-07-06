@@ -73,6 +73,12 @@ export interface ExtractionOptions {
   xochitlPath: string;
   /** Extract only a specific document by UUID (optional). */
   docUuid?: string;
+  /**
+   * Restrict extraction to this set of document UUIDs (optional). Used to
+   * honor a "extract selected document(s)" request so the script does not
+   * process (and the pipeline does not overwrite) the entire library.
+   */
+  docUuids?: string[];
   /** Only process documents modified after this epoch-ms timestamp (optional). */
   sinceTimestamp?: number;
   /** Override Python executable path (default: "python3" or "python"). */
@@ -228,6 +234,12 @@ export async function runPythonExtraction(
   if (options.docUuid) {
     args.push('--doc-uuid', options.docUuid);
   }
+  if (options.docUuids && options.docUuids.length > 0) {
+    // Repeat --doc-uuid per UUID; extract.py collects them with action='append'.
+    for (const uuid of options.docUuids) {
+      args.push('--doc-uuid', uuid);
+    }
+  }
   if (options.sinceTimestamp !== undefined) {
     args.push('--since', options.sinceTimestamp.toString());
   }
@@ -297,8 +309,16 @@ export async function runPythonExtraction(
       // Parse JSON output
       try {
         const output: PythonExtractionOutput = JSON.parse(stdout);
-        if (!output || typeof output.success !== 'boolean') {
+        if (
+          !output ||
+          typeof output.success !== 'boolean' ||
+          !Array.isArray(output.documents)
+        ) {
           throw new Error('Invalid output structure');
+        }
+        // `errors` is optional in older outputs; normalize so callers can rely on it.
+        if (!Array.isArray(output.errors)) {
+          output.errors = [];
         }
         resolve(output);
       } catch (parseError) {
@@ -371,22 +391,53 @@ function pythonResultToExtractionResult(
  * interface so that the pipeline orchestrator depends on the abstraction
  * rather than the concrete subprocess implementation.
  */
+/**
+ * Above this many documents we skip the per-UUID CLI filter and let the script
+ * do a full scan (the pipeline re-filters the results either way). This keeps
+ * the argv from blowing past OS command-line length limits on large libraries
+ * while still scoping targeted "extract selected" requests, which are small.
+ */
+const MAX_DOC_UUID_ARGS = 100;
+
 export class PythonHighlightExtractor implements HighlightExtractor {
   constructor(private pluginDir?: string, private includeEpub?: boolean) {}
 
   async extractHighlights(
-    _documents: ReMarkableDocument[],
+    documents: ReMarkableDocument[],
     xochitlPath: string,
     sinceTimestamp?: number,
   ): Promise<ExtractionResult[]> {
+    // Honor the requested document set so a "extract selected" request does not
+    // process (and overwrite notes for) the entire library. For very large
+    // sets we omit the filter to stay under argv limits; the pipeline applies a
+    // definitive re-filter on the results regardless.
+    const docUuids =
+      documents.length > 0 && documents.length <= MAX_DOC_UUID_ARGS
+        ? documents.map((d) => d.uuid)
+        : undefined;
+
     const opts: ExtractionOptions = {
       xochitlPath,
       sinceTimestamp,
       pluginDir: this.pluginDir,
       includeEpub: this.includeEpub,
+      docUuids,
     };
 
     const output = await runPythonExtraction(opts);
+
+    // A pipeline-level failure (success:false) must surface as an error, not be
+    // silently mapped to an empty document list that reads as "no new highlights".
+    if (!output.success) {
+      throw new BridgeError(
+        ErrorCode.EXTRACTION_FAILED,
+        'The extraction script reported a failure.',
+        output.errors.length > 0
+          ? output.errors.join('; ')
+          : 'See the developer console / log for details.',
+      );
+    }
+
     return output.documents.map(pythonResultToExtractionResult);
   }
 }
