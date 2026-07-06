@@ -96,25 +96,6 @@ export function setSourcePathHash(deviceState: DeviceState, sourceId: string, ha
 }
 
 /**
- * @deprecated Use getSourceTimestamp with DeviceState instead.
- * Read the extraction timestamp for the current device from a SyncSource.
- * Returns null if no timestamp has been recorded for this device.
- */
-export function getDeviceTimestamp(source: SyncSource): number | null {
-  const key = getDeviceKey();
-  return source.lastExtractionTimestamps[key] ?? null;
-}
-
-/**
- * @deprecated Use setSourceTimestamp with DeviceState instead.
- * Set the extraction timestamp for the current device on a SyncSource.
- */
-export function setDeviceTimestamp(source: SyncSource, timestamp: number): void {
-  const key = getDeviceKey();
-  source.lastExtractionTimestamps[key] = timestamp;
-}
-
-/**
  * A named sync source representing a single reMarkable tablet or sync origin.
  *
  * Each source has its own xochitl sync folder, Syncthing folder ID,

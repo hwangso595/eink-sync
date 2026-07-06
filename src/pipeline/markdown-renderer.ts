@@ -16,6 +16,7 @@
 
 import { ExtractionResult, ExtractedHighlight, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
+import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { logger } from '../utils/logger';
 import {
   HIGHLIGHTS_SECTION_START,
@@ -84,26 +85,6 @@ function escapeYamlString(value: string): string {
 interface FormatHighlightOptions {
   includeColors?: boolean;
   pdfLinkFormat?: PdfLinkFormat;
-}
-
-/**
- * Format a PDF page link according to the configured format.
- */
-function formatPdfLink(
-  pdfName: string,
-  pageNumber: number,
-  format: PdfLinkFormat,
-): string {
-  switch (format) {
-    case 'pdfpp':
-      return `[[${pdfName}#page=${pageNumber}|Page ${pageNumber}]]`;
-    case 'obsidian':
-      return `[[${pdfName}#page${pageNumber}|Page ${pageNumber}]]`;
-    case 'none':
-      return `Page ${pageNumber}`;
-    default:
-      return `[[${pdfName}#page=${pageNumber}|Page ${pageNumber}]]`;
-  }
 }
 
 /**
@@ -185,9 +166,7 @@ export function renderMarkdown(
   const pdfName = isNotebook ? null : (sourcePdfName ?? ensurePdfExtension(result.document.visibleName));
   // Use the document's lastModified timestamp for a deterministic date that
   // won't conflict when the same vault is synced across multiple machines.
-  const now = result.document.lastModified > 0
-    ? new Date(result.document.lastModified).toISOString().split('T')[0]
-    : new Date().toISOString().split('T')[0];
+  const now = formatHighlightDate(result.document.lastModified);
 
   const frontmatterData: FrontmatterData = {
     title: cleanName,
@@ -308,7 +287,7 @@ export function mergeWithExistingNote(
     const after = existingContent.substring(end.index + end.marker.length);
 
     // Update frontmatter highlight count if present
-    const updatedBefore = updateFrontmatterCount(before, result.highlights.length);
+    const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
 
     return updatedBefore + newSection + after;
   }
@@ -412,15 +391,6 @@ function buildHighlightsSection(
   return lines.join('\n');
 }
 
-/**
- * Update the highlight_count field in existing YAML frontmatter.
- */
-function updateFrontmatterCount(content: string, newCount: number): string {
-  return content.replace(
-    /^highlight_count:\s*\d+$/m,
-    `highlight_count: ${newCount}`,
-  );
-}
 
 /**
  * Generate a safe filename from a document's visible name.
