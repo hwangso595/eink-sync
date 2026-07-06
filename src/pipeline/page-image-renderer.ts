@@ -82,14 +82,13 @@ export async function renderPageImages(
 
   if (!fs.existsSync(scriptPath)) {
     // The document HAS strokes to render but the renderer script is missing --
-    // this is a packaging/install fault, not a "nothing to do". Warn loudly so
-    // silently-dropped drawings are diagnosable rather than looking like success.
-    logger.warn(
-      `render_pages.py not found at ${scriptPath}; drawings for this document will be ` +
-      `skipped. This usually means the extraction scripts were not installed -- ` +
-      `reload the plugin so it can rewrite them.`,
+    // this is a packaging/install fault, not a "nothing to render". Throw so the
+    // caller can tell "renderer failed" from "genuinely no drawings" and must
+    // NOT clear an existing note's drawings.
+    throw new Error(
+      `render_pages.py not found at ${scriptPath}. The extraction scripts were not ` +
+      `installed -- reload the plugin so it can rewrite them.`,
     );
-    return null;
   }
 
   if (!fs.existsSync(drawingsPath)) {
@@ -195,9 +194,13 @@ export async function renderPageImages(
     });
 
     logger.info(`Page images rendered: ${pageMap.pageDrawings.size} page(s) with strokes, ${pageMap.rendererHighlights.length} renderer highlight(s)`);
+    // A successful render that produced nothing is a legitimate empty result.
     return pageMap.pageDrawings.size > 0 || pageMap.rendererHighlights.length > 0 ? pageMap : null;
   } catch (err) {
+    // A genuine render failure (spawn/timeout/exit/parse) on a document that we
+    // already confirmed HAS strokes. Propagate it so the pipeline preserves any
+    // existing note rather than clearing drawings it could not re-render.
     logger.warn(`Page image rendering failed for ${doc.visibleName}: ${err}`);
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }

@@ -408,6 +408,11 @@ export async function runExtractionPipeline(
       logger.info(`  xochitlPath=${config.xochitlPath}, drawingsPath=${config.drawingsPath}, pluginDir=${config.pluginDir}`);
 
       let pageDrawings: PageDrawings | null = null;
+      // renderPageImages returns null for a genuinely-empty result but THROWS on
+      // a real render failure (the document had strokes we couldn't render). We
+      // track that separately so we never clear an existing note's drawings just
+      // because a transient render failed.
+      let renderFailed = false;
       try {
         const imageResult: PageImageResult | null = await renderPageImages(
           doc, config.xochitlPath, config.drawingsPath, config.pluginDir,
@@ -426,6 +431,7 @@ export async function runExtractionPipeline(
           }
         }
       } catch (drawErr) {
+        renderFailed = true;
         logger.error(`renderPageImages failed for ${doc.visibleName}: ${drawErr}`);
       }
 
@@ -434,11 +440,26 @@ export async function runExtractionPipeline(
         `${pageDrawings ? pageDrawings.size : 0} page drawings`
       );
 
+      // If page rendering FAILED for a document that already has a note, leave
+      // the note untouched. Rewriting it now (with drawings unavailable) would
+      // drop drawings we simply couldn't re-render this run -- true even when new
+      // text highlights were found. A brand-new note has no drawings to lose, so
+      // it is allowed to proceed and will pick up drawings on a later run.
+      if (renderFailed && doc.type !== 'notebook' && fs.existsSync(outputFilePath)) {
+        const msg = `${doc.visibleName}: page rendering failed; existing note left unchanged.`;
+        logger.warn(msg);
+        result.errors.push(msg);
+        docResult.warnings.push('Page rendering failed; note left unchanged.');
+        docResult.error = 'Page rendering failed';
+        result.documentsProcessed++;
+        result.documentResults.push(docResult);
+        continue;
+      }
+
       // Nothing to show (no highlights AND no drawings). Only skip creating a
       // *brand-new* note here -- avoids empty-note noise for untouched PDFs.
-      // If a note already exists it must fall through to the render/merge path
-      // so removing all highlights on the tablet clears the stale note instead
-      // of leaving old highlights in Obsidian forever.
+      // An existing note (whose render succeeded) falls through to the merge
+      // path so removing all highlights on the tablet clears the stale note.
       if (extractionResult.highlights.length === 0 && (!pageDrawings || pageDrawings.size === 0)) {
         if (doc.type !== 'notebook' && !fs.existsSync(outputFilePath)) {
           // Brand-new PDF with nothing to extract: don't create an empty note.

@@ -176,9 +176,13 @@ export class ReMarkableLibraryView extends ItemView {
         summaries.push(syncResult.summary);
       }
 
-      // A failed transfer/API call must not be reported as success. Providers
-      // return failures in-band (they don't throw), so branch on success.
-      if (!allSuccess) {
+      // A total SFTP failure (nothing pulled) is a hard stop. But a partial
+      // SFTP failure that still pulled some files, and a Syncthing rescan
+      // failure (the daemon may have delivered files independently), must NOT
+      // withhold extraction of what is already on disk -- mirror the auto-sync
+      // and single-doc paths, which extract whenever files are present. The
+      // sync error is still surfaced (never presented as a clean success).
+      if (isSftp && !allSuccess && !anyTransferred) {
         const detail = firstError ? ` (${firstError})` : '';
         statusEl.setText(`Sync failed${detail}.`);
         statusEl.removeClass('is-loading', 'is-success');
@@ -188,6 +192,9 @@ export class ReMarkableLibraryView extends ItemView {
 
       const partialSuffix = totalErrors > 0
         ? ` (${totalErrors} file error(s) — see console)`
+        : '';
+      const syncErrorSuffix = !allSuccess
+        ? ` Sync reported errors${firstError ? `: ${firstError}` : ''}.`
         : '';
       const summary = sources.length === 1 ? summaries[0] : `Synced ${sources.length} sources.`;
 
@@ -199,16 +206,19 @@ export class ReMarkableLibraryView extends ItemView {
 
         try {
           const extractionResult = await this.plugin.runExtraction(true);
-          if (extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0) {
-            statusEl.setText(
-              `Done! ${summary} ` +
-              `${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`,
-            );
-          } else {
-            statusEl.setText(`${summary} No new highlights found.${partialSuffix}`);
-          }
+          const base = extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0
+            ? `${summary} ${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`
+            : `${summary} No new highlights found.${partialSuffix}`;
           statusEl.removeClass('is-loading');
-          statusEl.addClass('is-success');
+          if (allSuccess) {
+            statusEl.setText(`Done! ${base}`);
+            statusEl.addClass('is-success');
+          } else {
+            // Extraction ran on the files that are present, but the sync itself
+            // had errors -- don't present it as a clean success.
+            statusEl.setText(`${base}${syncErrorSuffix}`);
+            statusEl.addClass('is-error');
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           statusEl.setText(`Extraction failed: ${msg}`);
