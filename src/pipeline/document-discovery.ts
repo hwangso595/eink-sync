@@ -130,17 +130,29 @@ export class XochitlDocumentDiscovery implements DocumentDiscovery {
   }
 }
 
-/**
- * Scan the synced xochitl directory and return all non-deleted PDF documents
- * with reconstructed folder paths and page UUID lists.
- *
- * @param xochitlPath - Absolute path to the synced xochitl directory.
- * @returns Array of ReMarkableDocument objects for all PDF documents found.
- */
+export interface DiscoveryResult {
+  documents: ReMarkableDocument[];
+  /**
+   * Docs on the tablet with valid metadata but no usable .content yet
+   * (mid-sync or corrupt). They are not returned as documents, and the
+   * incremental cursor must not advance past their timestamps or they would be
+   * skipped forever once their content arrives.
+   */
+  pendingCount: number;
+}
+
 export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
+  return discoverDocumentsWithStatus(xochitlPath).documents;
+}
+
+/**
+ * Scan the synced xochitl directory, returning discoverable documents plus a
+ * count of present-but-not-yet-extractable ("pending") documents.
+ */
+export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResult {
   if (!fs.existsSync(xochitlPath) || !fs.statSync(xochitlPath).isDirectory()) {
     logger.warn(`xochitl path does not exist or is not a directory: ${xochitlPath}`);
-    return [];
+    return { documents: [], pendingCount: 0 };
   }
 
   const entries = fs.readdirSync(xochitlPath);
@@ -177,11 +189,13 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
 
   // Phase 3: Build document list (PDFs and EPUBs)
   const documents: ReMarkableDocument[] = [];
+  let pendingCount = 0;
   for (const [uuid, meta] of metadataMap) {
     if (meta.docType === 'CollectionType') continue;
 
     const content = contentMap.get(uuid);
     if (!content) {
+      pendingCount++;
       // The document is on the tablet but has no usable .content yet. Tell the
       // user why it won't appear, instead of dropping it silently.
       if (corruptContent.has(uuid)) {
@@ -224,5 +238,5 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
   }
 
   logger.info(`Discovered ${documents.length} document(s) in ${xochitlPath}`);
-  return documents;
+  return { documents, pendingCount };
 }

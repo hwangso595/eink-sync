@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { discoverDocuments, XochitlDocumentDiscovery } from './document-discovery';
+import { discoverDocuments, discoverDocumentsWithStatus, XochitlDocumentDiscovery } from './document-discovery';
 
 /** Create a temporary xochitl directory for testing. */
 function createTmpDir(): string {
@@ -34,6 +34,20 @@ describe('discoverDocuments', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('counts a mid-sync doc (metadata but no content) as pending, not discovered', () => {
+    writeJson(tmpDir, 'pending-1.metadata', {
+      visibleName: 'Mid Sync',
+      parent: '',
+      type: 'DocumentType',
+      lastModified: '1700000001000',
+      deleted: false,
+    });
+    // No .content file yet -> pending.
+    const { documents, pendingCount } = discoverDocumentsWithStatus(tmpDir);
+    expect(documents).toHaveLength(0);
+    expect(pendingCount).toBe(1);
   });
 
   it('discovers PDF documents with correct metadata', () => {

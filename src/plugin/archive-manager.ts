@@ -84,6 +84,41 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
 }
 
 /**
+ * Authoritative pre-delete check: every non-empty tablet file for the UUID must
+ * exist non-empty locally. Catches cases hasLocalBackup can't see locally, e.g.
+ * a PDF synced but its handwritten annotations ({uuid}/*.rm) not. Refuses on any
+ * doubt (missing/empty local file, or the listing failing).
+ */
+export async function tabletFilesBackedUpLocally(
+  ssh: SSHExecutor,
+  localSyncDir: string,
+  uuid: string,
+): Promise<boolean> {
+  const find = await ssh.execute(
+    `cd ${XOCHITL_DIR} && find . -maxdepth 2 -type f -size +0c ` +
+    `\\( -name '${uuid}.*' -o -path './${uuid}/*' \\) 2>/dev/null`,
+  );
+  if (find.exitCode !== 0) return false;
+
+  const rels = find.stdout
+    .trim()
+    .split('\n')
+    .map((s) => s.replace(/^\.\//, '').trim())
+    .filter(Boolean);
+  if (rels.length === 0) return false;
+
+  for (const rel of rels) {
+    try {
+      const st = fs.statSync(path.join(localSyncDir, rel));
+      if (!st.isFile() || st.size === 0) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Archive old documents: remove from tablet, add to .stignore, keep in vault.
  *
  * Flow:
@@ -190,6 +225,16 @@ export async function archiveOldDocuments(
       logger.warn(
         `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
         `Sync this document to the vault before archiving.`,
+      );
+      continue;
+    }
+
+    // Authoritative check: the tablet's own files must all be backed up locally
+    // (e.g. a PDF's annotations), or deleting would lose un-synced content.
+    if (!(await tabletFilesBackedUpLocally(ssh, localSyncDir, doc.uuid))) {
+      logger.warn(
+        `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
+        `locally (e.g. annotations). Sync it fully before archiving.`,
       );
       continue;
     }

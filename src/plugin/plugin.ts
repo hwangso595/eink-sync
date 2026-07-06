@@ -78,7 +78,7 @@ import { SyncthingProvider } from '../sync/syncthing-provider';
 
 // File watcher
 import { XochitlFileWatcher } from '../pipeline/file-watcher';
-import { discoverDocuments } from '../pipeline/document-discovery';
+import { discoverDocumentsWithStatus } from '../pipeline/document-discovery';
 
 // Archive manager
 import { archiveOldDocuments as runArchive } from './archive-manager';
@@ -955,7 +955,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
         // lastModified) keeps the comparison tablet-vs-tablet, and capturing it
         // pre-run means a doc modified during extraction stays > cursor and is
         // re-picked-up next run rather than being skipped.
-        const observedCursor = this.computeMaxObservedTimestamp(source.syncFolder);
+        const { maxTimestamp: observedCursor, pendingCount } =
+          this.computeSourceCursorStatus(source.syncFolder);
 
         const sourceResult = await this.runExtractionForSource(
           source, forceAll, template, docUuid,
@@ -970,9 +971,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
         aggregateResult.errors.push(...sourceResult.errors);
 
         // Only advance the cursor after a clean full scan. A targeted (docUuid)
-        // run or one with errors left documents unprocessed; advancing past them
-        // would silently skip them on future incremental runs.
-        const cleanFullScan = !docUuid && sourceResult.errors.length === 0;
+        // run, a run with errors, or one where documents are still mid-sync
+        // (pendingCount) left documents unprocessed; advancing past them would
+        // silently skip them on future incremental runs.
+        const cleanFullScan =
+          !docUuid && sourceResult.errors.length === 0 && pendingCount === 0;
         if (cleanFullScan) {
           const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
           this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
@@ -1043,24 +1046,24 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * Handles per-source path-hash validation and timestamp management.
    */
   /**
-   * Compute the newest `lastModified` (tablet-clock, epoch-ms) across all
-   * discoverable documents in a source's synced folder. Used as the
-   * incremental-extraction cursor so the comparison stays in the tablet's own
-   * clock domain. Returns 0 if the folder is empty/unreadable (callers must
-   * treat 0 as "no advance", never as "epoch").
+   * Newest `lastModified` (tablet-clock, epoch-ms) across a source's
+   * discoverable documents, plus the count of present-but-not-yet-extractable
+   * ("pending") docs. The cursor stays in the tablet's clock domain; pendingCount
+   * lets callers avoid advancing the cursor past mid-sync documents. On a scan
+   * failure we report a pending doc so the cursor does not advance.
    */
-  private computeMaxObservedTimestamp(syncFolder: string): number {
+  private computeSourceCursorStatus(syncFolder: string): { maxTimestamp: number; pendingCount: number } {
     try {
-      const docs = discoverDocuments(resolvePath(this.app, syncFolder));
+      const { documents, pendingCount } = discoverDocumentsWithStatus(resolvePath(this.app, syncFolder));
       let max = 0;
-      for (const doc of docs) {
+      for (const doc of documents) {
         if (doc.lastModified > max) max = doc.lastModified;
       }
-      return max;
+      return { maxTimestamp: max, pendingCount };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn(`Could not compute extraction cursor for "${syncFolder}": ${msg}`);
-      return 0;
+      return { maxTimestamp: 0, pendingCount: 1 };
     }
   }
 

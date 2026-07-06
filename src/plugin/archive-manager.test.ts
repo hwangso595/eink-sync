@@ -6,7 +6,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hasLocalBackup } from './archive-manager';
+import { hasLocalBackup, tabletFilesBackedUpLocally } from './archive-manager';
+import type { SSHExecutor } from '../ssh/ssh-client';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'archive-test-'));
@@ -14,6 +15,16 @@ function tmpDir(): string {
 
 function write(dir: string, name: string, content = 'data'): void {
   fs.writeFileSync(path.join(dir, name), content, 'utf-8');
+}
+
+function mockSsh(stdout: string, exitCode = 0): SSHExecutor {
+  return {
+    connect: jest.fn(),
+    disconnect: jest.fn(),
+    ping: jest.fn(),
+    isConnected: jest.fn(),
+    execute: jest.fn().mockResolvedValue({ stdout, stderr: '', exitCode }),
+  } as unknown as SSHExecutor;
 }
 
 describe('hasLocalBackup', () => {
@@ -78,5 +89,29 @@ describe('hasLocalBackup', () => {
 
   it('refuses when nothing is synced for the uuid', () => {
     expect(hasLocalBackup(tmpDir(), uuid)).toBe(false);
+  });
+});
+
+describe('tabletFilesBackedUpLocally', () => {
+  const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+
+  it('refuses when a tablet file (e.g. an annotation) is missing locally', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.pdf`, '%PDF'); // only the PDF is synced locally
+    const ssh = mockSsh(`./${uuid}.pdf\n./${uuid}/page-1.rm\n`);
+    expect(await tabletFilesBackedUpLocally(ssh, dir, uuid)).toBe(false);
+  });
+
+  it('accepts when every tablet file is backed up locally', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.pdf`, '%PDF');
+    fs.mkdirSync(path.join(dir, uuid));
+    write(path.join(dir, uuid), 'page-1.rm');
+    const ssh = mockSsh(`./${uuid}.pdf\n./${uuid}/page-1.rm\n`);
+    expect(await tabletFilesBackedUpLocally(ssh, dir, uuid)).toBe(true);
+  });
+
+  it('refuses when the tablet listing fails', async () => {
+    expect(await tabletFilesBackedUpLocally(mockSsh('', 1), tmpDir(), uuid)).toBe(false);
   });
 });
