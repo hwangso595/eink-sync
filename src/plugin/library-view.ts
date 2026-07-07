@@ -116,14 +116,18 @@ export class ReMarkableLibraryView extends ItemView {
    */
   private async syncWithProgress(statusEl: HTMLElement): Promise<void> {
     const isSftp = (this.plugin.settings.syncMethod ?? 'sftp') === 'sftp';
-    const sources = this.plugin.getSyncSources();
+    const allSources = this.plugin.getSyncSources();
 
-    if (sources.length === 0) {
+    if (allSources.length === 0) {
       statusEl.setText('No sync sources configured. Open Settings to add a source.');
       statusEl.removeClass('is-loading', 'is-success');
       statusEl.addClass('is-error');
       return;
     }
+
+    // SFTP has one global tablet connection, so only the primary source is
+    // syncable; syncing every folder from the same tablet would duplicate data.
+    const sources = isSftp && allSources.length > 1 ? [allSources[0]] : allSources;
 
     statusEl.setText(isSftp ? 'Connecting to tablet via SFTP...' : 'Asking Syncthing to check for changes...');
 
@@ -205,9 +209,12 @@ export class ReMarkableLibraryView extends ItemView {
         statusEl.setText('Extracting highlights and annotations...');
 
         try {
-          const extractionResult = await this.plugin.runExtraction(true, undefined, undefined, {
-            allowCursorAdvance: allSuccess && totalErrors === 0,
-          });
+          const extractionResult = await this.plugin.runExtraction(
+            true,
+            isSftp ? sources[0].id : undefined, // SFTP: only the synced source
+            undefined,
+            { allowCursorAdvance: allSuccess && totalErrors === 0 },
+          );
           const base = extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0
             ? `${summary} ${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`
             : `${summary} No new highlights found.${partialSuffix}`;

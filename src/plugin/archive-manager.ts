@@ -256,10 +256,13 @@ export async function archiveOldDocuments(
     // Delete from tablet — explicit, auditable file list (no glob).
     // Covers every sidecar/dir xochitl creates for a document.
     const u = doc.uuid;
+    // Only delete files we verified are backed up, plus the regenerable caches
+    // (.cache/.thumbnails). .textconversion (OCR output) is not verified, so
+    // leave it on the tablet rather than deleting unbacked-up content.
     const targets = [
       `${u}.metadata`, `${u}.content`, `${u}.pdf`, `${u}.epub`,
       `${u}.pagedata`, `${u}.local`,
-      u, `${u}.cache`, `${u}.thumbnails`, `${u}.textconversion`, `${u}.highlights`,
+      u, `${u}.cache`, `${u}.thumbnails`, `${u}.highlights`,
     ].join(' ');
     await ssh.execute(
       `cd ${XOCHITL_DIR} && rm -rf ${targets} 2>/dev/null; true`

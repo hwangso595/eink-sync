@@ -790,12 +790,24 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
 
     const sources = this._pluginData.syncSources;
-    const targetSources = sourceId
+    let targetSources = sourceId
       ? sources.filter((s) => s.id === sourceId)
       : sources;
 
     if (targetSources.length === 0) {
       throw new Error('No sync sources configured.');
+    }
+
+    // SFTP uses one global tablet connection, so it can only sync a single
+    // source -- syncing every folder from the same tablet would overwrite them
+    // with duplicate data. Restrict to the primary/target source. (Multi-tablet
+    // setups need Syncthing, which has per-source folder IDs.)
+    if (targetSources.length > 1) {
+      logger.warn(
+        `SFTP syncs a single tablet; only "${targetSources[0].label}" of ` +
+        `${targetSources.length} sources will be synced.`,
+      );
+      targetSources = [targetSources[0]];
     }
 
     // Sync every target source, each into its own local folder, and aggregate
@@ -852,7 +864,9 @@ export default class ReMarkableBridgePlugin extends Plugin {
     let extractionResult: PipelineRunResult | null = null;
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
       try {
-        extractionResult = await this.runExtraction(false, sourceId, undefined, {
+        // Extract exactly the source we synced (SFTP is one source), so
+        // extraction never scans a folder this run didn't refresh.
+        extractionResult = await this.runExtraction(false, targetSources[0].id, undefined, {
           allowCursorAdvance: cleanTransfer,
         });
       } catch (err) {
