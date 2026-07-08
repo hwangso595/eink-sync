@@ -14,6 +14,8 @@
  * markers) and only updates that section.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { ExtractionResult, ExtractedHighlight, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
@@ -443,6 +445,119 @@ export function generateOutputFilename(visibleName: string): string {
   }
 
   return sanitized;
+}
+
+/**
+ * Scan a highlights output folder and map each document's UUID to the base name
+ * (filename without `.md`) of the note that already exists for it. The mapping
+ * is read from each note's `remarkable_uuid` frontmatter, so it survives the note
+ * being renamed. Used to keep note names STABLE: a document that already has a
+ * note keeps that note's exact filename forever, no matter what other documents
+ * appear or disappear.
+ *
+ * Reads only a small header slice of each note (frontmatter lives at the top) to
+ * stay fast on large vaults. Missing/unreadable folders yield an empty map.
+ */
+export function scanExistingNoteBaseNames(outputPath: string): Map<string, string> {
+  const map = new Map<string, string>();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(outputPath);
+  } catch {
+    return map;
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith('.md')) continue;
+    let head: string;
+    try {
+      const fd = fs.openSync(path.join(outputPath, entry), 'r');
+      try {
+        const buf = Buffer.alloc(2048);
+        const bytes = fs.readSync(fd, buf, 0, 2048, 0);
+        head = buf.toString('utf-8', 0, bytes);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      continue;
+    }
+
+    const m = head.match(/^remarkable_uuid:\s*([0-9a-fA-F-]{36})\s*$/m);
+    if (m) {
+      const uuid = m[1].toLowerCase();
+      // First note wins if two somehow claim the same UUID (deterministic).
+      if (!map.has(uuid)) {
+        map.set(uuid, entry.slice(0, -3)); // strip ".md"
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * Resolve a stable, collision-free output base name for every document.
+ *
+ * The note filename and every page-image filename are derived from a document's
+ * visible name. Two rules keep them unique AND stable:
+ *
+ *   1. STICKY: if a document already has a note (looked up by UUID via
+ *      `existingByUuid`), it keeps that note's exact name forever. Its filename
+ *      never changes just because another same-named document appeared or was
+ *      removed — so links and transclusions never break.
+ *   2. COLLISION-FREE: a document without an existing note gets the clean
+ *      sanitized name, unless that name is already taken (by an existing note or
+ *      by another brand-new document sharing the name) — then it gets a short
+ *      UUID suffix. When two brand-new documents collide, BOTH are suffixed.
+ *
+ * The result is deterministic: it depends only on the (uuid, visibleName) set
+ * and the existing-notes map, never on processing order.
+ *
+ * @param docs - The FULL set of documents in scope (pass every discovered doc,
+ *   not a filtered subset, or a collision with an out-of-subset doc is missed).
+ * @param existingByUuid - Map from UUID to the base name of the note that already
+ *   exists for it (see {@link scanExistingNoteBaseNames}). Omit for the pure
+ *   collision-only behaviour (e.g. a fresh vault with no notes yet).
+ * @returns Map from document UUID to its unique, stable output base name.
+ */
+export function resolveOutputBaseNames(
+  docs: Array<{ uuid: string; visibleName: string }>,
+  existingByUuid?: Map<string, string>,
+): Map<string, string> {
+  const result = new Map<string, string>();
+  const used = new Set<string>();
+
+  // 1) Sticky: reuse the name of any note that already exists for a document.
+  if (existingByUuid) {
+    for (const doc of docs) {
+      const existing = existingByUuid.get(doc.uuid);
+      if (existing) {
+        result.set(doc.uuid, existing);
+        used.add(existing);
+      }
+    }
+  }
+
+  // 2) Count shared base names among the documents that still need a name, so a
+  //    fresh collision suffixes every member (not just the later ones).
+  const pending = docs.filter((doc) => !result.has(doc.uuid));
+  const baseCount = new Map<string, number>();
+  for (const doc of pending) {
+    const base = generateOutputFilename(doc.visibleName);
+    baseCount.set(base, (baseCount.get(base) ?? 0) + 1);
+  }
+
+  // 3) Assign: suffix when the clean name is already taken by an existing note
+  //    or shared by another new document; otherwise keep it clean.
+  for (const doc of pending) {
+    const base = generateOutputFilename(doc.visibleName);
+    const collides = used.has(base) || (baseCount.get(base) ?? 0) > 1;
+    const name = collides ? `${base} (${doc.uuid.slice(0, 8)})` : base;
+    result.set(doc.uuid, name);
+    used.add(name);
+  }
+
+  return result;
 }
 
 /**

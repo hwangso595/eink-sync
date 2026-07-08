@@ -12,7 +12,7 @@
 import * as path from 'path';
 import { logger } from '../utils/logger';
 import type { ExtractedHighlight } from '../pipeline/types';
-import { sanitizeFilename } from './helpers';
+import { resolveOutputBaseNames, scanExistingNoteBaseNames } from '../pipeline/markdown-renderer';
 import { parseHighlightsFromNote } from './review-data';
 
 // -------------------------------------------------------------------
@@ -117,6 +117,21 @@ export function scanDocumentsWithHighlights(
   const results: ScannedDocument[] = [];
   const entries = fs.readdirSync(xochitlPath);
 
+  // First pass: gather every document so we can resolve collision-free note base
+  // names that match what the extraction pipeline actually wrote to disk.
+  const scanDocs: Array<{ uuid: string; visibleName: string }> = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.metadata')) continue;
+    try {
+      const m: MetadataJson = JSON.parse(fs.readFileSync(path.join(xochitlPath, entry), 'utf-8'));
+      if (m.deleted || m.type === 'CollectionType') continue;
+      scanDocs.push({ uuid: path.basename(entry, '.metadata'), visibleName: m.visibleName ?? 'Untitled' });
+    } catch {
+      // Unreadable metadata is skipped here and re-reported in the main pass.
+    }
+  }
+  const baseNames = resolveOutputBaseNames(scanDocs, scanExistingNoteBaseNames(outputPath));
+
   for (const entry of entries) {
     if (!entry.endsWith('.metadata')) continue;
 
@@ -149,8 +164,9 @@ export function scanDocumentsWithHighlights(
       }
     }
 
-    // Check if we have an extracted note for this document
-    const safeName = sanitizeFilename(visibleName);
+    // Check if we have an extracted note for this document (collision-resolved
+    // base name so same-named documents map to their own distinct notes).
+    const safeName = baseNames.get(uuid) ?? visibleName;
     const notePath = path.join(outputPath, `${safeName}.md`);
     if (!fs.existsSync(notePath)) continue;
 

@@ -33,7 +33,7 @@ import {
 } from './types';
 import { XochitlDocumentDiscovery } from './document-discovery';
 import { PythonHighlightExtractor } from './python-bridge';
-import { DefaultMarkdownRenderer, generateOutputFilename, type PageDrawings } from './markdown-renderer';
+import { DefaultMarkdownRenderer, generateOutputFilename, resolveOutputBaseNames, scanExistingNoteBaseNames, type PageDrawings } from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
 import { renderPageImages, type PageImageResult } from './page-image-renderer';
 import { logger } from '../utils/logger';
@@ -248,6 +248,16 @@ export async function runExtractionPipeline(
     return result;
   }
 
+  // Resolve stable, collision-free output base names from the FULL discovered
+  // set (computed BEFORE any UUID filter, so a collision with a document outside
+  // a targeted subset is still detected). A document that already has a note
+  // keeps that note's exact name (looked up by UUID) so links/transclusions
+  // never break; brand-new same-named documents get a distinct suffixed name.
+  const existingNoteNames = scanExistingNoteBaseNames(config.outputPath);
+  const outputBaseNames = resolveOutputBaseNames(documents, existingNoteNames);
+  const baseNameFor = (doc: { uuid: string; visibleName: string }): string =>
+    outputBaseNames.get(doc.uuid) ?? generateOutputFilename(doc.visibleName);
+
   // Apply UUID filter if provided (targeted "extract selected document(s)").
   // A requested document that is not present is a visible failure, not a silent
   // no-op: record it in result.errors so the UI can surface it.
@@ -398,8 +408,10 @@ export async function runExtractionPipeline(
       docResult.highlightCount = extractionResult.highlights.length;
       docResult.warnings = [...docResult.warnings, ...extractionResult.warnings];
 
-      // Generate output file path
-      const filename = generateOutputFilename(doc.visibleName) + '.md';
+      // Generate output file path (collision-free base name shared with the
+      // page-image renderer so the note and its PNGs stay in lockstep).
+      const outputBaseName = baseNameFor(doc);
+      const filename = outputBaseName + '.md';
       const outputFilePath = path.join(config.outputPath, filename);
       docResult.outputFile = outputFilePath;
 
@@ -415,7 +427,7 @@ export async function runExtractionPipeline(
       let renderFailed = false;
       try {
         const imageResult: PageImageResult | null = await renderPageImages(
-          doc, config.xochitlPath, config.drawingsPath, config.pluginDir,
+          doc, config.xochitlPath, config.drawingsPath, config.pluginDir, outputBaseName,
         );
         if (imageResult) {
           pageDrawings = imageResult.pageDrawings;

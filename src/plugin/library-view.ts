@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ItemView, TFile, WorkspaceLeaf, setIcon, Menu, Notice, Setting } from 'obsidian';
 import { logger } from '../utils/logger';
+import { isValidIpv4, localIpv4Interfaces, sharesLocalSubnet } from './net-utils';
 import type ReMarkableBridgePlugin from './plugin';
 import type {
   LibraryDocument,
@@ -29,7 +30,7 @@ import {
   sortDocuments,
   filterDocuments,
 } from './library-data';
-import { resolvePath, formatRelativeTime, sanitizeFilename } from './helpers';
+import { resolvePath, formatRelativeTime } from './helpers';
 import { isValidUuid } from './uuid-validation';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import type { SyncProgressCallback } from '../sync/sync-provider';
@@ -191,6 +192,27 @@ export class ReMarkableLibraryView extends ItemView {
         statusEl.setText(`Sync failed${detail}.`);
         statusEl.removeClass('is-loading', 'is-success');
         statusEl.addClass('is-error');
+        // A total sync failure must be LOUD. The inline panel text above is easy
+        // to miss, and a later extraction-only run happily re-reads the stale
+        // local files and reports "No new highlights found" -- which masks the
+        // fact that we never reached the tablet at all. Raise a toast and flip
+        // the status bar. When the saved Wi-Fi IP isn't on this computer's
+        // network, name the most common cause: a DHCP address that moved.
+        const ip = this.plugin.settings.tabletIp;
+        const onWifi = this.plugin.settings.connectionMethod === 'wifi';
+        let hint = '';
+        if (onWifi && ip && isValidIpv4(ip) && !sharesLocalSubnet(ip)) {
+          const locals = localIpv4Interfaces().map((i) => i.address).join(', ') || 'unknown';
+          hint =
+            ` The saved tablet IP ${ip} isn't on this computer's network (this machine: ${locals}) ` +
+            `— it may have changed. Update it in settings, or use "Detect via USB".`;
+        } else if (onWifi && ip) {
+          hint =
+            ` Couldn't reach the tablet at ${ip}. Make sure it's awake and on Wi-Fi; ` +
+            `if its IP changed, update it in settings.`;
+        }
+        new Notice(`E-Ink Sync: Sync failed${detail}.${hint}`, 12000);
+        this.plugin.updateStatusBar('error');
         return;
       }
 
@@ -854,8 +876,7 @@ export class ReMarkableLibraryView extends ItemView {
   /** Open the highlight note directly (creates it if needed). */
   private async openHighlightNote(doc: LibraryDocument): Promise<void> {
     const highlightsFolder = this.plugin.settings.highlightsFolder;
-    const safeName = sanitizeFilename(doc.name);
-    const notePath = `${highlightsFolder}/${safeName}.md`;
+    const notePath = `${highlightsFolder}/${doc.noteBaseName}.md`;
 
     const noteFile = this.plugin.app.vault.getAbstractFileByPath(notePath);
     if (noteFile instanceof TFile) {

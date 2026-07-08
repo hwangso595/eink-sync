@@ -37,6 +37,7 @@ export async function renderPageImages(
   xochitlPath: string,
   drawingsPath: string | undefined,
   pluginDir?: string,
+  outputBaseName?: string,
 ): Promise<PageImageResult | null> {
   if (!drawingsPath) return null;
 
@@ -109,12 +110,18 @@ export async function renderPageImages(
 
   try {
     const pageMap = await new Promise<PageImageResult>((resolve, reject) => {
-      const proc = spawn(pythonExe, [
+      const scriptArgs = [
         scriptPath,
         '--xochitl-path', xochitlPath,
         '--doc-uuid', doc.uuid,
         '--output-dir', drawingsPath,
-      ], {
+      ];
+      // Pass the collision-resolved base name so page-image filenames match the
+      // note filename (two same-named docs won't overwrite each other's PNGs).
+      if (outputBaseName) {
+        scriptArgs.push('--doc-name', outputBaseName);
+      }
+      const proc = spawn(pythonExe, scriptArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 120000,
         cwd: scriptDir,

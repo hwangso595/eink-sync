@@ -146,6 +146,38 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
 }
 
 /**
+ * Given a map of every entry's UUID to its parent UUID, return the set of UUIDs
+ * that are in the tablet trash: either directly (`parent === 'trash'`) or via any
+ * ancestor folder that is trashed. reMarkable moves items to trash by pointing
+ * them (or their containing folder) at the special `trash` parent, keeping them
+ * on disk with `deleted: false` until the trash is emptied — so callers must
+ * exclude these to match what the tablet shows.
+ *
+ * The walk is cycle-safe (a corrupt parent loop resolves to "not trashed" rather
+ * than hanging).
+ */
+export function computeTrashedUuids(parentByUuid: Map<string, string>): Set<string> {
+  const trashed = new Set<string>();
+
+  const isTrashed = (uuid: string): boolean => {
+    const seen = new Set<string>();
+    let current: string | undefined = uuid;
+    while (current && current !== '') {
+      if (current === 'trash') return true;
+      if (seen.has(current)) return false; // cycle guard
+      seen.add(current);
+      current = parentByUuid.get(current);
+    }
+    return false;
+  };
+
+  for (const uuid of parentByUuid.keys()) {
+    if (isTrashed(uuid)) trashed.add(uuid);
+  }
+  return trashed;
+}
+
+/**
  * Scan the synced xochitl directory, returning discoverable documents plus a
  * count of present-but-not-yet-extractable ("pending") documents.
  */
@@ -157,13 +189,27 @@ export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResul
 
   const entries = fs.readdirSync(xochitlPath);
 
-  // Phase 1: Parse all .metadata files
-  const metadataMap = new Map<string, ParsedMetadata>();
+  // Phase 0: Parse every .metadata (documents AND folders) and build a parent
+  // map so we can exclude anything in the tablet's trash — a doc trashed directly
+  // (parent === 'trash') or one whose ancestor folder was trashed. reMarkable
+  // keeps trashed items on disk with deleted=false until the trash is emptied, so
+  // filtering on `deleted` alone leaves them showing up in the vault.
+  const parsedMetas: ParsedMetadata[] = [];
+  const parentByUuid = new Map<string, string>();
   for (const entry of entries) {
     if (!entry.endsWith('.metadata')) continue;
     if (entry.includes('sync-conflict') || entry.includes('.syncthing.')) continue;
     const meta = parseMetadataFile(path.join(xochitlPath, entry));
-    if (meta && !meta.deleted) {
+    if (!meta) continue;
+    parsedMetas.push(meta);
+    parentByUuid.set(meta.uuid, meta.parentUuid);
+  }
+  const trashed = computeTrashedUuids(parentByUuid);
+
+  // Phase 1: Keep non-deleted, non-trashed entries.
+  const metadataMap = new Map<string, ParsedMetadata>();
+  for (const meta of parsedMetas) {
+    if (!meta.deleted && !trashed.has(meta.uuid)) {
       metadataMap.set(meta.uuid, meta);
     }
   }
