@@ -45,6 +45,8 @@ export {
   renderMarkdown,
   mergeWithExistingNote,
   generateOutputFilename,
+  resolveOutputBaseNames,
+  scanExistingNoteBaseNames,
   DefaultMarkdownRenderer,
   HIGHLIGHTS_SECTION_START,
   HIGHLIGHTS_SECTION_END,
