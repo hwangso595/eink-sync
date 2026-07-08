@@ -227,17 +227,17 @@ describe('buildLibrary', () => {
 describe('sortDocuments', () => {
   const docs: LibraryDocument[] = [
     {
-      uuid: '1', name: 'Zebra', type: 'pdf', lastModified: 100,
+      uuid: '1', name: 'Zebra', noteBaseName: 'Zebra', type: 'pdf', lastModified: 100,
       highlightCount: 5, pageCount: 10, syncStatus: 'synced',
       folderPath: '', parentUuid: '', hasSourceFile: true,
     },
     {
-      uuid: '2', name: 'Alpha', type: 'epub', lastModified: 300,
+      uuid: '2', name: 'Alpha', noteBaseName: 'Alpha', type: 'epub', lastModified: 300,
       highlightCount: 0, pageCount: 20, syncStatus: 'synced',
       folderPath: '', parentUuid: '', hasSourceFile: true,
     },
     {
-      uuid: '3', name: 'Middle', type: 'notebook', lastModified: 200,
+      uuid: '3', name: 'Middle', noteBaseName: 'Middle', type: 'notebook', lastModified: 200,
       highlightCount: 3, pageCount: 5, syncStatus: 'pending',
       folderPath: '', parentUuid: '', hasSourceFile: false,
     },
@@ -272,17 +272,17 @@ describe('sortDocuments', () => {
 describe('filterDocuments', () => {
   const docs: LibraryDocument[] = [
     {
-      uuid: '1', name: 'Machine Learning Paper', type: 'pdf', lastModified: 100,
+      uuid: '1', name: 'Machine Learning Paper', noteBaseName: 'Machine Learning Paper', type: 'pdf', lastModified: 100,
       highlightCount: 5, pageCount: 10, syncStatus: 'synced',
       folderPath: 'Research/ML', parentUuid: '', hasSourceFile: true,
     },
     {
-      uuid: '2', name: 'Cooking Recipes', type: 'epub', lastModified: 200,
+      uuid: '2', name: 'Cooking Recipes', noteBaseName: 'Cooking Recipes', type: 'epub', lastModified: 200,
       highlightCount: 0, pageCount: 20, syncStatus: 'synced',
       folderPath: 'Hobbies', parentUuid: '', hasSourceFile: true,
     },
     {
-      uuid: '3', name: 'Daily Notes', type: 'notebook', lastModified: 300,
+      uuid: '3', name: 'Daily Notes', noteBaseName: 'Daily Notes', type: 'notebook', lastModified: 300,
       highlightCount: 0, pageCount: 5, syncStatus: 'synced',
       folderPath: '', parentUuid: '', hasSourceFile: false,
     },
@@ -314,17 +314,17 @@ describe('buildSyncSummary', () => {
   it('computes correct summary', () => {
     const docs: LibraryDocument[] = [
       {
-        uuid: '1', name: 'Doc 1', type: 'pdf', lastModified: 100,
+        uuid: '1', name: 'Doc 1', noteBaseName: 'Doc 1', type: 'pdf', lastModified: 100,
         highlightCount: 3, pageCount: 10, syncStatus: 'synced',
         folderPath: '', parentUuid: '', hasSourceFile: true,
       },
       {
-        uuid: '2', name: 'Doc 2', type: 'pdf', lastModified: 200,
+        uuid: '2', name: 'Doc 2', noteBaseName: 'Doc 2', type: 'pdf', lastModified: 200,
         highlightCount: 7, pageCount: 20, syncStatus: 'pending',
         folderPath: '', parentUuid: '', hasSourceFile: true,
       },
       {
-        uuid: '3', name: 'Doc 3', type: 'pdf', lastModified: 300,
+        uuid: '3', name: 'Doc 3', noteBaseName: 'Doc 3', type: 'pdf', lastModified: 300,
         highlightCount: 0, pageCount: 5, syncStatus: 'error',
         folderPath: '', parentUuid: '', hasSourceFile: true,
       },

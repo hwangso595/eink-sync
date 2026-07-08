@@ -26,6 +26,7 @@ import { execSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { EXTRACTION_DIR, RUNTIME_PY_FILES } from './runtime-assets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -64,6 +65,20 @@ if (!which('gh')) {
   console.error('The `gh` CLI is required for asset upload. Install: https://cli.github.com/');
   process.exit(1);
 }
+
+// Runtime Python scripts are embedded into main.js at build time and
+// materialized on load (Obsidian only delivers manifest/main.js/styles). Fail
+// early if any is missing so we never ship a build that can't extract.
+const missingAssets = RUNTIME_PY_FILES.filter(
+  (rel) => !fs.existsSync(path.join(EXTRACTION_DIR, rel)),
+);
+if (missingAssets.length > 0) {
+  console.error('Missing runtime extraction script(s) required for the build:');
+  for (const rel of missingAssets) console.error(`  - extraction/${rel}`);
+  console.error('See scripts/runtime-assets.mjs.');
+  process.exit(1);
+}
+console.log(`Runtime assets OK: ${RUNTIME_PY_FILES.length} extraction script(s) will be embedded.`);
 
 // 2. Bump versions
 const manifestPath = path.join(ROOT, 'manifest.json');

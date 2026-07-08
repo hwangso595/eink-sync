@@ -47,6 +47,7 @@ export class SyncthingProvider implements SyncProvider {
 
     if (!apiKey || !folderId) {
       return {
+        success: false,
         filesDownloaded: 0,
         filesSkipped: 0,
         summary: 'Syncthing API not configured. Using existing local files.',
@@ -57,25 +58,41 @@ export class SyncthingProvider implements SyncProvider {
     onProgress?.('scanning', 'Asking Syncthing to check for changes...');
 
     try {
-      await fetch(`${apiUrl}/rest/db/scan?folder=${folderId}`, {
+      const res = await fetch(`${apiUrl}/rest/db/scan?folder=${folderId}`, {
         method: 'POST',
         headers: { 'X-API-Key': apiKey },
       });
+
+      // fetch() only rejects on network errors, not HTTP 4xx/5xx. A 403 (bad
+      // API key) or 404 (bad folder ID) resolves normally, so we must inspect
+      // the status ourselves or a misconfigured Syncthing would report success.
+      if (!res.ok) {
+        onProgress?.('error', `Syncthing rescan failed (HTTP ${res.status}).`);
+        return {
+          success: false,
+          filesDownloaded: 0,
+          filesSkipped: 0,
+          summary: `Syncthing rescan failed (HTTP ${res.status}). Check the API key and folder ID.`,
+          errors: [`Syncthing scan request returned HTTP ${res.status}.`],
+        };
+      }
 
       onProgress?.('waiting', 'Syncthing scanning... waiting for sync to settle.');
       await new Promise(resolve => setTimeout(resolve, RESCAN_SETTLE_MS));
 
       onProgress?.('complete', 'Sync complete.');
       return {
+        success: true,
         filesDownloaded: 0, // Syncthing doesn't report per-file counts here
         filesSkipped: 0,
-        summary: 'Syncthing rescan triggered successfully.',
+        summary: 'Syncthing rescan triggered.',
         errors: [],
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       onProgress?.('error', `Could not reach Syncthing: ${msg}`);
       return {
+        success: false,
         filesDownloaded: 0,
         filesSkipped: 0,
         summary: 'Could not reach Syncthing. Using existing local files.',

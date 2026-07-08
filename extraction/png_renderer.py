@@ -454,9 +454,45 @@ def render_strokes_to_png(
     # y: no per-stroke offset; the PDF background carries the toolbar offset below
     x_origin = canvas_w / 2  # coord x=0 maps to the horizontal centre of the canvas
     offset_x, offset_y = x_origin, 0.0
-    # Keep canvas at native resolution — don't expand for negative coordinates
     canvas_w_int = int(canvas_w)
     canvas_h_int = int(canvas_h)
+
+    # Notebooks are a vertically- (and slightly horizontally-) scrollable canvas:
+    # strokes can extend past the standard 1404x1872 screen (verticalScroll pages).
+    # A fixed canvas silently clips that scrolled-in content (the pixmap bounds
+    # checks in the scatter/circle painters drop out-of-range pixels). For
+    # notebooks (no PDF background) grow the canvas to the content's bounding box,
+    # shifting right/down only when content spills off the top/left edge. Pages
+    # that already fit get no shift and no growth, so their renders stay
+    # byte-identical. PDFs keep fixed page geometry so strokes stay aligned to the
+    # page background.
+    if pdf_path is None:
+        cxs = [pt.x * COORD_SCALE + offset_x for s in renderable for pt in s.points]
+        cys = [pt.y * COORD_SCALE for s in renderable for pt in s.points]
+        if glyph_highlights:
+            for gh in glyph_highlights:
+                for (rx, ry, rw, rh) in gh.rectangles:
+                    cxs += [rx * COORD_SCALE + offset_x, (rx + rw) * COORD_SCALE + offset_x]
+                    cys += [ry * COORD_SCALE, (ry + rh) * COORD_SCALE]
+        if cxs and cys:
+            MARGIN = 8
+            min_cx, max_cx = min(cxs), max(cxs)
+            min_cy, max_cy = min(cys), max(cys)
+            if min_cx < 0:  # content off the left edge → shift right
+                shift = -min_cx + MARGIN
+                offset_x += shift
+                max_cx += shift
+            if min_cy < 0:  # content off the top edge → shift down
+                shift = -min_cy + MARGIN
+                offset_y += shift
+                max_cy += shift
+            # Grow ONLY when content genuinely spills past the standard page.
+            # A page that fits inside 1404x1872 gets no shift and no growth, so it
+            # renders byte-for-byte identically to the pre-fix output.
+            if max_cx > canvas_w_int:
+                canvas_w_int = int(math.ceil(max_cx)) + MARGIN
+            if max_cy > canvas_h_int:
+                canvas_h_int = int(math.ceil(max_cy)) + MARGIN
 
     # Create document and page for Shape API (non-pencil strokes)
     # If a PDF is provided, use the PDF page as the background

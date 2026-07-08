@@ -3,10 +3,15 @@
  * PDF++ link formatting, and incremental update merging.
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   renderMarkdown,
   mergeWithExistingNote,
   generateOutputFilename,
+  resolveOutputBaseNames,
+  scanExistingNoteBaseNames,
   DefaultMarkdownRenderer,
   HIGHLIGHTS_SECTION_START,
   HIGHLIGHTS_SECTION_END,
@@ -321,6 +326,130 @@ describe('generateOutputFilename', () => {
 
   it('trims whitespace', () => {
     expect(generateOutputFilename('  Padded  ')).toBe('Padded');
+  });
+});
+
+describe('resolveOutputBaseNames', () => {
+  it('leaves uniquely-named documents unchanged', () => {
+    const map = resolveOutputBaseNames([
+      { uuid: 'aaaaaaaa-1', visibleName: 'Alpha' },
+      { uuid: 'bbbbbbbb-2', visibleName: 'Beta' },
+    ]);
+    expect(map.get('aaaaaaaa-1')).toBe('Alpha');
+    expect(map.get('bbbbbbbb-2')).toBe('Beta');
+  });
+
+  it('suffixes ALL documents in a colliding group with their uuid', () => {
+    const map = resolveOutputBaseNames([
+      { uuid: 'f6d11d23-xxxx', visibleName: 'Quick sheets' },
+      { uuid: '5a5e2c9f-yyyy', visibleName: 'Quick sheets' },
+    ]);
+    expect(map.get('f6d11d23-xxxx')).toBe('Quick sheets (f6d11d23)');
+    expect(map.get('5a5e2c9f-yyyy')).toBe('Quick sheets (5a5e2c9f)');
+  });
+
+  it('detects collisions after sanitization, and only within the colliding name', () => {
+    const map = resolveOutputBaseNames([
+      { uuid: 'aaaaaaaa-1', visibleName: 'Report: 2024' },
+      { uuid: 'bbbbbbbb-2', visibleName: 'Report 2024' }, // sanitizes to same
+      { uuid: 'cccccccc-3', visibleName: 'Unique' },
+    ]);
+    expect(map.get('aaaaaaaa-1')).toBe('Report 2024 (aaaaaaaa)');
+    expect(map.get('bbbbbbbb-2')).toBe('Report 2024 (bbbbbbbb)');
+    expect(map.get('cccccccc-3')).toBe('Unique');
+  });
+
+  it('is deterministic regardless of input order', () => {
+    const docs = [
+      { uuid: 'f6d11d23-xxxx', visibleName: 'Quick sheets' },
+      { uuid: '5a5e2c9f-yyyy', visibleName: 'Quick sheets' },
+    ];
+    const a = resolveOutputBaseNames(docs);
+    const b = resolveOutputBaseNames([...docs].reverse());
+    expect(a.get('f6d11d23-xxxx')).toBe(b.get('f6d11d23-xxxx'));
+    expect(a.get('5a5e2c9f-yyyy')).toBe(b.get('5a5e2c9f-yyyy'));
+  });
+
+  // --- sticky naming (existingByUuid) ---
+
+  it('reuses the existing note name for a document that already has one', () => {
+    const existing = new Map([['bbbbbbbb-2', 'Report (bbbbbbbb)']]);
+    const map = resolveOutputBaseNames(
+      [{ uuid: 'bbbbbbbb-2', visibleName: 'Report' }],
+      existing,
+    );
+    // Sticky: does NOT revert to the clean 'Report' now that it's the only one.
+    expect(map.get('bbbbbbbb-2')).toBe('Report (bbbbbbbb)');
+  });
+
+  it('does not revert a suffixed note when its colliding sibling is removed', () => {
+    // docA ('Report') is gone; only docB remains, holding a suffixed note.
+    const existing = new Map([['bbbbbbbb-2', 'Report (bbbbbbbb)']]);
+    const map = resolveOutputBaseNames(
+      [{ uuid: 'bbbbbbbb-2', visibleName: 'Report' }],
+      existing,
+    );
+    expect(map.get('bbbbbbbb-2')).toBe('Report (bbbbbbbb)');
+  });
+
+  it('gives a new document the clean name when the existing sibling is suffixed', () => {
+    const existing = new Map([['bbbbbbbb-2', 'Report (bbbbbbbb)']]);
+    const map = resolveOutputBaseNames(
+      [
+        { uuid: 'bbbbbbbb-2', visibleName: 'Report' },   // keeps suffixed note
+        { uuid: 'cccccccc-3', visibleName: 'Report' },   // new, 'Report' is free
+      ],
+      existing,
+    );
+    expect(map.get('bbbbbbbb-2')).toBe('Report (bbbbbbbb)');
+    expect(map.get('cccccccc-3')).toBe('Report');
+  });
+
+  it('suffixes a new document that collides with an existing plain note', () => {
+    const existing = new Map([['aaaaaaaa-1', 'Report']]);
+    const map = resolveOutputBaseNames(
+      [
+        { uuid: 'aaaaaaaa-1', visibleName: 'Report' },   // keeps 'Report'
+        { uuid: 'dddddddd-4', visibleName: 'Report' },   // new, must not clobber
+      ],
+      existing,
+    );
+    expect(map.get('aaaaaaaa-1')).toBe('Report');
+    expect(map.get('dddddddd-4')).toBe('Report (dddddddd)');
+  });
+});
+
+describe('scanExistingNoteBaseNames', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rm-notes-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('maps each note to its document UUID from frontmatter', () => {
+    fs.writeFileSync(
+      path.join(dir, 'Quick sheets.md'),
+      '---\ntitle: "Quick sheets"\nremarkable_uuid: 5a5e2c9f-a85e-4c2c-978c-4fa3cca428f7\n---\nbody',
+    );
+    fs.writeFileSync(
+      path.join(dir, 'Report (aaaaaaaa).md'),
+      '---\nremarkable_uuid: aaaaaaaa-1111-2222-3333-444444444444\n---\n',
+    );
+    const map = scanExistingNoteBaseNames(dir);
+    expect(map.get('5a5e2c9f-a85e-4c2c-978c-4fa3cca428f7')).toBe('Quick sheets');
+    expect(map.get('aaaaaaaa-1111-2222-3333-444444444444')).toBe('Report (aaaaaaaa)');
+  });
+
+  it('ignores non-md files and notes without a uuid', () => {
+    fs.writeFileSync(path.join(dir, 'note.txt'), 'remarkable_uuid: 5a5e2c9f-a85e-4c2c-978c-4fa3cca428f7');
+    fs.writeFileSync(path.join(dir, 'No UUID.md'), '---\ntitle: x\n---\n');
+    expect(scanExistingNoteBaseNames(dir).size).toBe(0);
+  });
+
+  it('returns an empty map for a missing folder', () => {
+    expect(scanExistingNoteBaseNames(path.join(dir, 'does-not-exist')).size).toBe(0);
   });
 });
 

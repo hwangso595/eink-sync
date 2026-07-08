@@ -28,6 +28,9 @@ Thumbs.db
 # Generator notes (internal)
 .generator/
 
+# Local dev/debug scripts that read tablet credentials — never commit
+probe-tablet.mjs
+
 # Python
 __pycache__/
 *.pyc
@@ -93,3 +96,6 @@ extraction/align_tool.py
 extraction/compare_params.py
 extraction/debug_rm.py
 extraction/test_agz_page5.py
+
+# Internal planning docs (not shipped)
+CODEBASE_CLEANUP_PLAN.md

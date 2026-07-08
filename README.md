@@ -249,9 +249,9 @@ When you disable and re-enable the plugin (e.g., in a subvault), it re-reads set
 
 ### Old highlights still showing after deletion
 
-When you delete highlights on the tablet and re-sync, the extraction finds 0 highlights for that document. If the document also has no pen stroke drawings, the pipeline **skips updating the file** (it treats "nothing to show" as "nothing to do"). The old highlight note remains unchanged.
+When you delete highlights on the tablet and re-sync, the extraction finds 0 highlights for that document. If a highlight note already exists for it, the plugin now clears the managed highlights section (replacing it with "_No highlights or annotations found in this document._") while preserving any notes you added outside the managed markers. Brand-new documents with nothing to extract still don't create empty notes.
 
-Workaround: manually delete the stale highlight note, or enable `overwriteExisting` in settings to force a fresh write every time.
+If you don't see the note update, re-run **Extract new highlights** (the update happens on the next extraction after the deletion syncs across).
 
 ---
 

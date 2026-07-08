@@ -122,12 +122,53 @@ export async function testConnection(
   config: SSHConfig,
   sshClient?: SSHExecutor,
 ): Promise<boolean> {
+  return (await testConnectionDetailed(config, sshClient)).ok;
+}
+
+/** Outcome of a detailed connectivity test. */
+export interface ConnectionTestResult {
+  /** Whether SSH connected and the device responded. */
+  ok: boolean;
+  /** The specific failure, preserved so the UI can explain *why* it failed. */
+  error: BridgeError | null;
+}
+
+/**
+ * Like {@link testConnection} but preserves the specific failure reason
+ * (timeout vs. auth vs. connection-refused vs. unreachable) instead of
+ * collapsing everything to a bare boolean. The SSH layer already produces a
+ * precise, actionable BridgeError — this surfaces it so callers can show the
+ * user something better than "Failed".
+ */
+export async function testConnectionDetailed(
+  config: SSHConfig,
+  sshClient?: SSHExecutor,
+): Promise<ConnectionTestResult> {
   const ssh = sshClient ?? new ReMarkableSSHClient(config);
   try {
     await ssh.connect();
-    return await ssh.ping();
-  } catch {
-    return false;
+    const alive = await ssh.ping();
+    if (!alive) {
+      return {
+        ok: false,
+        error: new BridgeError(
+          ErrorCode.DEVICE_NOT_REMARKABLE,
+          'Connected, but the device did not respond to a test command.',
+          'The tablet may be busy. Try again in a moment.',
+        ),
+      };
+    }
+    return { ok: true, error: null };
+  } catch (err) {
+    const bridgeError = err instanceof BridgeError
+      ? err
+      : new BridgeError(
+          ErrorCode.SSH_COMMAND_FAILED,
+          `Unexpected error: ${(err as Error).message}`,
+          'Check your connection settings and try again.',
+          err as Error,
+        );
+    return { ok: false, error: bridgeError };
   } finally {
     await ssh.disconnect();
   }

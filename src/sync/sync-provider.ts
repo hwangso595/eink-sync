@@ -26,6 +26,13 @@ export type SyncProgressCallback = (
 
 /** Result of a sync operation. */
 export interface SyncResult {
+  /**
+   * Whether the transfer fully succeeded. Implementations guarantee
+   * `success === true` implies `errors` is empty; any failed file/API call sets
+   * `success = false`. Callers that treat a run as "clean" should still check
+   * both to be defensive.
+   */
+  success: boolean;
   /** Number of files downloaded from the tablet. */
   filesDownloaded: number;
   /** Number of files skipped (already up to date). */

@@ -7,6 +7,8 @@
  * Privacy: All operations happen over SSH to the user's own tablet.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { logger } from '../utils/logger';
 import { isValidUuid } from './uuid-validation';
@@ -20,8 +22,109 @@ export interface ArchiveOptions {
   thresholdPercent: number;
   /** Minimum age in days before a document is eligible for archiving. */
   minAgeDays: number;
-  /** If true, ignore the disk usage threshold and archive all eligible docs. */
+  /**
+   * If true, ignore the disk usage threshold and archive all eligible docs.
+   * NOTE: `force` only bypasses the disk-usage gate. It does NOT bypass the
+   * local-backup verification below — archiving deletes from the tablet, so we
+   * never delete a document we can't prove is already in the vault.
+   */
   force: boolean;
+  /**
+   * Absolute path to the local synced copy of the xochitl directory. Required:
+   * before deleting any document from the tablet, we confirm its files exist
+   * (and are non-empty) here. Without a confirmed backup, "archive" would be
+   * "delete forever".
+   */
+  localSyncDir: string;
+}
+
+/**
+ * Confirm a document is safely backed up in the local sync folder before we
+ * delete it from the tablet. Requires the metadata + content sidecars and the
+ * actual document body (the source PDF/EPUB, or — for notebooks — the page
+ * directory with at least one stroke file).
+ *
+ * Conservative by design: any doubt returns false, so the doc is kept on the
+ * tablet rather than risked.
+ */
+export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
+  const nonEmptyFile = (p: string): boolean => {
+    try {
+      const st = fs.statSync(p);
+      return st.isFile() && st.size > 0;
+    } catch {
+      return false;
+    }
+  };
+  // A directory counts only if it holds at least one non-empty file, so an
+  // empty .rm from a torn sync can't pass the gate.
+  const dirHasContent = (p: string): boolean => {
+    try {
+      if (!fs.statSync(p).isDirectory()) return false;
+      return fs.readdirSync(p).some((name) => nonEmptyFile(path.join(p, name)));
+    } catch {
+      return false;
+    }
+  };
+
+  const base = path.join(localSyncDir, uuid);
+
+  // Sidecars must be present and non-empty.
+  if (!nonEmptyFile(`${base}.metadata`)) return false;
+  if (!nonEmptyFile(`${base}.content`)) return false;
+
+  // Document body: a synced source file, or a non-empty annotation dir
+  // (notebooks have no source file — their content lives entirely in {uuid}/).
+  const hasBody =
+    nonEmptyFile(`${base}.pdf`) ||
+    nonEmptyFile(`${base}.epub`) ||
+    dirHasContent(base);
+
+  return hasBody;
+}
+
+/**
+ * Authoritative pre-delete check: every non-empty tablet file for the UUID must
+ * exist non-empty locally. Catches cases hasLocalBackup can't see locally, e.g.
+ * a PDF synced but its handwritten annotations ({uuid}/*.rm) not. Refuses on any
+ * doubt (missing/empty local file, or the listing failing).
+ */
+export async function tabletFilesBackedUpLocally(
+  ssh: SSHExecutor,
+  localSyncDir: string,
+  uuid: string,
+): Promise<boolean> {
+  // List every non-empty file the delete removes with its size -- sidecar
+  // files, {uuid}/ strokes, and files inside sidecar dirs like {uuid}.highlights
+  // -- skipping regenerable caches. Each must exist locally at the SAME size, so
+  // a truncated/partial local copy can't pass the gate.
+  const find = await ssh.execute(
+    `cd ${XOCHITL_DIR} && find . -maxdepth 3 -type f -size +0c ` +
+    `\\( -path './${uuid}.*' -o -path './${uuid}/*' \\) ` +
+    `-not -path './${uuid}.cache/*' ` +
+    `-not -path './${uuid}.thumbnails/*' ` +
+    `-not -path './${uuid}.textconversion/*' ` +
+    `-exec stat -c '%s %n' {} \\; 2>/dev/null`,
+  );
+  if (find.exitCode !== 0) return false;
+
+  const lines = find.stdout.trim().split('\n').map((s) => s.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
+
+  for (const line of lines) {
+    const sep = line.indexOf(' ');
+    if (sep < 0) return false;
+    const tabletSize = parseInt(line.slice(0, sep), 10);
+    const rel = line.slice(sep + 1).replace(/^\.\//, '');
+    if (!Number.isFinite(tabletSize) || !rel) return false;
+    try {
+      const st = fs.statSync(path.join(localSyncDir, rel));
+      if (!st.isFile() || st.size !== tabletSize) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -43,8 +146,13 @@ export async function archiveOldDocuments(
   options: ArchiveOptions,
   onNeedsXochitlRestart?: () => void,
 ): Promise<number> {
-  const { thresholdPercent, minAgeDays, force } = options;
+  const { thresholdPercent, minAgeDays, force, localSyncDir } = options;
   const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
+
+  if (!localSyncDir) {
+    logger.warn('Archive aborted: no local sync directory provided — refusing to delete unverified documents');
+    return 0;
+  }
 
   // Step 1: Check /home disk usage
   const dfResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
@@ -120,14 +228,44 @@ export async function archiveOldDocuments(
       continue;
     }
 
+    // SAFETY GATE: never delete from the tablet unless we can prove the
+    // document is already backed up locally. Applies even when force=true.
+    if (!hasLocalBackup(localSyncDir, doc.uuid)) {
+      logger.warn(
+        `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
+        `Sync this document to the vault before archiving.`,
+      );
+      continue;
+    }
+
+    // Authoritative check: the tablet's own files must all be backed up locally
+    // (e.g. a PDF's annotations), or deleting would lose un-synced content.
+    if (!(await tabletFilesBackedUpLocally(ssh, localSyncDir, doc.uuid))) {
+      logger.warn(
+        `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
+        `locally (e.g. annotations). Sync it fully before archiving.`,
+      );
+      continue;
+    }
+
     // Add to .stignore so Syncthing won't try to re-sync from vault
     await ssh.execute(
       `echo '${doc.uuid}*' >> ${XOCHITL_DIR}/.stignore && echo '${doc.uuid}/' >> ${XOCHITL_DIR}/.stignore`
     );
 
-    // Delete from tablet
+    // Delete from tablet — explicit, auditable file list (no glob).
+    // Covers every sidecar/dir xochitl creates for a document.
+    const u = doc.uuid;
+    // Only delete files we verified are backed up, plus the regenerable caches
+    // (.cache/.thumbnails). .textconversion (OCR output) is not verified, so
+    // leave it on the tablet rather than deleting unbacked-up content.
+    const targets = [
+      `${u}.metadata`, `${u}.content`, `${u}.pdf`, `${u}.epub`,
+      `${u}.pagedata`, `${u}.local`,
+      u, `${u}.cache`, `${u}.thumbnails`, `${u}.highlights`,
+    ].join(' ');
     await ssh.execute(
-      `cd ${XOCHITL_DIR} && rm -rf ${doc.uuid}* 2>/dev/null; rm -rf ${doc.uuid} 2>/dev/null; true`
+      `cd ${XOCHITL_DIR} && rm -rf ${targets} 2>/dev/null; true`
     );
 
     archivedCount++;

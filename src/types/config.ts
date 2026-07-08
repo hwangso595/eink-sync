@@ -1,8 +1,5 @@
 /**
- * Configuration types for the reMarkable-Obsidian bridge.
- *
- * The config file lives in the Obsidian vault at .eink-sync/config.json
- * for portability, as specified in the product spec.
+ * Connection configuration types for the reMarkable-Obsidian bridge.
  */
 
 /** How the user connects to the reMarkable. */
@@ -24,19 +21,6 @@ export interface SSHConfig {
   method: ConnectionMethod;
 }
 
-/** Full bridge configuration. */
-export interface BridgeConfig {
-  ssh: SSHConfig;
-  /** Path within the vault for extraction output. */
-  outputFolder: string;
-  /** Path to the synced xochitl directory on the host. */
-  syncFolder: string;
-  /** Highlight template file path (relative to vault). */
-  templatePath: string | null;
-  /** Timestamp of last successful sync. */
-  lastSyncTimestamp: number | null;
-}
-
 /** Sensible defaults for a fresh installation. */
 export const DEFAULT_SSH_CONFIG: SSHConfig = {
   host: '10.11.99.1',
@@ -45,12 +29,4 @@ export const DEFAULT_SSH_CONFIG: SSHConfig = {
   password: '',
   timeoutMs: 10_000,
   method: 'usb',
-};
-
-export const DEFAULT_BRIDGE_CONFIG: BridgeConfig = {
-  ssh: DEFAULT_SSH_CONFIG,
-  outputFolder: 'ReMarkable',
-  syncFolder: '',
-  templatePath: null,
-  lastSyncTimestamp: null,
 };

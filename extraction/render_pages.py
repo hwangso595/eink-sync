@@ -66,6 +66,11 @@ def main() -> None:
     parser.add_argument("--xochitl-path", required=True)
     parser.add_argument("--doc-uuid", required=True)
     parser.add_argument("--output-dir", required=True)
+    # Collision-resolved output base name supplied by the caller. When two
+    # documents share a visible name the caller disambiguates them (e.g.
+    # "Quick sheets (f6d11d23)") so their page images don't overwrite each
+    # other. Falls back to the sanitized visible name when omitted.
+    parser.add_argument("--doc-name", default=None)
     args = parser.parse_args()
 
     output: dict = {
@@ -105,7 +110,10 @@ def main() -> None:
     )
     output["doc_type"] = "notebook" if is_notebook else content.file_type
 
-    doc_name = _safe_filename(output["visible_name"])
+    # Prefer the caller-supplied, collision-resolved base name verbatim so the
+    # page images line up with the note filename; fall back to sanitizing the
+    # visible name when the caller didn't provide one.
+    doc_name = args.doc_name if args.doc_name else _safe_filename(output["visible_name"])
     os.makedirs(args.output_dir, exist_ok=True)
 
     rm_dir = os.path.join(args.xochitl_path, args.doc_uuid)

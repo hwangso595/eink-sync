@@ -15,6 +15,7 @@ import { Client, type ConnectConfig, type ClientChannel } from 'ssh2';
 import { SSHConfig } from '../types/config';
 import { BridgeError, ErrorCode } from '../types/errors';
 import { logger } from '../utils/logger';
+import { makeHostVerifier } from './host-key-store';
 
 /** Result of executing a remote command. */
 export interface CommandResult {
@@ -77,6 +78,9 @@ export class ReMarkableSSHClient implements SSHExecutor {
       username: this.config.username,
       password: this.config.password,
       readyTimeout: this.config.timeoutMs,
+      // Pin the tablet's host key (TOFU) so the root password is never sent to
+      // a machine impersonating the tablet. See host-key-store for policy.
+      hostVerifier: makeHostVerifier(this.config.host),
       // reMarkable uses dropbear SSH which has limited algorithm support
       algorithms: {
         kex: [

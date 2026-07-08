@@ -39,22 +39,27 @@ import type { DeviceInfo } from '../types/device';
 import {
   connectAndVerify,
   testConnection,
+  testConnectionDetailed,
   type ConnectionResult,
+  type ConnectionTestResult,
   type ProgressCallback,
 } from '../ssh/connection-manager';
+import { initHostKeyStore } from '../ssh/host-key-store';
 
 // Sprint 2 imports
-import {
-  setupSync,
-  type SetupProgressCallback,
-  type SyncSetupResult,
-} from '../sync/sync-manager';
 import {
   isSyncthingInstalled,
   isEntwareInstalled,
   installSyncStack,
   type InstallProgressCallback,
 } from '../sync/installer';
+import { materializeExtractionAssets } from './extraction-assets';
+
+/**
+ * Progress callback for the multi-phase install flow.
+ * (phase, step, detail) -> void
+ */
+type SetupProgressCallback = (phase: string, step: string, detail: string) => void;
 
 // Sprint 3 imports
 import {
@@ -73,6 +78,7 @@ import { SyncthingProvider } from '../sync/syncthing-provider';
 
 // File watcher
 import { XochitlFileWatcher } from '../pipeline/file-watcher';
+import { discoverDocumentsWithStatus } from '../pipeline/document-discovery';
 
 // Archive manager
 import { archiveOldDocuments as runArchive } from './archive-manager';
@@ -139,6 +145,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
   private xochitlRestartInProgress = false;
   /** Timestamp of the last periodic archive check, used for 30-minute cooldown. */
   private lastArchiveCheckTimestamp = 0;
+  /**
+   * The most recent sync/connection failure, surfaced in the status bar tooltip
+   * and the sync status modal so a silent timeout no longer looks like "no new
+   * docs". Cleared on the next successful sync.
+   */
+  private _lastSyncError: { message: string; at: number } | null = null;
   // Auto-sync timer state is now managed by SyncCoordinator.
   // These fields are kept for backward compatibility but delegate to the coordinator.
 
@@ -163,9 +175,37 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async onload(): Promise<void> {
     logger.info('Loading E-Ink Sync plugin');
 
+    // Write the embedded Python extraction scripts to disk. Obsidian's plugin
+    // auto-updater only delivers manifest.json/main.js/styles.css, so the
+    // scripts are bundled into main.js and materialized here; extraction would
+    // otherwise fail on an auto-updated install with no extraction/ folder.
+    try {
+      materializeExtractionAssets(this.getPluginDir());
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Could not write extraction scripts to disk: ${msg}`);
+      new Notice(
+        `E-Ink Sync: could not install its extraction scripts (${msg}). ` +
+        `Highlight extraction will not work until this is resolved.`,
+        12000,
+      );
+    }
+
     // Load persisted settings
     await this.loadSettings();
     this.applyLogLevel();
+
+    // Initialise the SSH host-key store (TOFU) so the tablet's key is pinned
+    // and key changes are surfaced to the user rather than silently trusted.
+    initHostKeyStore(`${this.getPluginDir()}/known-hosts.json`, (host) => {
+      new Notice(
+        `E-Ink Sync: the SSH host key for ${host} changed, so the connection was ` +
+        `refused. If another device could be impersonating your tablet, do not ` +
+        `proceed. If you reflashed the tablet, remove ${host} from ` +
+        `known-hosts.json in the plugin folder to re-trust it.`,
+        15000,
+      );
+    });
 
     // Ensure folders exist
     await ensureFolders(this.app,
@@ -605,6 +645,21 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
+   * Whether the active sync mode can push local changes back to the tablet.
+   *
+   * SFTP is pull-only: "Send to reMarkable", and per-document archive / delete /
+   * unarchive cannot affect the tablet in SFTP mode. Only Syncthing propagates
+   * local changes bidirectionally. UI surfaces branch on this so they never
+   * claim a tablet-side effect they can't deliver.
+   *
+   * (This is distinct from the SSH-based bulk "Archive old documents" command,
+   * which genuinely deletes from the tablet over SSH and works in either mode.)
+   */
+  isPushCapable(): boolean {
+    return (this.settings.syncMethod ?? 'sftp') === 'syncthing';
+  }
+
+  /**
    * Schedule a debounced xochitl restart on the tablet.
    *
    * Multiple callers (archive, delete, send-to-remarkable) may request
@@ -651,16 +706,55 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
-   * Detect the tablet's WiFi IP address via SSH.
-   * Connects using current settings (typically USB at 10.11.99.1) and
-   * reads the wlan0 interface IP. Returns null if tablet is not on WiFi.
+   * Connection test that preserves the specific failure reason, so UI surfaces
+   * can tell the user *why* (timeout at IP vs. wrong password vs. refused)
+   * instead of a bare "Failed".
    */
-  async detectTabletWifiIp(): Promise<string | null> {
-    return this.withSSH(async (ssh) => {
+  async testConnectionDetailed(): Promise<ConnectionTestResult> {
+    const config = this.buildSSHConfig();
+    return testConnectionDetailed(config);
+  }
+
+  /** The most recent sync/connection failure (for status bar + modal). */
+  getLastSyncError(): { message: string; at: number } | null {
+    return this._lastSyncError;
+  }
+
+  /** Record a sync/connection failure for later display. */
+  recordSyncError(err: unknown): void {
+    const message = err instanceof BridgeError
+      ? err.toUserMessage()
+      : (err instanceof Error ? err.message : String(err));
+    this._lastSyncError = { message, at: Date.now() };
+  }
+
+  /** Clear the last sync error after a successful sync. */
+  clearSyncError(): void {
+    this._lastSyncError = null;
+  }
+
+  /**
+   * Detect the tablet's WiFi IP address via SSH and read the wlan0 interface IP.
+   * Returns null if the tablet is not on WiFi.
+   *
+   * @param overrideHost - Connect to this host instead of the saved tablet IP.
+   *   Used by the "find tablet via USB" recovery flow: when the saved WiFi IP is
+   *   stale (e.g. after a network change), we connect over USB (10.11.99.1) to
+   *   ask the tablet what its current WiFi IP actually is.
+   */
+  async detectTabletWifiIp(overrideHost?: string): Promise<string | null> {
+    const config = this.buildSSHConfig();
+    const ssh = new ReMarkableSSHClient(
+      overrideHost ? { ...config, host: overrideHost, method: 'usb' } : config,
+    );
+    try {
+      await ssh.connect();
       const result = await ssh.execute('ip -4 addr show wlan0 2>/dev/null');
       const match = result.stdout.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
       return match ? match[1] : null;
-    });
+    } finally {
+      await ssh.disconnect();
+    }
   }
 
   /** Full connection + device detection + preflight check. */
@@ -696,7 +790,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
 
     const sources = this._pluginData.syncSources;
-    const targetSources = sourceId
+    let targetSources = sourceId
       ? sources.filter((s) => s.id === sourceId)
       : sources;
 
@@ -704,37 +798,87 @@ export default class ReMarkableBridgePlugin extends Plugin {
       throw new Error('No sync sources configured.');
     }
 
-    // Use first source's sync folder as the local target
-    // (multi-source SFTP would need per-source sync dirs)
-    const source = targetSources[0];
-    const localSyncDir = resolvePath(this.app, source.syncFolder);
+    // SFTP uses one global tablet connection, so it can only sync a single
+    // source -- syncing every folder from the same tablet would overwrite them
+    // with duplicate data. Restrict to the primary/target source. (Multi-tablet
+    // setups need Syncthing, which has per-source folder IDs.)
+    if (targetSources.length > 1) {
+      logger.warn(
+        `SFTP syncs a single tablet; only "${targetSources[0].label}" of ` +
+        `${targetSources.length} sources will be synced.`,
+      );
+      targetSources = [targetSources[0]];
+    }
 
-    const engine = new SftpSyncEngine({
-      host: this.settings.tabletIp,
-      port: this.settings.sshPort,
-      username: 'root',
-      password: this.settings.rootPassword,
-      timeoutMs: this.settings.sshTimeoutMs,
-      localSyncDir,
-      includeEpub: this.settings.includeEpub,
-    });
+    // Sync every target source, each into its own local folder, and aggregate
+    // the results. Previously only the first source was synced while extraction
+    // scanned them all -- so extra sources looked "synced" but never were.
+    const syncResult: SftpSyncResult = {
+      success: true,
+      filesDownloaded: 0,
+      filesSkipped: 0,
+      bytesDownloaded: 0,
+      durationMs: 0,
+      errors: [],
+      summary: '',
+    };
+    const summaries: string[] = [];
 
-    const syncResult = await engine.sync(onProgress);
+    for (const src of targetSources) {
+      const engine = new SftpSyncEngine({
+        host: this.settings.tabletIp,
+        port: this.settings.sshPort,
+        username: 'root',
+        password: this.settings.rootPassword,
+        timeoutMs: this.settings.sshTimeoutMs,
+        localSyncDir: resolvePath(this.app, src.syncFolder),
+        includeEpub: this.settings.includeEpub,
+      });
 
-    // Run extraction after sync completes (even if some files had errors)
+      const r = await engine.sync(onProgress);
+      syncResult.filesDownloaded += r.filesDownloaded;
+      syncResult.filesSkipped += r.filesSkipped;
+      syncResult.bytesDownloaded += r.bytesDownloaded;
+      syncResult.durationMs += r.durationMs;
+      syncResult.errors.push(...r.errors);
+      if (!r.success) syncResult.success = false;
+      summaries.push(r.summary);
+    }
+
+    syncResult.summary = targetSources.length === 1
+      ? summaries[0]
+      : `Synced ${targetSources.length} sources: ${syncResult.filesDownloaded} downloaded, ` +
+        `${syncResult.filesSkipped} up to date` +
+        (syncResult.errors.length > 0 ? `, ${syncResult.errors.length} error(s)` : '') + '.';
+
+    // A clean transfer is success AND no per-file errors. Anything less must
+    // not look healthy (no cleared error, advanced timestamp, or cursor).
+    const cleanTransfer = syncResult.success && syncResult.errors.length === 0;
+    if (!cleanTransfer) {
+      this.recordSyncError(new Error(syncResult.errors[0] || syncResult.summary || 'SFTP sync failed'));
+    } else {
+      this.clearSyncError();
+    }
+
+    // Run extraction after sync completes (even if some files had errors).
     let extractionResult: PipelineRunResult | null = null;
     if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
       try {
-        extractionResult = await this.runExtraction(false, sourceId);
+        // Extract exactly the source we synced (SFTP is one source), so
+        // extraction never scans a folder this run didn't refresh.
+        extractionResult = await this.runExtraction(false, targetSources[0].id, undefined, {
+          allowCursorAdvance: cleanTransfer,
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`Extraction after SFTP sync failed: ${msg}`);
       }
     }
 
-    // Update last sync timestamp
-    this.settings.lastSyncTimestamp = Date.now();
-    await this.saveSettings();
+    if (cleanTransfer) {
+      this.settings.lastSyncTimestamp = Date.now();
+      await this.saveSettings();
+    }
 
     return { syncResult, extractionResult };
   }
@@ -760,26 +904,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
     });
   }
 
-  /** Set up Syncthing pairing between tablet and host. */
-  async setupSyncPairing(
-    deviceInfo: DeviceInfo,
-    hostSyncPath: string,
-    hostDeviceId?: string,
-    hostAddress?: string,
-    onProgress?: SetupProgressCallback,
-  ): Promise<SyncSetupResult> {
-    return this.withSSH(async (ssh) => {
-      return setupSync(
-        ssh,
-        deviceInfo,
-        hostSyncPath,
-        hostDeviceId,
-        hostAddress,
-        onProgress,
-      );
-    });
-  }
-
   /**
    * Run the full extraction pipeline across all sync sources (or a specific source).
    *
@@ -787,7 +911,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * @param sourceId - If provided, only extract from this specific source.
    * @param docUuid - If provided, only extract this specific document.
    */
-  async runExtraction(forceAll = false, sourceId?: string, docUuid?: string): Promise<PipelineRunResult> {
+  async runExtraction(
+    forceAll = false,
+    sourceId?: string,
+    docUuid?: string,
+    opts?: { allowCursorAdvance?: boolean },
+  ): Promise<PipelineRunResult> {
+    // A failed transfer can leave disk not reflecting the tablet, so the caller
+    // may forbid advancing the incremental cursor (default: allowed).
+    const allowCursorAdvance = opts?.allowCursorAdvance ?? true;
     const sources = this._pluginData.syncSources;
 
     if (sources.length === 0) {
@@ -836,6 +968,18 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
     for (const source of targetSources) {
       try {
+        // Capture the incremental cursor BEFORE extraction, from the tablet's
+        // own clock domain. The previous code stored Date.now() (the host PC's
+        // clock) and compared it against each doc's metadata.lastModified (the
+        // tablet's clock). An offline rM1 whose clock lags the host would make
+        // genuinely-new docs look "older than the cursor" and silently drop
+        // them from every future incremental run. Using max(observed
+        // lastModified) keeps the comparison tablet-vs-tablet, and capturing it
+        // pre-run means a doc modified during extraction stays > cursor and is
+        // re-picked-up next run rather than being skipped.
+        const { maxTimestamp: observedCursor, pendingCount } =
+          this.computeSourceCursorStatus(source.syncFolder);
+
         const sourceResult = await this.runExtractionForSource(
           source, forceAll, template, docUuid,
         );
@@ -848,9 +992,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
         aggregateResult.documentResults.push(...sourceResult.documentResults);
         aggregateResult.errors.push(...sourceResult.errors);
 
-        // Update per-source timestamp in device state (NOT data.json)
-        this.deviceStateManager.setSourceTimestamp(source.id, Date.now());
-        this.deviceStateManager.setSourcePathHash(source.id, hashString(source.syncFolder));
+        // Only advance the cursor after a clean full scan. A targeted (docUuid)
+        // run, a run with errors, or one where documents are still mid-sync
+        // (pendingCount) left documents unprocessed; advancing past them would
+        // silently skip them on future incremental runs.
+        const cleanFullScan =
+          allowCursorAdvance && !docUuid && sourceResult.errors.length === 0 && pendingCount === 0;
+        if (cleanFullScan) {
+          const prevCursor = this.deviceStateManager.getSourceTimestamp(source.id) ?? 0;
+          this.deviceStateManager.setSourceTimestamp(source.id, Math.max(prevCursor, observedCursor));
+          this.deviceStateManager.setSourcePathHash(source.id, hashString(source.syncFolder));
+        }
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         const msg = lastError.message;
@@ -891,14 +1043,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // This is the critical change that prevents Syncthing conflicts on every extraction.
     await this.saveDeviceState();
 
-    // Notify user
+    // Notify user. Surface errors whenever present -- a run that produced no
+    // highlights *because* something failed must not read as a clean
+    // "No new highlights found."
     if (aggregateResult.totalHighlights > 0) {
       new Notice(
         `E-Ink Sync: Extracted ${aggregateResult.totalHighlights} highlight(s) from ${aggregateResult.documentsWithHighlights} document(s).`,
       );
-    } else if (aggregateResult.errors.length > 0 && targetSources.length > 1) {
+    } else if (aggregateResult.errors.length > 0) {
       new Notice(
-        `E-Ink Sync: Extraction completed with errors. ${aggregateResult.errors.length} source(s) had issues.`,
+        `E-Ink Sync: Extraction completed with ${aggregateResult.errors.length} error(s). See the console for details.`,
+        12000,
       );
     } else {
       new Notice('E-Ink Sync: No new highlights found.');
@@ -912,6 +1067,28 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * Run extraction for a single sync source.
    * Handles per-source path-hash validation and timestamp management.
    */
+  /**
+   * Newest `lastModified` (tablet-clock, epoch-ms) across a source's
+   * discoverable documents, plus the count of present-but-not-yet-extractable
+   * ("pending") docs. The cursor stays in the tablet's clock domain; pendingCount
+   * lets callers avoid advancing the cursor past mid-sync documents. On a scan
+   * failure we report a pending doc so the cursor does not advance.
+   */
+  private computeSourceCursorStatus(syncFolder: string): { maxTimestamp: number; pendingCount: number } {
+    try {
+      const { documents, pendingCount } = discoverDocumentsWithStatus(resolvePath(this.app, syncFolder));
+      let max = 0;
+      for (const doc of documents) {
+        if (doc.lastModified > max) max = doc.lastModified;
+      }
+      return { maxTimestamp: max, pendingCount };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Could not compute extraction cursor for "${syncFolder}": ${msg}`);
+      return { maxTimestamp: 0, pendingCount: 1 };
+    }
+  }
+
   private async runExtractionForSource(
     source: SyncSource,
     forceAll: boolean,
@@ -1211,6 +1388,17 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
   /** Let user pick a document from the vault and send it to reMarkable via sync folder. */
   async sendDocumentToRemarkable(): Promise<void> {
+    // SFTP is download-only. Writing files into the local sync folder does
+    // nothing on the tablet, so refuse rather than pretend the send worked.
+    if (!this.isPushCapable()) {
+      new Notice(
+        'E-Ink Sync: Sending documents to the tablet requires Syncthing sync mode. ' +
+        'SFTP is download-only. Switch to Syncthing in settings to enable this.',
+        10000,
+      );
+      return;
+    }
+
     const sources = this._pluginData.syncSources;
     if (sources.length === 0 || !sources[0].syncFolder) {
       new Notice('E-Ink Sync: No sync source configured. Run setup wizard first.');
@@ -1442,11 +1630,19 @@ export default class ReMarkableBridgePlugin extends Plugin {
    */
   async archiveOldDocuments(force = false): Promise<number> {
     try {
+      // Resolve the local synced copy so archive can verify a backup exists
+      // before deleting anything from the tablet.
+      const sources = this._pluginData.syncSources;
+      const localSyncDir = sources[0]?.syncFolder
+        ? resolvePath(this.app, sources[0].syncFolder)
+        : resolvePath(this.app, this.settings.syncFolder);
+
       const archived = await this.withSSH(async (ssh) => {
         return runArchive(ssh, {
           thresholdPercent: this.settings.archiveThresholdPercent,
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
+          localSyncDir,
         }, () => this.scheduleXochitlRestart());
       });
 

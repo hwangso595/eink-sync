@@ -23,6 +23,7 @@ import { Client, SFTPWrapper } from 'ssh2';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { makeHostVerifier } from '../ssh/host-key-store';
 import { XOCHITL_SYNC_PATH } from './types';
 
 // ---------------------------------------------------------------
@@ -195,6 +196,8 @@ function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SF
       username: options.username,
       password: options.password,
       readyTimeout: options.timeoutMs,
+      // Pin the tablet's host key (TOFU) — see ssh/host-key-store.
+      hostVerifier: makeHostVerifier(options.host),
       // reMarkable uses dropbear SSH with limited algorithm support
       algorithms: {
         kex: [
@@ -247,13 +250,24 @@ function sftpStat(sftp: SFTPWrapper, remotePath: string): Promise<{ size: number
   });
 }
 
-/** Download a single file from remote to local using fastGet, preserving remote mtime. */
+/**
+ * Download a single file from remote to local using fastGet, preserving remote
+ * mtime.
+ *
+ * Downloads to a temporary `.part` file and atomically renames it into place on
+ * success. This guarantees a reader (e.g. document discovery, which runs on a
+ * timer/file-watch) never observes a half-written `.content`/`.metadata` and
+ * silently drops the document. A failed transfer leaves the previous good copy
+ * (or nothing) rather than a torn file.
+ */
 function sftpDownloadFile(
   sftp: SFTPWrapper, remotePath: string, localPath: string, remoteMtime?: number,
 ): Promise<void> {
+  const tmpPath = `${localPath}.part`;
   return new Promise((resolve, reject) => {
-    sftp.fastGet(remotePath, localPath, (err) => {
+    sftp.fastGet(remotePath, tmpPath, (err) => {
       if (err) {
+        try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore cleanup */ }
         reject(new Error(`Failed to download ${remotePath}: ${err.message}`));
         return;
       }
@@ -261,10 +275,18 @@ function sftpDownloadFile(
       // .rm files and cache/thumbnail PNGs work correctly
       if (remoteMtime && remoteMtime > 0) {
         try {
-          fs.utimesSync(localPath, remoteMtime, remoteMtime);
+          fs.utimesSync(tmpPath, remoteMtime, remoteMtime);
         } catch {
           // Non-fatal: mtime preservation failed
         }
+      }
+      try {
+        fs.renameSync(tmpPath, localPath);
+      } catch (renameErr) {
+        try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore cleanup */ }
+        const msg = renameErr instanceof Error ? renameErr.message : String(renameErr);
+        reject(new Error(`Failed to finalize ${localPath}: ${msg}`));
+        return;
       }
       resolve();
     });

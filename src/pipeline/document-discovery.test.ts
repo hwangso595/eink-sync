@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { discoverDocuments, XochitlDocumentDiscovery } from './document-discovery';
+import { discoverDocuments, discoverDocumentsWithStatus, XochitlDocumentDiscovery, computeTrashedUuids } from './document-discovery';
 
 /** Create a temporary xochitl directory for testing. */
 function createTmpDir(): string {
@@ -25,6 +25,37 @@ function writeFakePdf(dir: string, uuid: string): void {
   fs.writeFileSync(path.join(dir, `${uuid}.pdf`), '%PDF-1.4 fake', 'utf-8');
 }
 
+describe('computeTrashedUuids', () => {
+  it('flags documents whose parent is trash directly', () => {
+    const trashed = computeTrashedUuids(new Map([
+      ['doc-a', 'trash'],
+      ['doc-b', ''],
+    ]));
+    expect(trashed.has('doc-a')).toBe(true);
+    expect(trashed.has('doc-b')).toBe(false);
+  });
+
+  it('flags documents inside a trashed ancestor folder', () => {
+    const trashed = computeTrashedUuids(new Map([
+      ['folder', 'trash'],   // folder is in trash
+      ['doc', 'folder'],     // doc lives in that folder
+      ['other', ''],         // top-level, not trashed
+    ]));
+    expect(trashed.has('folder')).toBe(true);
+    expect(trashed.has('doc')).toBe(true);
+    expect(trashed.has('other')).toBe(false);
+  });
+
+  it('does not hang on a parent cycle', () => {
+    const trashed = computeTrashedUuids(new Map([
+      ['a', 'b'],
+      ['b', 'a'],
+    ]));
+    expect(trashed.has('a')).toBe(false);
+    expect(trashed.has('b')).toBe(false);
+  });
+});
+
 describe('discoverDocuments', () => {
   let tmpDir: string;
 
@@ -34,6 +65,20 @@ describe('discoverDocuments', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('counts a mid-sync doc (metadata but no content) as pending, not discovered', () => {
+    writeJson(tmpDir, 'pending-1.metadata', {
+      visibleName: 'Mid Sync',
+      parent: '',
+      type: 'DocumentType',
+      lastModified: '1700000001000',
+      deleted: false,
+    });
+    // No .content file yet -> pending.
+    const { documents, pendingCount } = discoverDocumentsWithStatus(tmpDir);
+    expect(documents).toHaveLength(0);
+    expect(pendingCount).toBe(1);
   });
 
   it('discovers PDF documents with correct metadata', () => {

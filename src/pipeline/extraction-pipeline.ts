@@ -33,7 +33,7 @@ import {
 } from './types';
 import { XochitlDocumentDiscovery } from './document-discovery';
 import { PythonHighlightExtractor } from './python-bridge';
-import { DefaultMarkdownRenderer, generateOutputFilename, type PageDrawings } from './markdown-renderer';
+import { DefaultMarkdownRenderer, generateOutputFilename, resolveOutputBaseNames, scanExistingNoteBaseNames, type PageDrawings } from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
 import { renderPageImages, type PageImageResult } from './page-image-renderer';
 import { logger } from '../utils/logger';
@@ -248,12 +248,30 @@ export async function runExtractionPipeline(
     return result;
   }
 
-  // Apply UUID filter if provided (used by extractSelected for targeted extraction)
+  // Resolve stable, collision-free output base names from the FULL discovered
+  // set (computed BEFORE any UUID filter, so a collision with a document outside
+  // a targeted subset is still detected). A document that already has a note
+  // keeps that note's exact name (looked up by UUID) so links/transclusions
+  // never break; brand-new same-named documents get a distinct suffixed name.
+  const existingNoteNames = scanExistingNoteBaseNames(config.outputPath);
+  const outputBaseNames = resolveOutputBaseNames(documents, existingNoteNames);
+  const baseNameFor = (doc: { uuid: string; visibleName: string }): string =>
+    outputBaseNames.get(doc.uuid) ?? generateOutputFilename(doc.visibleName);
+
+  // Apply UUID filter if provided (targeted "extract selected document(s)").
+  // A requested document that is not present is a visible failure, not a silent
+  // no-op: record it in result.errors so the UI can surface it.
   if (config.uuidFilter && config.uuidFilter.length > 0) {
     const uuidSet = new Set(config.uuidFilter);
     documents = documents.filter((doc) => uuidSet.has(doc.uuid));
+    const foundUuids = new Set(documents.map((d) => d.uuid));
+    const missing = config.uuidFilter.filter((u) => !foundUuids.has(u));
+    if (missing.length > 0) {
+      const msg = `Selected document(s) not found in the sync folder: ${missing.join(', ')}`;
+      logger.warn(msg);
+      result.errors.push(msg);
+    }
     if (documents.length === 0) {
-      logger.info('No documents matched the UUID filter');
       return result;
     }
     logger.info(`UUID filter applied: ${documents.length} of ${config.uuidFilter.length} requested document(s) found`);
@@ -333,6 +351,15 @@ export async function runExtractionPipeline(
     }
   }
 
+  // Defense in depth: a targeted "extract selected" request may only write the
+  // requested document(s), even if the extractor returned more. Without this a
+  // bridge regression could overwrite every note in the vault for a single-doc
+  // request. Notebooks in the requested set are preserved by the same filter.
+  if (config.uuidFilter && config.uuidFilter.length > 0) {
+    const uuidSet = new Set(config.uuidFilter);
+    extractionResults = extractionResults.filter((r) => uuidSet.has(r.document.uuid));
+  }
+
   // Stage 3 & 4: Render and write each document
   const total = extractionResults.length;
   for (let i = 0; i < total; i++) {
@@ -357,6 +384,9 @@ export async function runExtractionPipeline(
         docResult.warnings = extractionResult.warnings;
         result.documentResults.push(docResult);
         result.documentsProcessed++;
+        // Surface at the pipeline level too, so a run where every document
+        // errored does not report as a bland "No new highlights found."
+        result.errors.push(`${doc.visibleName}: ${extractionResult.error}`);
         logger.warn(
           `Skipping ${doc.visibleName}: ${extractionResult.error} (graceful degradation)`,
         );
@@ -378,8 +408,10 @@ export async function runExtractionPipeline(
       docResult.highlightCount = extractionResult.highlights.length;
       docResult.warnings = [...docResult.warnings, ...extractionResult.warnings];
 
-      // Generate output file path
-      const filename = generateOutputFilename(doc.visibleName) + '.md';
+      // Generate output file path (collision-free base name shared with the
+      // page-image renderer so the note and its PNGs stay in lockstep).
+      const outputBaseName = baseNameFor(doc);
+      const filename = outputBaseName + '.md';
       const outputFilePath = path.join(config.outputPath, filename);
       docResult.outputFile = outputFilePath;
 
@@ -388,9 +420,14 @@ export async function runExtractionPipeline(
       logger.info(`  xochitlPath=${config.xochitlPath}, drawingsPath=${config.drawingsPath}, pluginDir=${config.pluginDir}`);
 
       let pageDrawings: PageDrawings | null = null;
+      // renderPageImages returns null for a genuinely-empty result but THROWS on
+      // a real render failure (the document had strokes we couldn't render). We
+      // track that separately so we never clear an existing note's drawings just
+      // because a transient render failed.
+      let renderFailed = false;
       try {
         const imageResult: PageImageResult | null = await renderPageImages(
-          doc, config.xochitlPath, config.drawingsPath, config.pluginDir,
+          doc, config.xochitlPath, config.drawingsPath, config.pluginDir, outputBaseName,
         );
         if (imageResult) {
           pageDrawings = imageResult.pageDrawings;
@@ -406,6 +443,7 @@ export async function runExtractionPipeline(
           }
         }
       } catch (drawErr) {
+        renderFailed = true;
         logger.error(`renderPageImages failed for ${doc.visibleName}: ${drawErr}`);
       }
 
@@ -414,10 +452,32 @@ export async function runExtractionPipeline(
         `${pageDrawings ? pageDrawings.size : 0} page drawings`
       );
 
-      // Skip documents with nothing to show (no highlights AND no drawings)
+      // Always surface a render failure. Preserve an existing note of ANY type
+      // (notebooks are entirely drawings) rather than rewriting it without the
+      // drawings we couldn't render. A new note with text is still written; a
+      // new note with nothing else to show is skipped, not created empty.
+      if (renderFailed) {
+        const noteExists = fs.existsSync(outputFilePath);
+        const msg = `${doc.visibleName}: page rendering failed; ` +
+          (noteExists ? 'existing note left unchanged.' : 'drawings may be missing.');
+        logger.warn(msg);
+        result.errors.push(msg);
+        docResult.warnings.push('Page rendering failed; drawings may be missing this run.');
+        if (noteExists || extractionResult.highlights.length === 0) {
+          docResult.error = 'Page rendering failed';
+          result.documentsProcessed++;
+          result.documentResults.push(docResult);
+          continue;
+        }
+      }
+
+      // Nothing to show (no highlights AND no drawings). Only skip creating a
+      // *brand-new* note here -- avoids empty-note noise for untouched PDFs.
+      // An existing note (whose render succeeded) falls through to the merge
+      // path so removing all highlights on the tablet clears the stale note.
       if (extractionResult.highlights.length === 0 && (!pageDrawings || pageDrawings.size === 0)) {
-        if (doc.type !== 'notebook') {
-          // For PDFs without highlights or drawings, skip creating a note
+        if (doc.type !== 'notebook' && !fs.existsSync(outputFilePath)) {
+          // Brand-new PDF with nothing to extract: don't create an empty note.
           result.documentsProcessed++;
           docResult.success = true;
           result.documentResults.push(docResult);

@@ -20,6 +20,7 @@ import {
   type FolderSettingKey,
 } from './folder-migration-modal';
 import { collisionKey } from './vault-isolation';
+import { isValidIpv4, sharesLocalSubnet, localIpv4Interfaces } from './net-utils';
 import { stopServices, removeServices } from '../sync/service-manager';
 import type { SyncProvider } from '../sync/sync-provider';
 
@@ -164,6 +165,36 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
     // 2. Tablet IP — only shown when WiFi selected (USB is always 10.11.99.1)
     if (isWifi) {
+      const ipWarnEl = containerEl.createDiv({
+        cls: 'setting-item-description remarkable-field-warning',
+      });
+      ipWarnEl.hide();
+
+      // Validate format and flag a likely network-switch (saved IP not on this
+      // computer's subnet) — the #1 cause of silent sync failure.
+      const refreshIpWarnings = (value: string): void => {
+        const ip = value.trim();
+        if (ip.length === 0) {
+          ipWarnEl.hide();
+          return;
+        }
+        if (!isValidIpv4(ip)) {
+          ipWarnEl.setText(`"${ip}" is not a valid IPv4 address (expected e.g. 192.168.1.42).`);
+          ipWarnEl.show();
+          return;
+        }
+        if (!sharesLocalSubnet(ip)) {
+          const locals = localIpv4Interfaces().map((i) => i.address).join(', ') || 'unknown';
+          ipWarnEl.setText(
+            `Heads up: ${ip} isn't on this computer's network (this machine: ${locals}). ` +
+            `If you switched Wi-Fi, the tablet likely has a new IP — use "Detect via USB" below.`,
+          );
+          ipWarnEl.show();
+          return;
+        }
+        ipWarnEl.hide();
+      };
+
       new Setting(containerEl)
         .setName('Tablet IP address')
         .setDesc('Check your tablet\'s network settings for the WiFi IP address.')
@@ -173,9 +204,36 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             .setValue(this.plugin.settings.tabletIp)
             .onChange((value) => {
               this.plugin.settings.tabletIp = value.trim();
+              refreshIpWarnings(value);
               this.debouncedSave();
             }),
+        )
+        .addExtraButton((btn) =>
+          btn
+            .setIcon('usb')
+            .setTooltip('Detect the tablet\'s current Wi-Fi IP over USB')
+            .onClick(async () => {
+              new Notice('E-Ink Sync: connect the tablet via USB, then detecting...');
+              try {
+                const detected = await this.plugin.detectTabletWifiIp('10.11.99.1');
+                if (!detected) {
+                  new Notice('E-Ink Sync: tablet not on Wi-Fi (no wlan0 IP found).', 6000);
+                  return;
+                }
+                this.plugin.settings.tabletIp = detected;
+                await this.plugin.saveSettings();
+                new Notice(`E-Ink Sync: found tablet at ${detected}. Updated.`, 6000);
+                this.display();
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                new Notice(`E-Ink Sync: USB detection failed — ${msg}`, 8000);
+              }
+            }),
         );
+
+      // Move the warning element to directly follow the IP setting row.
+      containerEl.append(ipWarnEl);
+      refreshIpWarnings(this.plugin.settings.tabletIp);
     }
 
     // 3. Root password — always shown (needed for both modes)
@@ -317,6 +375,16 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               this.display();
             }),
         );
+
+      // Make it obvious that with auto-sync off, new tablet docs won't appear
+      // on their own — the silent "nothing happens" state we want to avoid.
+      if (!this.plugin.settings.autoSyncEnabled) {
+        const hint = containerEl.createDiv({ cls: 'setting-item-description remarkable-field-warning' });
+        hint.setText(
+          'Auto-sync is off — new tablet documents won\'t appear until you sync manually ' +
+          '(ribbon icon or the "Sync now" command).',
+        );
+      }
 
       if (this.plugin.settings.autoSyncEnabled) {
         new Setting(containerEl)
@@ -844,6 +912,10 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // ----- SSH -----
     new Setting(advancedEl).setName('SSH').setHeading();
 
+    const portWarnEl = advancedEl.createDiv({
+      cls: 'setting-item-description remarkable-field-warning',
+    });
+    portWarnEl.hide();
     new Setting(advancedEl)
       .setName('SSH port')
       .setDesc('Default is 22. Only change if your tablet uses a non-standard SSH port.')
@@ -852,13 +924,21 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .setPlaceholder('22')
           .setValue(String(this.plugin.settings.sshPort))
           .onChange((value) => {
-            const port = parseInt(value, 10);
+            // Digits only -- parseInt would accept "22abc"/"1.5".
+            const port = /^\d+$/.test(value.trim()) ? parseInt(value.trim(), 10) : NaN;
             if (!isNaN(port) && port > 0 && port <= 65535) {
+              portWarnEl.hide();
               this.plugin.settings.sshPort = port;
               this.debouncedSave();
+            } else {
+              // Don't silently discard invalid input — tell the user why it
+              // isn't taking effect.
+              portWarnEl.setText(`"${value}" is not a valid port (1–65535). Keeping ${this.plugin.settings.sshPort}.`);
+              portWarnEl.show();
             }
           }),
       );
+    advancedEl.append(portWarnEl);
 
     new Setting(advancedEl)
       .setName('Connection timeout')

@@ -37,6 +37,7 @@ export async function renderPageImages(
   xochitlPath: string,
   drawingsPath: string | undefined,
   pluginDir?: string,
+  outputBaseName?: string,
 ): Promise<PageImageResult | null> {
   if (!drawingsPath) return null;
 
@@ -81,8 +82,14 @@ export async function renderPageImages(
   const scriptPath = path.join(scriptDir, 'render_pages.py');
 
   if (!fs.existsSync(scriptPath)) {
-    logger.debug('render_pages.py script not found, skipping stroke rendering');
-    return null;
+    // The document HAS strokes to render but the renderer script is missing --
+    // this is a packaging/install fault, not a "nothing to render". Throw so the
+    // caller can tell "renderer failed" from "genuinely no drawings" and must
+    // NOT clear an existing note's drawings.
+    throw new Error(
+      `render_pages.py not found at ${scriptPath}. The extraction scripts were not ` +
+      `installed -- reload the plugin so it can rewrite them.`,
+    );
   }
 
   if (!fs.existsSync(drawingsPath)) {
@@ -103,12 +110,18 @@ export async function renderPageImages(
 
   try {
     const pageMap = await new Promise<PageImageResult>((resolve, reject) => {
-      const proc = spawn(pythonExe, [
+      const scriptArgs = [
         scriptPath,
         '--xochitl-path', xochitlPath,
         '--doc-uuid', doc.uuid,
         '--output-dir', drawingsPath,
-      ], {
+      ];
+      // Pass the collision-resolved base name so page-image filenames match the
+      // note filename (two same-named docs won't overwrite each other's PNGs).
+      if (outputBaseName) {
+        scriptArgs.push('--doc-name', outputBaseName);
+      }
+      const proc = spawn(pythonExe, scriptArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 120000,
         cwd: scriptDir,
@@ -188,9 +201,13 @@ export async function renderPageImages(
     });
 
     logger.info(`Page images rendered: ${pageMap.pageDrawings.size} page(s) with strokes, ${pageMap.rendererHighlights.length} renderer highlight(s)`);
+    // A successful render that produced nothing is a legitimate empty result.
     return pageMap.pageDrawings.size > 0 || pageMap.rendererHighlights.length > 0 ? pageMap : null;
   } catch (err) {
+    // A genuine render failure (spawn/timeout/exit/parse) on a document that we
+    // already confirmed HAS strokes. Propagate it so the pipeline preserves any
+    // existing note rather than clearing drawings it could not re-render.
     logger.warn(`Page image rendering failed for ${doc.visibleName}: ${err}`);
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }

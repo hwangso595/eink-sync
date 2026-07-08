@@ -13,7 +13,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
 import type { DocumentType } from '../pipeline/types';
-import { sanitizeFilename } from './helpers';
+import { resolveOutputBaseNames, scanExistingNoteBaseNames } from '../pipeline/markdown-renderer';
+import { computeTrashedUuids } from '../pipeline/document-discovery';
 import type {
   LibraryDocument,
   LibraryFolder,
@@ -141,13 +142,12 @@ function buildFolderPath(
  * the managed highlights markers.
  */
 function countHighlightsForDocument(
-  visibleName: string,
+  noteBaseName: string,
   outputPath: string | null,
 ): number {
   if (!outputPath) return 0;
 
-  const safeName = sanitizeFilename(visibleName);
-  const filePath = path.join(outputPath, `${safeName}.md`);
+  const filePath = path.join(outputPath, `${noteBaseName}.md`);
 
   try {
     if (!fs.existsSync(filePath)) return 0;
@@ -190,13 +190,25 @@ export function buildLibrary(
 
   const entries = fs.readdirSync(xochitlPath);
 
-  // Phase 1: Parse all .metadata files
-  const allEntries = new Map<string, ParsedEntry>();
+  // Phase 1: Parse all .metadata files, then drop deleted AND trashed entries
+  // (a doc trashed directly, or inside a trashed folder) so the library matches
+  // what the tablet actually shows. reMarkable keeps trashed items on disk with
+  // deleted=false until the trash is emptied.
+  const parsed: ParsedEntry[] = [];
+  const parentByUuid = new Map<string, string>();
   for (const entry of entries) {
     if (!entry.endsWith('.metadata')) continue;
     if (entry.includes('sync-conflict')) continue;
     const meta = parseMetadata(path.join(xochitlPath, entry));
-    if (meta && !meta.deleted) {
+    if (!meta) continue;
+    parsed.push(meta);
+    parentByUuid.set(meta.uuid, meta.parentUuid);
+  }
+  const trashed = computeTrashedUuids(parentByUuid);
+
+  const allEntries = new Map<string, ParsedEntry>();
+  for (const meta of parsed) {
+    if (!meta.deleted && !trashed.has(meta.uuid)) {
       allEntries.set(meta.uuid, meta);
     }
   }
@@ -214,6 +226,15 @@ export function buildLibrary(
 
   // Phase 3: Build folder path cache
   const pathCache = new Map<string, string>();
+
+  // Resolve stable, collision-free note base names across ALL documents, so the
+  // library links each row to the exact note the pipeline writes — reusing an
+  // existing note's name (by UUID) so the link stays put even if the name would
+  // otherwise change.
+  const baseNames = resolveOutputBaseNames(
+    [...documentEntries.values()].map((e) => ({ uuid: e.uuid, visibleName: e.visibleName })),
+    outputPath ? scanExistingNoteBaseNames(outputPath) : undefined,
+  );
 
   // Phase 4: Build document list
   const documents: LibraryDocument[] = [];
@@ -236,11 +257,13 @@ export function buildLibrary(
       folderPath = buildFolderPath(meta.parentUuid, folderEntries, pathCache);
     }
 
-    const highlightCount = countHighlightsForDocument(meta.visibleName, outputPath);
+    const noteBaseName = baseNames.get(uuid) ?? meta.visibleName;
+    const highlightCount = countHighlightsForDocument(noteBaseName, outputPath);
 
     documents.push({
       uuid,
       name: meta.visibleName,
+      noteBaseName,
       type: docType,
       lastModified: meta.lastModified,
       highlightCount,

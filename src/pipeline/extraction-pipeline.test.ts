@@ -19,7 +19,7 @@ import {
   ExtractionResult,
 } from './types';
 import { runExtractionPipeline } from './extraction-pipeline';
-import { renderMarkdown, mergeWithExistingNote, generateOutputFilename } from './markdown-renderer';
+import { renderMarkdown, mergeWithExistingNote, generateOutputFilename, DefaultMarkdownRenderer } from './markdown-renderer';
 import { discoverDocuments } from './document-discovery';
 
 /** Create a temporary directory for test output. */
@@ -595,6 +595,145 @@ describe('Regression: notebook handling in pipeline', () => {
 
     // Document was processed (even if no highlights were found, it had drawings)
     expect(result.documentsProcessed).toBe(1);
+  });
+});
+
+describe('selected extraction (uuidFilter) and failure surfacing', () => {
+  let xochitlDir: string;
+  let outputDir: string;
+
+  beforeEach(() => {
+    xochitlDir = createTmpDir();
+    outputDir = createTmpDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(xochitlDir, { recursive: true, force: true });
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  });
+
+  function makeConfig(overrides?: Partial<PipelineConfig>): PipelineConfig {
+    return {
+      xochitlPath: xochitlDir,
+      outputPath: outputDir,
+      template: null,
+      sinceTimestamp: null,
+      overwrite: false,
+      ...overrides,
+    };
+  }
+
+  const hl = (text: string) => ({ text, pageNumber: 1, color: null, bounds: null, createdAt: null });
+  const notePath = (name: string) => path.join(outputDir, generateOutputFilename(name) + '.md');
+
+  it('writes ONLY the selected document even if the extractor returns the whole library', async () => {
+    const docA = createMockDocument({ uuid: 'A', visibleName: 'Doc A' });
+    const docB = createMockDocument({ uuid: 'B', visibleName: 'Doc B' });
+    const docC = createMockDocument({ uuid: 'C', visibleName: 'Doc C' });
+
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [docA, docB, docC] },
+      // Simulate the historical bug: the extractor ignores its argument and
+      // returns results for every document in the library.
+      extractor: {
+        extractHighlights: async () => [
+          createMockExtractionResult(docA, [hl('a')]),
+          createMockExtractionResult(docB, [hl('b')]),
+          createMockExtractionResult(docC, [hl('c')]),
+        ],
+      },
+      renderer: {
+        render: (r) => `# ${r.document.visibleName}`,
+        mergeWithExisting: (existing) => existing,
+      },
+    });
+
+    const result = await runExtractionPipeline(makeConfig({ uuidFilter: ['A'] }), deps);
+
+    expect(result.outputFiles).toHaveLength(1);
+    expect(fs.existsSync(notePath('Doc A'))).toBe(true);
+    expect(fs.existsSync(notePath('Doc B'))).toBe(false);
+    expect(fs.existsSync(notePath('Doc C'))).toBe(false);
+  });
+
+  it('records a visible error when a selected UUID is not found', async () => {
+    const docA = createMockDocument({ uuid: 'A', visibleName: 'Doc A' });
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [docA] },
+    });
+
+    const result = await runExtractionPipeline(makeConfig({ uuidFilter: ['missing-uuid'] }), deps);
+
+    expect(result.outputFiles).toHaveLength(0);
+    expect(result.errors.join(' ')).toContain('missing-uuid');
+  });
+
+  it('surfaces a per-document extraction error in result.errors (not a silent no-op)', async () => {
+    const doc = createMockDocument({ uuid: 'err', visibleName: 'Err Doc' });
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: {
+        extractHighlights: async () => [
+          createMockExtractionResult(doc, [], { success: false, error: 'rmscene exploded' }),
+        ],
+      },
+    });
+
+    const result = await runExtractionPipeline(makeConfig(), deps);
+
+    expect(result.errors.join(' ')).toContain('rmscene exploded');
+    expect(result.outputFiles).toHaveLength(0);
+  });
+
+  it('surfaces a batch extraction failure instead of reporting no highlights', async () => {
+    const doc = createMockDocument({ uuid: 'x', visibleName: 'X' });
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: {
+        extractHighlights: async () => { throw new Error('python process failed'); },
+      },
+    });
+
+    const result = await runExtractionPipeline(makeConfig(), deps);
+
+    expect(result.errors.join(' ')).toContain('python process failed');
+  });
+
+  it('clears an existing note when all highlights are removed on the tablet', async () => {
+    const doc = createMockDocument({ uuid: 'stale', visibleName: 'Stale Doc' });
+
+    // Pre-existing note with an old highlight inside the managed markers.
+    const oldContent = renderMarkdown(createMockExtractionResult(doc, [hl('OLD HIGHLIGHT')]), 'stale.pdf');
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(notePath('Stale Doc'), oldContent, 'utf-8');
+    expect(fs.readFileSync(notePath('Stale Doc'), 'utf-8')).toContain('OLD HIGHLIGHT');
+
+    // Re-extract: the document now has zero highlights.
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: { extractHighlights: async () => [createMockExtractionResult(doc, [])] },
+      renderer: new DefaultMarkdownRenderer(),
+    });
+
+    await runExtractionPipeline(makeConfig({ overwrite: false }), deps);
+
+    const updated = fs.readFileSync(notePath('Stale Doc'), 'utf-8');
+    expect(updated).not.toContain('OLD HIGHLIGHT');
+    expect(updated).toContain('_No highlights or annotations found');
+  });
+
+  it('does NOT create a note for a brand-new document with nothing to extract', async () => {
+    const doc = createMockDocument({ uuid: 'empty', visibleName: 'Empty Doc' });
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: { extractHighlights: async () => [createMockExtractionResult(doc, [])] },
+      renderer: new DefaultMarkdownRenderer(),
+    });
+
+    const result = await runExtractionPipeline(makeConfig(), deps);
+
+    expect(fs.existsSync(notePath('Empty Doc'))).toBe(false);
+    expect(result.outputFiles).toHaveLength(0);
   });
 });
 

@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ItemView, TFile, WorkspaceLeaf, setIcon, Menu, Notice, Setting } from 'obsidian';
 import { logger } from '../utils/logger';
+import { isValidIpv4, localIpv4Interfaces, sharesLocalSubnet } from './net-utils';
 import type ReMarkableBridgePlugin from './plugin';
 import type {
   LibraryDocument,
@@ -29,7 +30,7 @@ import {
   sortDocuments,
   filterDocuments,
 } from './library-data';
-import { resolvePath, formatRelativeTime, sanitizeFilename } from './helpers';
+import { resolvePath, formatRelativeTime } from './helpers';
 import { isValidUuid } from './uuid-validation';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import type { SyncProgressCallback } from '../sync/sync-provider';
@@ -115,65 +116,140 @@ export class ReMarkableLibraryView extends ItemView {
    * The provider handles SFTP vs Syncthing differences internally.
    */
   private async syncWithProgress(statusEl: HTMLElement): Promise<void> {
-    const provider = this.plugin.getSyncProvider();
     const isSftp = (this.plugin.settings.syncMethod ?? 'sftp') === 'sftp';
+    const allSources = this.plugin.getSyncSources();
+
+    if (allSources.length === 0) {
+      statusEl.setText('No sync sources configured. Open Settings to add a source.');
+      statusEl.removeClass('is-loading', 'is-success');
+      statusEl.addClass('is-error');
+      return;
+    }
+
+    // SFTP has one global tablet connection, so only the primary source is
+    // syncable; syncing every folder from the same tablet would duplicate data.
+    const sources = isSftp && allSources.length > 1 ? [allSources[0]] : allSources;
 
     statusEl.setText(isSftp ? 'Connecting to tablet via SFTP...' : 'Asking Syncthing to check for changes...');
 
-    try {
-      const syncResult = await provider.sync((phase, detail, current, total) => {
-        switch (phase) {
-          case 'connecting':
-            statusEl.setText('Connecting to tablet...');
-            break;
-          case 'listing':
-            statusEl.setText('Reading file list from tablet...');
-            break;
-          case 'comparing':
-            statusEl.setText(detail);
-            break;
-          case 'downloading':
-            if (current && total) {
-              statusEl.setText(`Downloading ${current}/${total}: ${detail}`);
-            } else {
-              statusEl.setText(detail);
-            }
-            break;
-          case 'scanning':
-          case 'waiting':
-            statusEl.setText(detail);
-            break;
-          case 'complete':
-            statusEl.setText(detail);
-            break;
-          case 'error':
-            statusEl.setText(`Sync error: ${detail}`);
-            break;
-          default:
-            statusEl.setText(detail);
-            break;
-        }
-      });
+    const onSyncProgress: SyncProgressCallback = (phase, detail, current, total) => {
+      switch (phase) {
+        case 'connecting':
+          statusEl.setText('Connecting to tablet...');
+          break;
+        case 'listing':
+          statusEl.setText('Reading file list from tablet...');
+          break;
+        case 'comparing':
+          statusEl.setText(detail);
+          break;
+        case 'downloading':
+          statusEl.setText(current && total ? `Downloading ${current}/${total}: ${detail}` : detail);
+          break;
+        case 'scanning':
+        case 'waiting':
+        case 'complete':
+          statusEl.setText(detail);
+          break;
+        case 'error':
+          statusEl.setText(`Sync error: ${detail}`);
+          break;
+        default:
+          statusEl.setText(detail);
+          break;
+      }
+    };
 
-      // For SFTP, extraction happens inside syncViaSftp already.
-      // For Syncthing (or if SFTP downloaded files), run extraction.
-      if (!isSftp || syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) {
+    try {
+      // Sync every configured source, not just the first. Aggregate the
+      // outcome so the UI reflects the whole set.
+      let allSuccess = true;
+      let firstError = '';
+      let totalErrors = 0;
+      let anyTransferred = false;
+      const summaries: string[] = [];
+
+      for (const source of sources) {
+        const provider = this.plugin.getSyncProvider(source.id);
+        const syncResult = await provider.sync(onSyncProgress);
+        if (!syncResult.success) {
+          allSuccess = false;
+          if (!firstError && syncResult.errors[0]) firstError = syncResult.errors[0];
+        }
+        totalErrors += syncResult.errors.length;
+        if (syncResult.filesDownloaded > 0 || syncResult.filesSkipped > 0) anyTransferred = true;
+        summaries.push(syncResult.summary);
+      }
+
+      // A total SFTP failure (nothing pulled) is a hard stop. But a partial
+      // SFTP failure that still pulled some files, and a Syncthing rescan
+      // failure (the daemon may have delivered files independently), must NOT
+      // withhold extraction of what is already on disk -- mirror the auto-sync
+      // and single-doc paths, which extract whenever files are present. The
+      // sync error is still surfaced (never presented as a clean success).
+      if (isSftp && !allSuccess && !anyTransferred) {
+        const detail = firstError ? ` (${firstError})` : '';
+        statusEl.setText(`Sync failed${detail}.`);
+        statusEl.removeClass('is-loading', 'is-success');
+        statusEl.addClass('is-error');
+        // A total sync failure must be LOUD. The inline panel text above is easy
+        // to miss, and a later extraction-only run happily re-reads the stale
+        // local files and reports "No new highlights found" -- which masks the
+        // fact that we never reached the tablet at all. Raise a toast and flip
+        // the status bar. When the saved Wi-Fi IP isn't on this computer's
+        // network, name the most common cause: a DHCP address that moved.
+        const ip = this.plugin.settings.tabletIp;
+        const onWifi = this.plugin.settings.connectionMethod === 'wifi';
+        let hint = '';
+        if (onWifi && ip && isValidIpv4(ip) && !sharesLocalSubnet(ip)) {
+          const locals = localIpv4Interfaces().map((i) => i.address).join(', ') || 'unknown';
+          hint =
+            ` The saved tablet IP ${ip} isn't on this computer's network (this machine: ${locals}) ` +
+            `— it may have changed. Update it in settings, or use "Detect via USB".`;
+        } else if (onWifi && ip) {
+          hint =
+            ` Couldn't reach the tablet at ${ip}. Make sure it's awake and on Wi-Fi; ` +
+            `if its IP changed, update it in settings.`;
+        }
+        new Notice(`E-Ink Sync: Sync failed${detail}.${hint}`, 12000);
+        this.plugin.updateStatusBar('error');
+        return;
+      }
+
+      const partialSuffix = totalErrors > 0
+        ? ` (${totalErrors} file error(s) — see console)`
+        : '';
+      const syncErrorSuffix = !allSuccess
+        ? ` Sync reported errors${firstError ? `: ${firstError}` : ''}.`
+        : '';
+      const summary = sources.length === 1 ? summaries[0] : `Synced ${sources.length} sources.`;
+
+      // Run extraction for Syncthing always; for SFTP only if something transferred.
+      if (!isSftp || anyTransferred) {
         statusEl.removeClass('is-success', 'is-error');
         statusEl.addClass('is-loading');
         statusEl.setText('Extracting highlights and annotations...');
 
         try {
-          const extractionResult = await this.plugin.runExtraction(true);
-          if (extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0) {
-            statusEl.setText(
-              `Done! ${syncResult.summary} ` +
-              `${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).`,
-            );
-          } else {
-            statusEl.setText(`${syncResult.summary} No new highlights found.`);
-          }
+          const extractionResult = await this.plugin.runExtraction(
+            true,
+            isSftp ? sources[0].id : undefined, // SFTP: only the synced source
+            undefined,
+            { allowCursorAdvance: allSuccess && totalErrors === 0 },
+          );
+          const base = extractionResult.totalHighlights > 0 || extractionResult.documentsProcessed > 0
+            ? `${summary} ${extractionResult.totalHighlights} highlight(s) from ${extractionResult.documentsProcessed} document(s).${partialSuffix}`
+            : `${summary} No new highlights found.${partialSuffix}`;
           statusEl.removeClass('is-loading');
-          statusEl.addClass('is-success');
+          if (allSuccess) {
+            statusEl.setText(`Done! ${base}`);
+            statusEl.addClass('is-success');
+          } else {
+            // Extraction ran on the files that are present, but the sync itself
+            // had errors -- don't present it as a clean success.
+            statusEl.setText(`${base}${syncErrorSuffix}`);
+            statusEl.addClass('is-error');
+          }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           statusEl.setText(`Extraction failed: ${msg}`);
@@ -181,7 +257,7 @@ export class ReMarkableLibraryView extends ItemView {
           statusEl.addClass('is-error');
         }
       } else {
-        statusEl.setText(syncResult.summary);
+        statusEl.setText(`${summary}${partialSuffix}`);
         statusEl.removeClass('is-loading');
         statusEl.addClass('is-success');
       }
@@ -800,8 +876,7 @@ export class ReMarkableLibraryView extends ItemView {
   /** Open the highlight note directly (creates it if needed). */
   private async openHighlightNote(doc: LibraryDocument): Promise<void> {
     const highlightsFolder = this.plugin.settings.highlightsFolder;
-    const safeName = sanitizeFilename(doc.name);
-    const notePath = `${highlightsFolder}/${safeName}.md`;
+    const notePath = `${highlightsFolder}/${doc.noteBaseName}.md`;
 
     const noteFile = this.plugin.app.vault.getAbstractFileByPath(notePath);
     if (noteFile instanceof TFile) {
@@ -823,13 +898,20 @@ export class ReMarkableLibraryView extends ItemView {
   /** Sync from tablet, then extract highlights for a single document. */
   private async extractSingleDocument(doc: LibraryDocument): Promise<void> {
     try {
-      // Sync first — pull latest files from tablet via the unified provider
+      // Sync first — pull latest files from tablet via the unified provider.
+      // A failed sync is non-fatal here (we fall back to existing local files),
+      // but it must be surfaced rather than silently swallowed.
       new Notice(`Syncing "${doc.name}" from tablet...`);
       try {
         const provider = this.plugin.getSyncProvider(doc.sourceId);
-        await provider.sync();
-      } catch {
-        // Sync failed — still try extraction with existing local files
+        const syncResult = await provider.sync();
+        if (!syncResult.success) {
+          const detail = syncResult.errors[0] ? ` (${syncResult.errors[0]})` : '';
+          new Notice(`Sync failed${detail}. Extracting from existing local files.`, 8000);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`Sync failed (${msg}). Extracting from existing local files.`, 8000);
       }
 
       new Notice(`Extracting from "${doc.name}"...`);
@@ -875,7 +957,11 @@ export class ReMarkableLibraryView extends ItemView {
         fs.renameSync(path.join(archiveDir, entry), path.join(syncDir, entry));
       }
 
-      new Notice(`"${doc.name}" sent back to reMarkable. Syncthing will sync it.`);
+      new Notice(
+        this.plugin.isPushCapable()
+          ? `"${doc.name}" sent back to reMarkable. Syncthing will sync it.`
+          : `"${doc.name}" restored to your vault. (SFTP is download-only — the tablet is unchanged.)`,
+      );
       await this.refreshLibrary();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -918,7 +1004,11 @@ export class ReMarkableLibraryView extends ItemView {
         return;
       }
 
-      new Notice(`"${doc.name}" archived. Syncthing will remove it from the tablet.`);
+      new Notice(
+        this.plugin.isPushCapable()
+          ? `"${doc.name}" archived. Syncthing will remove it from the tablet.`
+          : `"${doc.name}" archived in your vault. (SFTP is download-only — it stays on the tablet and will re-sync unless removed there.)`,
+      );
       await this.refreshLibrary();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -936,9 +1026,13 @@ export class ReMarkableLibraryView extends ItemView {
       return;
     }
 
+    const canPush = this.plugin.isPushCapable();
     const confirmed = confirm(
       `Permanently delete "${doc.name}"?\n\n` +
-      `This removes it from your vault and the tablet. This cannot be undone.`
+      (canPush
+        ? `This removes it from your vault and the tablet. This cannot be undone.`
+        : `This removes it from your vault only. SFTP is download-only, so it stays on the ` +
+          `tablet and will re-download on the next sync. This cannot be undone.`)
     );
     if (!confirmed) return;
 
@@ -953,7 +1047,11 @@ export class ReMarkableLibraryView extends ItemView {
         }
       }
 
-      new Notice(`"${doc.name}" deleted. Syncthing will remove it from the tablet.`);
+      new Notice(
+        canPush
+          ? `"${doc.name}" deleted. Syncthing will remove it from the tablet.`
+          : `"${doc.name}" removed from your vault. (It remains on the tablet in SFTP mode.)`,
+      );
       await this.refreshLibrary();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

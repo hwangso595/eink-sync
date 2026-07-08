@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { fileURLToPath } from 'url';
+import { RUNTIME_PY_FILES } from './runtime-assets.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,7 +30,6 @@ const ITEMS = [
   { src: 'main.js', dest: 'main.js' },
   { src: 'manifest.json', dest: 'manifest.json' },
   { src: 'styles.css', dest: 'styles.css' },
-  { src: 'extraction', dest: 'extraction', isDir: true },
   { src: 'templates', dest: 'templates', isDir: true },
 ];
 
@@ -113,7 +113,24 @@ async function main() {
     copied++;
   }
 
-  console.log(`\nInstalled ${copied} item(s) to: ${pluginDir}`);
+  // Copy only the curated runtime Python scripts (never test_*.py / experiments).
+  // The plugin also materializes these from main.js on load; copying them here
+  // makes a fresh dev install work immediately without a reload.
+  const extractionDest = path.join(pluginDir, 'extraction');
+  fs.mkdirSync(extractionDest, { recursive: true });
+  let pyCopied = 0;
+  for (const rel of RUNTIME_PY_FILES) {
+    const srcPath = path.join(PROJECT_ROOT, 'extraction', rel);
+    if (!fs.existsSync(srcPath)) {
+      console.warn(`  Skip: extraction/${rel} (not found)`);
+      continue;
+    }
+    fs.copyFileSync(srcPath, path.join(extractionDest, rel));
+    pyCopied++;
+  }
+  console.log(`  Copied ${pyCopied} runtime Python script(s) -> extraction/`);
+
+  console.log(`\nInstalled ${copied} item(s) + ${pyCopied} script(s) to: ${pluginDir}`);
   console.log('Restart Obsidian (or reload plugins) to pick up changes.');
 }
 

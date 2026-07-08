@@ -14,10 +14,8 @@ export {
 export type {
   ConnectionMethod,
   SSHConfig,
-  BridgeConfig,
 } from './config';
 
 export {
   DEFAULT_SSH_CONFIG,
-  DEFAULT_BRIDGE_CONFIG,
 } from './config';

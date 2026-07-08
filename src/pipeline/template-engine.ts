@@ -24,7 +24,11 @@
 
 import type { ExtractionResult, ExtractedHighlight, PageDrawings, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
+import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { logger } from '../utils/logger';
+
+// Re-exported for backwards compatibility (public API / tests import it here).
+export { formatPdfLink };
 import {
   HIGHLIGHTS_SECTION_START,
   HIGHLIGHTS_SECTION_END,
@@ -78,9 +82,7 @@ export function buildTemplateContext(
 ): TemplateContext {
   // Use the document's lastModified timestamp for a deterministic date that
   // won't conflict when the same vault is synced across multiple machines.
-  const now = result.document.lastModified > 0
-    ? new Date(result.document.lastModified).toISOString().split('T')[0]
-    : new Date().toISOString().split('T')[0];
+  const now = formatHighlightDate(result.document.lastModified);
 
   return {
     title: result.document.visibleName,
@@ -106,25 +108,6 @@ export function buildTemplateContext(
   };
 }
 
-/**
- * Format a PDF page link according to the configured format.
- */
-export function formatPdfLink(
-  pdfName: string,
-  pageNumber: number,
-  format: PdfLinkFormat,
-): string {
-  switch (format) {
-    case 'pdfpp':
-      return `[[${pdfName}#page=${pageNumber}|Page ${pageNumber}]]`;
-    case 'obsidian':
-      return `[[${pdfName}#page${pageNumber}|Page ${pageNumber}]]`;
-    case 'none':
-      return `Page ${pageNumber}`;
-    default:
-      return `[[${pdfName}#page=${pageNumber}|Page ${pageNumber}]]`;
-  }
-}
 
 /**
  * Render a template string with the given context.
@@ -513,10 +496,7 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     const before = existingContent.substring(0, start.index);
     const after = existingContent.substring(end.index + end.marker.length);
 
-    const updatedBefore = before.replace(
-      /^highlight_count:\s*\d+$/m,
-      `highlight_count: ${result.highlights.length}`,
-    );
+    const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
 
     return updatedBefore + newSection + after;
   }
