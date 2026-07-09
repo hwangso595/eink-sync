@@ -92,3 +92,31 @@ def test_get_ocr_status_reports_all_diagnostic_fields():
 def test_ocr_page_image_missing_file_returns_empty_string():
     # Best-effort helper must never raise, even for a bogus path.
     assert ocr_engine.ocr_page_image("/no/such/file.png") == ""
+
+
+def test_ocr_page_image_accepts_timeout_and_never_raises():
+    # A per-page timeout must be accepted and, even on a bogus path, degrade to
+    # an empty string rather than raising.
+    assert ocr_engine.ocr_page_image("/no/such/file.png", "eng", timeout_seconds=5) == ""
+
+
+def test_tiny_ocr_timeout_yields_empty_text_not_an_exception():
+    # A near-zero budget should make tesseract time out; the helper swallows the
+    # resulting error and returns a string so the page still renders. When
+    # Tesseract is unavailable the result is also empty — either way, a str.
+    import tempfile
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return  # Pillow not installed in this environment; nothing to exercise.
+
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "text.png")
+        img = Image.new("RGB", (600, 140), "white")
+        ImageDraw.Draw(img).text((10, 50), "hello world timeout test", fill=(0, 0, 0))
+        img.save(p)
+        result = ocr_engine.ocr_page_image(p, "eng", timeout_seconds=0.001)
+        assert isinstance(result, str)
+        if ocr_engine.is_ocr_available():
+            # 0.001s is far below tesseract's timeout granularity -> it aborts.
+            assert result == ""

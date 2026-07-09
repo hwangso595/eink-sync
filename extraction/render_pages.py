@@ -76,6 +76,9 @@ def main() -> None:
     # Run local OCR on notebook page images so handwriting becomes searchable.
     parser.add_argument("--ocr", action="store_true")
     parser.add_argument("--ocr-lang", default="eng")
+    # Per-page OCR time budget (seconds). A page that exceeds it loses its OCR
+    # text but still renders; 0 disables the limit.
+    parser.add_argument("--ocr-page-timeout", type=float, default=12.0)
     args = parser.parse_args()
 
     output: dict = {
@@ -266,7 +269,10 @@ def main() -> None:
                     # Local OCR of the rendered handwriting (notebook pages only).
                     ocr_text = ""
                     if ocr_page_image is not None:
-                        ocr_text = ocr_page_image(out_path, args.ocr_lang)
+                        ocr_text = ocr_page_image(
+                            out_path, args.ocr_lang,
+                            timeout_seconds=args.ocr_page_timeout,
+                        )
                         if ocr_text:
                             print(
                                 f"Page {page_number}: OCR recognized {len(ocr_text)} char(s)",

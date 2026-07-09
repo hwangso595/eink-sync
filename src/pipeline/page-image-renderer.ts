@@ -36,6 +36,33 @@ export interface RenderPageOptions {
   ocrEnabled?: boolean;
   /** Tesseract language code(s) for OCR. */
   ocrLanguage?: string;
+  /** Per-page OCR time budget in seconds (0 = unlimited). Defaults to 12. */
+  ocrPageTimeoutSeconds?: number;
+}
+
+/** Base timeout for the page renderer process when OCR is off. */
+const RENDER_TIMEOUT_MS = 120_000;
+/** Extra process time granted per stroked page when OCR is on. */
+const OCR_TIMEOUT_PER_PAGE_MS = 15_000;
+/** Hard ceiling on the OCR-scaled render timeout (20 minutes). */
+const OCR_TIMEOUT_MAX_MS = 1_200_000;
+/** Default per-page OCR budget, mirrored in render_pages.py's --ocr-page-timeout. */
+const DEFAULT_OCR_PAGE_TIMEOUT_S = 12;
+
+/**
+ * Total timeout (ms) for the render_pages.py process.
+ *
+ * OCR runs per page inside this single process budget, so with OCR enabled a
+ * large notebook could blow the fixed 120s and fail the entire (otherwise
+ * successful) page render. When OCR is on the budget scales with the number of
+ * stroked pages, capped at {@link OCR_TIMEOUT_MAX_MS}. Per-page OCR is itself
+ * time-bounded in Python, so this only guards the aggregate. Without OCR the
+ * timeout is unchanged.
+ */
+export function computeRenderTimeoutMs(strokedPageCount: number, ocrEnabled: boolean): number {
+  if (!ocrEnabled) return RENDER_TIMEOUT_MS;
+  const pages = Math.max(0, strokedPageCount);
+  return Math.min(RENDER_TIMEOUT_MS + OCR_TIMEOUT_PER_PAGE_MS * pages, OCR_TIMEOUT_MAX_MS);
 }
 
 /**
@@ -61,7 +88,10 @@ export async function renderPageImages(
   const contentPath = path.join(xochitlPath, `${doc.uuid}.content`);
   if (!fs.existsSync(contentPath)) return null;
 
-  let hasAnyStrokes = false;
+  // Count pages that actually carry strokes. The count also scales the OCR
+  // process timeout below, so we tally all of them rather than stopping at the
+  // first (the extra stat() calls are negligible next to the render itself).
+  let strokedPageCount = 0;
   try {
     const content = JSON.parse(fs.readFileSync(contentPath, 'utf-8'));
     let pageUuids: string[] = [];
@@ -78,8 +108,7 @@ export async function renderPageImages(
       if (fs.existsSync(rmPath)) {
         const stat = fs.statSync(rmPath);
         if (stat.size >= 100) {
-          hasAnyStrokes = true;
-          break;
+          strokedPageCount++;
         }
       }
     }
@@ -87,7 +116,7 @@ export async function renderPageImages(
     return null;
   }
 
-  if (!hasAnyStrokes) return null;
+  if (strokedPageCount === 0) return null;
 
   const scriptDir = pluginDir
     ? path.join(pluginDir, 'extraction')
@@ -138,11 +167,14 @@ export async function renderPageImages(
         scriptArgs.push('--truncate-blank');
       }
       if (options.ocrEnabled) {
-        scriptArgs.push('--ocr', '--ocr-lang', options.ocrLanguage || 'eng');
+        scriptArgs.push(
+          '--ocr', '--ocr-lang', options.ocrLanguage || 'eng',
+          '--ocr-page-timeout', String(options.ocrPageTimeoutSeconds ?? DEFAULT_OCR_PAGE_TIMEOUT_S),
+        );
       }
       const proc = spawn(pythonExe, scriptArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 120000,
+        timeout: computeRenderTimeoutMs(strokedPageCount, !!options.ocrEnabled),
         cwd: scriptDir,
       });
 

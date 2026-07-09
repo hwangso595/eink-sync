@@ -144,12 +144,17 @@ def get_ocr_status() -> dict:
     return status
 
 
-def ocr_image_file(image_path: str, lang: str = DEFAULT_LANG) -> OcrResult:
+def ocr_image_file(
+    image_path: str,
+    lang: str = DEFAULT_LANG,
+    timeout_seconds: float = 0,
+) -> OcrResult:
     """
     OCR a single image file (PNG, JPEG, TIFF, BMP).
 
     Raises ImportError if OCR deps are missing and FileNotFoundError if the
     image is absent; a tesseract failure is captured as a warning instead.
+    timeout_seconds caps the tesseract run for this image (0 = no limit).
     """
     if not PYTESSERACT_AVAILABLE:
         raise ImportError(
@@ -168,17 +173,28 @@ def ocr_image_file(image_path: str, lang: str = DEFAULT_LANG) -> OcrResult:
     except Exception as e:
         raise ValueError(f"Failed to load image: {e}") from e
 
-    return _run_ocr(img, lang, [])
+    return _run_ocr(img, lang, [], timeout_seconds)
 
 
-def _run_ocr(img: "Image.Image", lang: str, warnings: list) -> OcrResult:
-    """Core OCR pass: word-level data, confidence filtering, text assembly."""
+def _run_ocr(
+    img: "Image.Image",
+    lang: str,
+    warnings: list,
+    timeout_seconds: float = 0,
+) -> OcrResult:
+    """Core OCR pass: word-level data, confidence filtering, text assembly.
+
+    timeout_seconds bounds the tesseract run (0 = unlimited). On timeout,
+    pytesseract raises, which is caught here and yields empty text — a slow
+    page loses its OCR text but never blocks the surrounding render.
+    """
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
 
     try:
         data = pytesseract.image_to_data(
-            img, lang=lang, output_type=pytesseract.Output.DICT
+            img, lang=lang, output_type=pytesseract.Output.DICT,
+            timeout=timeout_seconds,
         )
     except Exception as e:
         return OcrResult(text="", confidence=-1, language=lang,
@@ -211,14 +227,19 @@ def _run_ocr(img: "Image.Image", lang: str, warnings: list) -> OcrResult:
     return OcrResult(text=text, confidence=avg_conf, language=lang, warnings=warnings)
 
 
-def ocr_page_image(image_path: str, lang: str = DEFAULT_LANG) -> str:
+def ocr_page_image(
+    image_path: str,
+    lang: str = DEFAULT_LANG,
+    timeout_seconds: float = 0,
+) -> str:
     """
     Best-effort OCR for the render pipeline: return the recognized text, or an
-    empty string on any failure. Never raises, so a missing binary or an odd
-    page can't take down a whole extraction run.
+    empty string on any failure. Never raises, so a missing binary, a slow
+    page (see timeout_seconds), or an odd image can't take down an extraction
+    run — the page's drawing still renders; only its OCR text is dropped.
     """
     try:
-        return ocr_image_file(image_path, lang).text
+        return ocr_image_file(image_path, lang, timeout_seconds).text
     except Exception as e:
         print(f"OCR skipped for {os.path.basename(image_path)}: {e}",
               file=sys.stderr, flush=True)
