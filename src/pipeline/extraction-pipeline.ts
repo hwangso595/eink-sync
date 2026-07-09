@@ -36,6 +36,7 @@ import { PythonHighlightExtractor } from './python-bridge';
 import { DefaultMarkdownRenderer, generateOutputFilename, resolveOutputBaseNames, scanExistingNoteBaseNames, type PageDrawings } from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
 import { renderPageImages, type PageImageResult } from './page-image-renderer';
+import type { PageOcr } from './types';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
 
@@ -420,6 +421,7 @@ export async function runExtractionPipeline(
       logger.info(`  xochitlPath=${config.xochitlPath}, drawingsPath=${config.drawingsPath}, pluginDir=${config.pluginDir}`);
 
       let pageDrawings: PageDrawings | null = null;
+      let pageOcr: PageOcr | null = null;
       // renderPageImages returns null for a genuinely-empty result but THROWS on
       // a real render failure (the document had strokes we couldn't render). We
       // track that separately so we never clear an existing note's drawings just
@@ -428,9 +430,15 @@ export async function runExtractionPipeline(
       try {
         const imageResult: PageImageResult | null = await renderPageImages(
           doc, config.xochitlPath, config.drawingsPath, config.pluginDir, outputBaseName,
+          {
+            truncateBlankSpace: config.truncateBlankSpace,
+            ocrEnabled: config.ocrEnabled,
+            ocrLanguage: config.ocrLanguage,
+          },
         );
         if (imageResult) {
           pageDrawings = imageResult.pageDrawings;
+          pageOcr = imageResult.pageOcr;
           // Merge renderer-extracted highlights (from handwritten highlights on PDF)
           // into the extraction result. These come from stroke bounding boxes
           // intersected with PDF text, complementing the PDF-annotation highlights.
@@ -497,10 +505,11 @@ export async function runExtractionPipeline(
           extractionResult,
           sourcePdfName,
           pageDrawings,
+          pageOcr,
         );
         logger.debug(`Merged highlights into existing: ${outputFilePath}`);
       } else {
-        markdownContent = renderer.render(extractionResult, sourcePdfName, pageDrawings);
+        markdownContent = renderer.render(extractionResult, sourcePdfName, pageDrawings, pageOcr);
         logger.debug(`Created new note: ${outputFilePath}`);
       }
 

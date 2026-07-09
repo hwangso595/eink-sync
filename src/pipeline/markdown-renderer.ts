@@ -16,7 +16,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExtractionResult, ExtractedHighlight, MarkdownRenderer } from './types';
+import { ExtractionResult, ExtractedHighlight, MarkdownRenderer, PageOcr } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { logger } from '../utils/logger';
@@ -136,6 +136,19 @@ function formatHighlight(
  */
 export type PageDrawings = Map<number, string>;
 
+/**
+ * Format a page's OCR text as an Obsidian callout that is collapsed by default
+ * (the `-` after the callout type). The text stays hidden but remains fully
+ * searchable, so handwritten pages can be found without cluttering the note.
+ */
+function formatOcrCallout(text: string): string[] {
+  const lines = ['> [!note]- Handwriting (OCR)'];
+  for (const line of text.split('\n')) {
+    lines.push(`> ${line}`);
+  }
+  return lines;
+}
+
 /** Options for the renderMarkdown function. */
 export interface RenderMarkdownOptions {
   sourceLabel?: string;
@@ -150,6 +163,7 @@ export function renderMarkdown(
   sourcePdfName?: string,
   pageDrawings?: PageDrawings | null,
   sourceLabelOrOptions?: string | RenderMarkdownOptions,
+  pageOcr?: PageOcr | null,
 ): string {
   // Support both old signature (sourceLabel string) and new (options object)
   const options: RenderMarkdownOptions = typeof sourceLabelOrOptions === 'string'
@@ -212,6 +226,7 @@ export function renderMarkdown(
     isNotebook,
     pageTagsByNumber,
     { includeColors, groupByPage, pdfLinkFormat },
+    pageOcr,
   ));
   sections.push('');
 
@@ -269,6 +284,7 @@ export function mergeWithExistingNote(
   sourcePdfName?: string,
   pageDrawings?: PageDrawings | null,
   renderOptions?: RenderMarkdownOptions,
+  pageOcr?: PageOcr | null,
 ): string {
   const pdfName = sourcePdfName ?? ensurePdfExtension(result.document.visibleName);
   const start = findHighlightsStart(existingContent);
@@ -280,7 +296,7 @@ export function mergeWithExistingNote(
     groupByPage: renderOptions?.groupByPage ?? true,
     pdfLinkFormat: renderOptions?.pdfLinkFormat ?? 'pdfpp',
   };
-  const newSection = buildHighlightsSection(result.highlights, pdfName, pageDrawings, isNotebook, undefined, sectionOpts);
+  const newSection = buildHighlightsSection(result.highlights, pdfName, pageDrawings, isNotebook, undefined, sectionOpts, pageOcr);
 
   // If markers exist, replace the section between them (legacy markers migrate
   // to current ones because newSection always uses HIGHLIGHTS_SECTION_*).
@@ -316,6 +332,7 @@ function buildHighlightsSection(
   isNotebook = false,
   pageTagsByNumber?: Map<number, string[]>,
   sectionOptions: HighlightsSectionOptions = {},
+  pageOcr?: PageOcr | null,
 ): string {
   const {
     includeColors = true,
@@ -335,6 +352,9 @@ function buildHighlightsSection(
   for (const p of byPage.keys()) allPages.add(p);
   if (pageDrawings) {
     for (const p of pageDrawings.keys()) allPages.add(p);
+  }
+  if (pageOcr) {
+    for (const p of pageOcr.keys()) allPages.add(p);
   }
 
   if (allPages.size === 0) {
@@ -367,6 +387,13 @@ function buildHighlightsSection(
         lines.push(`![[${drawingFilename}|500]]`);
         lines.push('');
       }
+
+      // OCR handwriting text, folded under the page image (searchable).
+      const ocrText = pageOcr?.get(pageNum);
+      if (ocrText) {
+        lines.push(...formatOcrCallout(ocrText));
+        lines.push('');
+      }
     }
   } else {
     // Flat list: no page headers, just highlights in order
@@ -384,6 +411,12 @@ function buildHighlightsSection(
       const drawingFilename = pageDrawings?.get(pageNum);
       if (drawingFilename) {
         lines.push(`![[${drawingFilename}|500]]`);
+        lines.push('');
+      }
+
+      const ocrText = pageOcr?.get(pageNum);
+      if (ocrText) {
+        lines.push(...formatOcrCallout(ocrText));
         lines.push('');
       }
     }
@@ -576,8 +609,13 @@ export class DefaultMarkdownRenderer implements MarkdownRenderer {
     this.options = { sourceLabel, includeColors, groupByPage, pdfLinkFormat, defaultTags };
   }
 
-  render(result: ExtractionResult, sourcePdfName?: string, pageDrawings?: PageDrawings | null): string {
-    return renderMarkdown(result, sourcePdfName, pageDrawings, this.options);
+  render(
+    result: ExtractionResult,
+    sourcePdfName?: string,
+    pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
+  ): string {
+    return renderMarkdown(result, sourcePdfName, pageDrawings, this.options, pageOcr);
   }
 
   mergeWithExisting(
@@ -585,8 +623,9 @@ export class DefaultMarkdownRenderer implements MarkdownRenderer {
     result: ExtractionResult,
     sourcePdfName?: string,
     pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
   ): string {
-    return mergeWithExistingNote(existingContent, result, sourcePdfName, pageDrawings, this.options);
+    return mergeWithExistingNote(existingContent, result, sourcePdfName, pageDrawings, this.options, pageOcr);
   }
 }
 

@@ -112,6 +112,13 @@ export interface HighlightExtractor {
  */
 export type PageDrawings = Map<number, string>;
 
+/**
+ * Map from 1-based page number to the OCR'd handwriting text for that page.
+ * Rendered as a collapsed callout under the page image so it stays searchable
+ * without cluttering the note.
+ */
+export type PageOcr = Map<number, string>;
+
 export interface MarkdownRenderer {
   /**
    * Render extraction results as a markdown string.
@@ -119,8 +126,14 @@ export interface MarkdownRenderer {
    * @param result - Extraction result for a single document.
    * @param sourcePdfName - Name of the source PDF for link generation.
    * @param pageDrawings - Optional map of page number to PNG filename.
+   * @param pageOcr - Optional map of page number to OCR text.
    */
-  render(result: ExtractionResult, sourcePdfName?: string, pageDrawings?: PageDrawings | null): string;
+  render(
+    result: ExtractionResult,
+    sourcePdfName?: string,
+    pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
+  ): string;
 
   /**
    * Merge new extraction results into an existing markdown note,
@@ -130,12 +143,14 @@ export interface MarkdownRenderer {
    * @param result - New extraction result to merge.
    * @param sourcePdfName - Name of the source PDF for link generation.
    * @param pageDrawings - Optional map of page number to PNG filename.
+   * @param pageOcr - Optional map of page number to OCR text.
    */
   mergeWithExisting(
     existingContent: string,
     result: ExtractionResult,
     sourcePdfName: string,
     pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
   ): string;
 }
 
@@ -190,4 +205,10 @@ export interface PipelineConfig {
   pdfLinkFormat?: 'pdfpp' | 'obsidian' | 'none';
   /** Default tags to add to highlight note frontmatter. */
   defaultTags?: string[];
+  /** Crop trailing blank space on short notebook pages (default: true). */
+  truncateBlankSpace?: boolean;
+  /** Run local OCR on notebook pages for handwriting search (default: false). */
+  ocrEnabled?: boolean;
+  /** Tesseract language code(s) for OCR (default: 'eng'). */
+  ocrLanguage?: string;
 }

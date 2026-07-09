@@ -158,6 +158,19 @@ export interface ExtractionPreferences {
   pdfLinkFormat: PdfLinkFormat;
   defaultTags: string[];
   overwriteExisting: boolean;
+  /**
+   * Crop trailing blank space on short notebook/quick-sheet pages so a page
+   * with only a little content doesn't embed a tall empty image.
+   */
+  truncateBlankSpace: boolean;
+  /**
+   * Run local OCR (Tesseract) on notebook pages so handwriting becomes
+   * searchable text, folded under each page image. Requires Tesseract to be
+   * installed; off by default.
+   */
+  ocrEnabled: boolean;
+  /** Tesseract language code(s) for OCR, e.g. "eng" or "eng+deu". */
+  ocrLanguage: string;
 }
 
 /** Which method to use for syncing files from the tablet. */
@@ -267,6 +280,9 @@ export const DEFAULT_SETTINGS: ReMarkableBridgeSettings = {
     pdfLinkFormat: 'pdfpp',
     defaultTags: [],
     overwriteExisting: false,
+    truncateBlankSpace: true,
+    ocrEnabled: false,
+    ocrLanguage: 'eng',
   },
   setupComplete: false,
   lastSyncTimestamp: null,

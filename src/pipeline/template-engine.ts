@@ -22,7 +22,7 @@
  * Privacy: Pure computation, no network calls.
  */
 
-import type { ExtractionResult, ExtractedHighlight, PageDrawings, MarkdownRenderer } from './types';
+import type { ExtractionResult, ExtractedHighlight, PageDrawings, PageOcr, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { logger } from '../utils/logger';
@@ -386,7 +386,12 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
    * If pageDrawings are provided, they are appended after each page's
    * highlights within the managed section.
    */
-  render(result: ExtractionResult, sourcePdfName?: string, pageDrawings?: PageDrawings | null): string {
+  render(
+    result: ExtractionResult,
+    sourcePdfName?: string,
+    pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
+  ): string {
     const pdfName = sourcePdfName ?? `${result.document.visibleName}.pdf`;
     // Merge default tags with document-level tags, deduplicating
     const allTags = [...new Set([...this.tags, ...(result.tags ?? [])])];
@@ -415,20 +420,33 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     if (pageDrawings) {
       for (const p of pageDrawings.keys()) allPageNums.add(p);
     }
+    if (pageOcr) {
+      for (const p of pageOcr.keys()) allPageNums.add(p);
+    }
 
     const pages = [...allPageNums].sort((a, b) => a - b).map((pageNum) => ({
       page_number: pageNum,
       highlights: context.highlights.filter((h) => h.page === pageNum),
       annotation: pageDrawings?.get(pageNum) ?? null,
+      ocr_text: pageOcr?.get(pageNum) ?? null,
     }));
     context._pages = pages;
 
     // Also set {{annotations}} for simple templates
-    if (pageDrawings && pageDrawings.size > 0) {
+    if ((pageDrawings && pageDrawings.size > 0) || (pageOcr && pageOcr.size > 0)) {
       const lines: string[] = [];
-      for (const [pageNum, filename] of [...pageDrawings.entries()].sort((a, b) => a[0] - b[0])) {
+      for (const pageNum of [...allPageNums].sort((a, b) => a - b)) {
+        const filename = pageDrawings?.get(pageNum);
+        const ocrText = pageOcr?.get(pageNum);
+        if (!filename && !ocrText) continue;
         lines.push(`**Page ${pageNum}:**`);
-        lines.push(`![[${filename}|500]]`);
+        if (filename) {
+          lines.push(`![[${filename}|500]]`);
+        }
+        if (ocrText) {
+          lines.push('> [!note]- Handwriting (OCR)');
+          for (const l of ocrText.split('\n')) lines.push(`> ${l}`);
+        }
         lines.push('');
       }
       context.annotations = lines.join('\n');
@@ -451,12 +469,13 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     result: ExtractionResult,
     sourcePdfName: string,
     pageDrawings?: PageDrawings | null,
+    pageOcr?: PageOcr | null,
   ): string {
     const start = findHighlightsStart(existingContent);
     const end = findHighlightsEnd(existingContent);
 
     // Render fresh content
-    const fresh = this.render(result, sourcePdfName, pageDrawings);
+    const fresh = this.render(result, sourcePdfName, pageDrawings, pageOcr);
 
     if (!start || !end) {
       // No markers — use fresh render

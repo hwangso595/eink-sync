@@ -511,3 +511,55 @@ describe('Page drawings in markdown output', () => {
     expect(md).toContain('_No highlights or annotations found in this document._');
   });
 });
+
+describe('OCR handwriting text in markdown output', () => {
+  it('renders OCR text as a collapsed callout under the page image', () => {
+    const result = createTestResult([], {
+      type: 'notebook',
+      visibleName: 'My Notebook',
+      hasPdf: false,
+    });
+    const pageDrawings = new Map<number, string>([[1, 'My Notebook_p1.png']]);
+    const pageOcr = new Map<number, string>([[1, 'Buy milk\nCall dentist']]);
+
+    const md = renderMarkdown(result, undefined, pageDrawings, undefined, pageOcr);
+
+    // Collapsed by default: the `-` after the callout type.
+    expect(md).toContain('> [!note]- Handwriting (OCR)');
+    // Text stays searchable and preserves line breaks inside the callout.
+    expect(md).toContain('> Buy milk');
+    expect(md).toContain('> Call dentist');
+    // The callout appears after the page image.
+    const imgIdx = md.indexOf('![[My Notebook_p1.png|500]]');
+    const ocrIdx = md.indexOf('> [!note]- Handwriting (OCR)');
+    expect(imgIdx).toBeGreaterThanOrEqual(0);
+    expect(ocrIdx).toBeGreaterThan(imgIdx);
+  });
+
+  it('omits the OCR callout entirely when no OCR text is provided', () => {
+    const result = createTestResult([], {
+      type: 'notebook',
+      visibleName: 'My Notebook',
+      hasPdf: false,
+    });
+    const pageDrawings = new Map<number, string>([[1, 'My Notebook_p1.png']]);
+
+    const md = renderMarkdown(result, undefined, pageDrawings, undefined, null);
+
+    expect(md).not.toContain('Handwriting (OCR)');
+  });
+
+  it('surfaces a page that has OCR text even without a drawing', () => {
+    const result = createTestResult([], {
+      type: 'notebook',
+      visibleName: 'My Notebook',
+      hasPdf: false,
+    });
+    const pageOcr = new Map<number, string>([[2, 'orphan handwriting']]);
+
+    const md = renderMarkdown(result, undefined, null, undefined, pageOcr);
+
+    expect(md).toContain('### Page 2');
+    expect(md).toContain('> orphan handwriting');
+  });
+});
