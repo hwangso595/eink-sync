@@ -100,6 +100,33 @@ def test_ocr_page_image_accepts_timeout_and_never_raises():
     assert ocr_engine.ocr_page_image("/no/such/file.png", "eng", timeout_seconds=5) == ""
 
 
+def test_timeout_zero_sends_no_timeout_and_positive_is_forwarded(monkeypatch):
+    # Contract: 0 (or negative) = unlimited, so _run_ocr must NOT hand a timeout
+    # to tesseract in that case — independent of how pytesseract treats 0. A
+    # positive budget must be forwarded verbatim. Monkeypatched so it runs with
+    # no Tesseract binary present.
+    if not ocr_engine.PYTESSERACT_AVAILABLE or not ocr_engine.PILLOW_AVAILABLE:
+        return
+    from PIL import Image
+
+    empty = {"text": [], "conf": [], "block_num": [], "par_num": [], "line_num": []}
+    captured = {}
+
+    def fake_image_to_data(_img, **kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return empty
+
+    monkeypatch.setattr(ocr_engine.pytesseract, "image_to_data", fake_image_to_data)
+    img = Image.new("RGB", (10, 10), "white")
+
+    ocr_engine._run_ocr(img, "eng", [], timeout_seconds=0)
+    assert "timeout" not in captured, "0 must mean unlimited (no timeout passed)"
+
+    ocr_engine._run_ocr(img, "eng", [], timeout_seconds=7)
+    assert captured.get("timeout") == 7
+
+
 def test_tiny_ocr_timeout_yields_empty_text_not_an_exception():
     # A near-zero budget should make tesseract time out; the helper swallows the
     # resulting error and returns a string so the page still renders. When

@@ -191,11 +191,14 @@ def _run_ocr(
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
 
+    # Only pass a timeout when one is actually requested. Treating 0 (or a
+    # negative) as "no limit" here keeps the documented semantics independent of
+    # how pytesseract happens to interpret timeout=0.
+    ocr_kwargs = {"lang": lang, "output_type": pytesseract.Output.DICT}
+    if timeout_seconds and timeout_seconds > 0:
+        ocr_kwargs["timeout"] = timeout_seconds
     try:
-        data = pytesseract.image_to_data(
-            img, lang=lang, output_type=pytesseract.Output.DICT,
-            timeout=timeout_seconds,
-        )
+        data = pytesseract.image_to_data(img, **ocr_kwargs)
     except Exception as e:
         return OcrResult(text="", confidence=-1, language=lang,
                          warnings=[f"Tesseract OCR failed: {e}"])
