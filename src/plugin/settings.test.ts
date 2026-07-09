@@ -104,19 +104,19 @@ describe('Empty settings fallback', () => {
   });
 
   it('should merge nested extraction preferences with defaults', () => {
-    // Regression: Partial extraction prefs should not lose other defaults
+    // Regression: Partial extraction prefs should not lose other defaults.
+    // A saved profile that predates newer fields (e.g. OCR settings) must keep
+    // their defaults rather than becoming undefined.
     const settings = simulateLoadSettings({
       extraction: {
         incrementalOnly: false,
-        includeColors: true,
-        groupByPage: true,
-        pdfLinkFormat: 'pdfpp',
-        defaultTags: [],
-        overwriteExisting: false,
-      },
+      } as ReMarkableBridgeSettings['extraction'],
     });
     expect(settings.extraction.incrementalOnly).toBe(false);
     expect(settings.extraction.includeColors).toBe(true);
+    expect(settings.extraction.truncateBlankSpace).toBe(true);
+    expect(settings.extraction.ocrEnabled).toBe(false);
+    expect(settings.extraction.ocrLanguage).toBe('eng');
   });
 });
 

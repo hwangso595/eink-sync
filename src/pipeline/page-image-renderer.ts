@@ -17,13 +17,25 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PageDrawings } from './markdown-renderer';
-import type { ExtractedHighlight } from './types';
+import type { ExtractedHighlight, PageOcr } from './types';
 import { logger } from '../utils/logger';
 
-/** Result of renderPageImages: page drawings map plus any renderer-extracted highlights. */
+/** Result of renderPageImages: page drawings, renderer highlights, and OCR text. */
 export interface PageImageResult {
   pageDrawings: PageDrawings;
   rendererHighlights: ExtractedHighlight[];
+  /** Map of page number to OCR'd handwriting text (empty unless OCR is enabled). */
+  pageOcr: PageOcr;
+}
+
+/** Rendering options forwarded to render_pages.py as CLI flags. */
+export interface RenderPageOptions {
+  /** Crop trailing blank space on short notebook pages. */
+  truncateBlankSpace?: boolean;
+  /** Run local OCR on notebook pages for handwriting search. */
+  ocrEnabled?: boolean;
+  /** Tesseract language code(s) for OCR. */
+  ocrLanguage?: string;
 }
 
 /**
@@ -38,6 +50,7 @@ export async function renderPageImages(
   drawingsPath: string | undefined,
   pluginDir?: string,
   outputBaseName?: string,
+  options: RenderPageOptions = {},
 ): Promise<PageImageResult | null> {
   if (!drawingsPath) return null;
 
@@ -121,6 +134,12 @@ export async function renderPageImages(
       if (outputBaseName) {
         scriptArgs.push('--doc-name', outputBaseName);
       }
+      if (options.truncateBlankSpace) {
+        scriptArgs.push('--truncate-blank');
+      }
+      if (options.ocrEnabled) {
+        scriptArgs.push('--ocr', '--ocr-lang', options.ocrLanguage || 'eng');
+      }
       const proc = spawn(pythonExe, scriptArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],
         timeout: 120000,
@@ -164,9 +183,11 @@ export async function renderPageImages(
                 filename: string;
                 has_strokes: boolean;
                 highlight_texts?: string[];
+                ocr_text?: string;
               }>;
               const map: PageDrawings = new Map();
               const rendererHighlights: ExtractedHighlight[] = [];
+              const pageOcr: PageOcr = new Map();
               for (const page of pages) {
                 if (page.has_strokes) {
                   map.set(page.page_number, page.filename);
@@ -180,8 +201,12 @@ export async function renderPageImages(
                     createdAt: null,
                   });
                 }
+                const ocrText = page.ocr_text?.trim();
+                if (ocrText) {
+                  pageOcr.set(page.page_number, ocrText);
+                }
               }
-              resolve({ pageDrawings: map, rendererHighlights });
+              resolve({ pageDrawings: map, rendererHighlights, pageOcr });
             } else {
               const errors = parsed.errors as string[] | undefined;
               reject(new Error(errors?.join('; ') || 'render_pages failed'));

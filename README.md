@@ -30,12 +30,23 @@ The plugin spawns Python only when you trigger sync or extraction; if Python isn
 | **rmscene** | latest | Parses v6 .rm annotation files |
 | **PyMuPDF** | latest | Extracts text from PDF pages, renders page images |
 | **Syncthing** | any | Syncs files between tablet and computer (local network) |
+| **Tesseract** _(optional)_ | 5.x | Local handwriting OCR — only needed for **Search handwriting (OCR)** |
 
 ### Install Python dependencies
 
 ```bash
 pip install rmscene PyMuPDF
 ```
+
+### Optional: handwriting OCR
+
+The **Search handwriting (OCR)** setting needs Tesseract plus two Python packages. Skip this unless you want handwritten pages to be searchable.
+
+```bash
+pip install pytesseract Pillow
+```
+
+Then install the Tesseract binary: `winget install UB-Mannheim.TesseractOCR` (Windows), `brew install tesseract` (macOS), or `apt install tesseract-ocr` (Linux). The plugin finds it on `PATH` or at the standard install location; set the `TESSERACT_CMD` environment variable to override.
 
 ### Windows users: disable Python Store aliases
 
@@ -147,6 +158,27 @@ remarkable_uuid: abc-123
 ```
 
 Everything between the `<!-- eink-sync:start/end -->` markers is managed by the plugin. Content outside the markers (your own notes) is preserved across re-extractions. Notes written by the pre-rename plugin (which used `<!-- remarkable-bridge:start/end -->`) are still recognised and migrated to the new markers on the next extraction.
+
+### Trim blank page space
+
+Notebook and quick-sheet pages are a full 1404×1872 canvas even when you only jotted a few lines at the top. With **Trim blank page space** on (the default), a page whose content sits within the top half is cropped to just below your writing, so a short quick sheet embeds a short image instead of a tall mostly-blank one. Pages that use more of the sheet, and all PDF-backed pages, are left untouched. Toggle it in **Settings → Extraction**.
+
+### Handwriting search (OCR)
+
+Turn on **Search handwriting (OCR)** to run local OCR over each notebook page. The recognized text is added under the page image as a callout that is **collapsed by default**, so it stays out of the way but is still found by Obsidian search:
+
+```markdown
+### Page 3
+
+![[My Notebook_p3.png|500]]
+
+> [!note]- Handwriting (OCR)
+> Meeting notes - Project Aurora
+> 1. Ship the OCR search feature
+> Remember: buy milk and coffee
+```
+
+OCR is **off by default** and requires Tesseract (see Prerequisites). Recognition quality depends on how neatly the page is written — printed/neat handwriting works well, dense cursive less so. All OCR runs on your machine; no image ever leaves your network. Set the language pack(s) with the **OCR language** field (e.g. `eng`, `eng+deu`).
 
 ---
 

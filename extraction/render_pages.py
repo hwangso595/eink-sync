@@ -71,6 +71,11 @@ def main() -> None:
     # "Quick sheets (f6d11d23)") so their page images don't overwrite each
     # other. Falls back to the sanitized visible name when omitted.
     parser.add_argument("--doc-name", default=None)
+    # Crop trailing blank space on short notebook/quick-sheet pages.
+    parser.add_argument("--truncate-blank", action="store_true")
+    # Run local OCR on notebook page images so handwriting becomes searchable.
+    parser.add_argument("--ocr", action="store_true")
+    parser.add_argument("--ocr-lang", default="eng")
     args = parser.parse_args()
 
     output: dict = {
@@ -128,6 +133,24 @@ def main() -> None:
             source_pdf = pdf_candidate
     has_cache = os.path.isdir(cache_dir)
     has_thumbs = os.path.isdir(thumb_dir)
+
+    # Truncation only makes sense for notebook pages (PDF pages have fixed
+    # geometry tied to their background).
+    truncate_blank = args.truncate_blank and is_notebook
+
+    # Set up local OCR for notebook pages when requested and available. A missing
+    # Tesseract binary is not an error -- OCR text is just omitted.
+    ocr_page_image = None
+    if args.ocr and is_notebook:
+        try:
+            from ocr_engine import is_ocr_available, ocr_page_image as _ocr
+            if is_ocr_available():
+                ocr_page_image = _ocr
+            else:
+                print("OCR requested but Tesseract is unavailable; skipping handwriting text.",
+                      file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"OCR setup failed: {e}", file=sys.stderr, flush=True)
 
     pages_collected = 0
 
@@ -216,7 +239,8 @@ def main() -> None:
                 drawn = render_rm_file_to_png(rm_path, out_path,
                                               pdf_path=page_pdf,
                                               page_index=pdf_page_idx,
-                                              coord_scale=doc_coord_scale)
+                                              coord_scale=doc_coord_scale,
+                                              truncate_blank=truncate_blank)
                 if drawn > 0 or glyph_hls:
                     print(
                         f"Page {page_number}: rendered {drawn} strokes, {len(glyph_hls)} glyph highlight(s)",
@@ -238,11 +262,23 @@ def main() -> None:
                             f"Page {page_number}: {len(highlight_texts)} highlighted text(s)",
                             file=sys.stderr, flush=True,
                         )
+
+                    # Local OCR of the rendered handwriting (notebook pages only).
+                    ocr_text = ""
+                    if ocr_page_image is not None:
+                        ocr_text = ocr_page_image(out_path, args.ocr_lang)
+                        if ocr_text:
+                            print(
+                                f"Page {page_number}: OCR recognized {len(ocr_text)} char(s)",
+                                file=sys.stderr, flush=True,
+                            )
+
                     output["pages"].append({
                         "page_number": page_number,
                         "filename": filename,
                         "has_strokes": True,
                         "highlight_texts": highlight_texts,
+                        "ocr_text": ocr_text,
                     })
                     pages_collected += 1
         except Exception as e:

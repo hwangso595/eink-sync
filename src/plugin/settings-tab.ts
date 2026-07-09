@@ -498,6 +498,46 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+
+    // 14. Truncate blank page space
+    new Setting(containerEl)
+      .setName('Trim blank page space')
+      .setDesc('Crop the empty bottom of short notebook and quick-sheet pages so a page with only a little content doesn\'t embed a tall blank image.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.extraction.truncateBlankSpace)
+          .onChange(async (value) => {
+            this.plugin.settings.extraction.truncateBlankSpace = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    // 15. OCR handwriting search
+    new Setting(containerEl)
+      .setName('Search handwriting (OCR)')
+      .setDesc('Run local OCR on notebook pages so handwriting becomes searchable text, folded under each page image. Requires Tesseract OCR installed on this computer (pip install pytesseract Pillow, plus the Tesseract binary). All processing stays on your machine.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.extraction.ocrEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.extraction.ocrEnabled = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    // 16. OCR language
+    new Setting(containerEl)
+      .setName('OCR language')
+      .setDesc('Tesseract language code(s), e.g. "eng" or "eng+deu". Requires the matching language pack to be installed.')
+      .addText((text) =>
+        text
+          .setPlaceholder('eng')
+          .setValue(this.plugin.settings.extraction.ocrLanguage)
+          .onChange(async (value) => {
+            this.plugin.settings.extraction.ocrLanguage = value.trim() || 'eng';
+            await this.plugin.saveSettings();
+          }),
+      );
   }
 
   // -------------------------------------------------------------------

@@ -64,6 +64,14 @@ PENCIL_PEN_TYPES = {1, 7, 13, 14}
 SHADER_PEN_TYPE = 23
 BRUSH_PEN_TYPES = {0, 12}
 
+# Truncation: when a notebook page's content sits entirely within this fraction
+# of the standard page height, the rendered canvas is cropped to just below the
+# content. This keeps short "quick sheet" pages from embedding a tall blank area
+# in the note. Only applied to notebook renders (no PDF background).
+TRUNCATE_HEIGHT_THRESHOLD = 0.5
+# Never crop shorter than this, so even a single line of writing renders sanely.
+MIN_TRUNCATED_HEIGHT = 240
+
 
 def _segment_width(point: StrokePoint, stroke: Stroke, tilt_override: float = -1) -> float:
     """
@@ -412,6 +420,7 @@ def render_strokes_to_png(
     page_index: int = 0,
     coord_scale: float = None,
     glyph_highlights: list = None,
+    truncate_blank: bool = False,
 ) -> int:
     """
     Render a list of strokes as a PNG image using PyMuPDF.
@@ -423,6 +432,11 @@ def render_strokes_to_png(
     coord_scale: stroke coordinate scale factor. Pass 226/300 for PDF documents,
     1.0 for notebooks. If None, falls back to auto-detection (unreliable for PDF
     pages where strokes don't happen to exceed canvas height).
+
+    truncate_blank: for notebook renders (no PDF background), crop trailing blank
+    space when the content occupies less than TRUNCATE_HEIGHT_THRESHOLD of the
+    page height. Ignored for PDF-backed pages (their geometry is fixed). Off by
+    default so untouched pages render byte-for-byte identically.
 
     Returns number of strokes actually drawn.
     """
@@ -493,6 +507,15 @@ def render_strokes_to_png(
                 canvas_w_int = int(math.ceil(max_cx)) + MARGIN
             if max_cy > canvas_h_int:
                 canvas_h_int = int(math.ceil(max_cy)) + MARGIN
+
+            # Crop trailing blank space for short pages. Only when the content's
+            # bottom edge sits within the top TRUNCATE_HEIGHT_THRESHOLD of the
+            # standard page (so a full page never shrinks). Width is left intact
+            # to preserve horizontal layout.
+            if truncate_blank:
+                content_bottom = max_cy + MARGIN
+                if content_bottom < RM_SCREEN_HEIGHT * TRUNCATE_HEIGHT_THRESHOLD:
+                    canvas_h_int = max(int(math.ceil(content_bottom)), MIN_TRUNCATED_HEIGHT)
 
     # Create document and page for Shape API (non-pencil strokes)
     # If a PDF is provided, use the PDF page as the background
@@ -882,6 +905,7 @@ def render_rm_file_to_png(
     pdf_path: str = None,
     page_index: int = 0,
     coord_scale: float = None,
+    truncate_blank: bool = False,
 ) -> int:
     """
     Convenience: parse an .rm file and render its strokes as a PNG.
@@ -889,6 +913,7 @@ def render_rm_file_to_png(
     on top of the PDF page content. Pass coord_scale=226/300 for PDFs,
     1.0 for notebooks (defaults to auto-detect if omitted).
     Also renders glyph-range highlights (text selections) as filled rectangles.
+    truncate_blank crops trailing blank space on short notebook pages.
     """
     strokes = extract_strokes(rm_path)
     glyph_hls = extract_glyph_highlights(rm_path)
@@ -897,4 +922,5 @@ def render_rm_file_to_png(
     return render_strokes_to_png(strokes, output_path, transparent_bg,
                                  pdf_path=pdf_path, page_index=page_index,
                                  coord_scale=coord_scale,
-                                 glyph_highlights=glyph_hls)
+                                 glyph_highlights=glyph_hls,
+                                 truncate_blank=truncate_blank)

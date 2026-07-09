@@ -1143,6 +1143,9 @@ export default class ReMarkableBridgePlugin extends Plugin {
       groupByPage: this.settings.extraction.groupByPage,
       pdfLinkFormat: this.settings.extraction.pdfLinkFormat,
       defaultTags: this.settings.extraction.defaultTags,
+      truncateBlankSpace: this.settings.extraction.truncateBlankSpace,
+      ocrEnabled: this.settings.extraction.ocrEnabled,
+      ocrLanguage: this.settings.extraction.ocrLanguage,
       uuidFilter: docUuid ? [docUuid] : undefined,
     };
 
