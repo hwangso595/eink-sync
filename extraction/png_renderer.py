@@ -421,6 +421,7 @@ def render_strokes_to_png(
     coord_scale: float = None,
     glyph_highlights: list = None,
     truncate_blank: bool = False,
+    background_png: str = None,
 ) -> int:
     """
     Render a list of strokes as a PNG image using PyMuPDF.
@@ -437,6 +438,10 @@ def render_strokes_to_png(
     space when the content occupies less than TRUNCATE_HEIGHT_THRESHOLD of the
     page height. Ignored for PDF-backed pages (their geometry is fixed). Off by
     default so untouched pages render byte-for-byte identically.
+
+    background_png: path to a reMarkable page-template PNG (1404x1872) to draw
+    behind the strokes on notebook pages, so ruled/grid/planner backgrounds show
+    in the render. Ignored for PDF-backed pages and when None/missing.
 
     Returns number of strokes actually drawn.
     """
@@ -569,6 +574,21 @@ def render_strokes_to_png(
         shape.draw_rect(fitz.Rect(0, 0, canvas_w_int, canvas_h_int))
         shape.finish(color=(1, 1, 1), fill=(1, 1, 1))
         shape.commit()
+
+        # Draw the reMarkable page template behind the strokes. It's placed at
+        # the page origin (x=0 is centre, y=0 is top) using the same offsets the
+        # strokes use, so lines stay aligned even when the page was shifted. A
+        # missing/unreadable template silently leaves the white background.
+        if background_png and os.path.exists(background_png):
+            try:
+                tmpl_left = offset_x - RM_SCREEN_WIDTH / 2
+                tmpl_rect = fitz.Rect(
+                    tmpl_left, offset_y,
+                    tmpl_left + RM_SCREEN_WIDTH, offset_y + RM_SCREEN_HEIGHT,
+                )
+                page.insert_image(tmpl_rect, filename=background_png)
+            except Exception:
+                pass  # keep the plain white background on any template failure
 
     if pdf_doc:
         pdf_doc.close()
@@ -906,6 +926,7 @@ def render_rm_file_to_png(
     page_index: int = 0,
     coord_scale: float = None,
     truncate_blank: bool = False,
+    background_png: str = None,
 ) -> int:
     """
     Convenience: parse an .rm file and render its strokes as a PNG.
@@ -914,6 +935,7 @@ def render_rm_file_to_png(
     1.0 for notebooks (defaults to auto-detect if omitted).
     Also renders glyph-range highlights (text selections) as filled rectangles.
     truncate_blank crops trailing blank space on short notebook pages.
+    background_png draws a reMarkable page template behind notebook strokes.
     """
     strokes = extract_strokes(rm_path)
     glyph_hls = extract_glyph_highlights(rm_path)
@@ -923,4 +945,5 @@ def render_rm_file_to_png(
                                  pdf_path=pdf_path, page_index=page_index,
                                  coord_scale=coord_scale,
                                  glyph_highlights=glyph_hls,
-                                 truncate_blank=truncate_blank)
+                                 truncate_blank=truncate_blank,
+                                 background_png=background_png)

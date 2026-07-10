@@ -117,6 +117,7 @@ describe('Empty settings fallback', () => {
     expect(settings.extraction.truncateBlankSpace).toBe(true);
     expect(settings.extraction.ocrEnabled).toBe(false);
     expect(settings.extraction.ocrLanguage).toBe('eng');
+    expect(settings.extraction.renderTemplates).toBe(true);
   });
 });
 

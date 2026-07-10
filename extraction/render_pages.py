@@ -48,6 +48,46 @@ def _print_json(data: dict) -> None:
     os.dup2(2, 1)
 
 
+def _load_template_map(templates_dir: str) -> dict:
+    """Map reMarkable template display-name -> file stem, from templates.json.
+
+    Falls back to an empty map (callers then assume the file stem equals the
+    display name) when templates.json is absent or unreadable.
+    """
+    if not templates_dir:
+        return {}
+    tj = os.path.join(templates_dir, "templates.json")
+    if not os.path.exists(tj):
+        return {}
+    try:
+        with open(tj, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        mapping = {}
+        for t in data.get("templates", []):
+            name = t.get("name")
+            if name:
+                mapping[name] = t.get("filename", name)
+        return mapping
+    except Exception:
+        return {}
+
+
+def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
+    """Resolve a page's template name to a PNG path, or None.
+
+    "Blank"/empty names have no background. Tries the templates.json filename
+    first, then the display name, each with a .png extension.
+    """
+    if not templates_dir or not name or name == "Blank":
+        return None
+    stem = name_map.get(name, name)
+    for candidate in (f"{stem}.png", f"{name}.png"):
+        path = os.path.join(templates_dir, candidate)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _safe_filename(name: str) -> str:
     """Sanitize a document name for use in filenames."""
     for ch in '<>:"/\\|?*':
@@ -79,6 +119,9 @@ def main() -> None:
     # Per-page OCR time budget (seconds). A page that exceeds it loses its OCR
     # text but still renders; 0 disables the limit.
     parser.add_argument("--ocr-page-timeout", type=float, default=12.0)
+    # Directory of reMarkable page-template PNGs (+ templates.json). When given,
+    # a notebook page's template is drawn behind its strokes.
+    parser.add_argument("--templates-dir", default=None)
     args = parser.parse_args()
 
     output: dict = {
@@ -140,6 +183,10 @@ def main() -> None:
     # Truncation only makes sense for notebook pages (PDF pages have fixed
     # geometry tied to their background).
     truncate_blank = args.truncate_blank and is_notebook
+
+    # Resolve page-template art for notebook pages (drawn behind strokes).
+    templates_dir = args.templates_dir if (args.templates_dir and os.path.isdir(args.templates_dir)) else None
+    template_map = _load_template_map(templates_dir)
 
     # Set up local OCR for notebook pages when requested and available. A missing
     # Tesseract binary is not an error -- OCR text is just omitted.
@@ -239,11 +286,20 @@ def main() -> None:
                     else:
                         page_pdf = source_pdf
                         pdf_page_idx = page_idx
+                # Notebook pages (no PDF backing) get their reMarkable template
+                # drawn behind the strokes when template art is available.
+                background_png = None
+                if page_pdf is None and templates_dir and page_idx < len(content.page_templates):
+                    background_png = _resolve_template_png(
+                        templates_dir, content.page_templates[page_idx], template_map,
+                    )
+
                 drawn = render_rm_file_to_png(rm_path, out_path,
                                               pdf_path=page_pdf,
                                               page_index=pdf_page_idx,
                                               coord_scale=doc_coord_scale,
-                                              truncate_blank=truncate_blank)
+                                              truncate_blank=truncate_blank,
+                                              background_png=background_png)
                 if drawn > 0 or glyph_hls:
                     print(
                         f"Page {page_number}: rendered {drawn} strokes, {len(glyph_hls)} glyph highlight(s)",

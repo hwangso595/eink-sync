@@ -171,6 +171,12 @@ export interface ExtractionPreferences {
   ocrEnabled: boolean;
   /** Tesseract language code(s) for OCR, e.g. "eng" or "eng+deu". */
   ocrLanguage: string;
+  /**
+   * Draw the reMarkable page template (ruled/grid/planner background) behind
+   * notebook strokes in the render. The template art is fetched from the tablet
+   * over SFTP; without it, pages render on plain white as before.
+   */
+  renderTemplates: boolean;
 }
 
 /** Which method to use for syncing files from the tablet. */
@@ -283,6 +289,7 @@ export const DEFAULT_SETTINGS: ReMarkableBridgeSettings = {
     truncateBlankSpace: true,
     ocrEnabled: false,
     ocrLanguage: 'eng',
+    renderTemplates: true,
   },
   setupComplete: false,
   lastSyncTimestamp: null,
