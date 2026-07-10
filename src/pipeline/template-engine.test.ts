@@ -303,6 +303,48 @@ describe('validateTemplate', () => {
 // TemplateMarkdownRenderer
 // -------------------------------------------------------------------
 
+describe('TemplateMarkdownRenderer - OCR in note templates', () => {
+  const pagesTemplate = [
+    '{{#each pages}}',
+    '### Page {{page_number}}',
+    '{{#if annotation}}',
+    '![[{{annotation}}|500]]',
+    '{{/if}}',
+    '{{#if ocr_callout}}',
+    '{{ocr_callout}}',
+    '{{/if}}',
+    '{{/each_pages}}',
+  ].join('\n');
+
+  it('renders {{ocr_callout}} as a collapsed callout under the page image', () => {
+    const renderer = new TemplateMarkdownRenderer(pagesTemplate, 'pdfpp', []);
+    const result = makeExtractionResult([]);
+    const pageDrawings = new Map<number, string>([[1, 'Doc_p1.png']]);
+    const pageOcr = new Map<number, string>([[1, 'buy milk\ncall dentist']]);
+
+    const out = renderer.render(result, undefined, pageDrawings, pageOcr);
+
+    expect(out).toContain('![[Doc_p1.png|500]]');
+    expect(out).toContain('> [!note]- Handwriting (OCR)');
+    expect(out).toContain('> buy milk');
+    expect(out).toContain('> call dentist');
+    // Callout comes after the image.
+    expect(out.indexOf('Handwriting (OCR)')).toBeGreaterThan(out.indexOf('Doc_p1.png'));
+  });
+
+  it('omits the OCR block on pages with no recognized text', () => {
+    const renderer = new TemplateMarkdownRenderer(pagesTemplate, 'pdfpp', []);
+    const result = makeExtractionResult([]);
+    const pageDrawings = new Map<number, string>([[1, 'Doc_p1.png'], [2, 'Doc_p2.png']]);
+    const pageOcr = new Map<number, string>([[1, 'only page one']]);
+
+    const out = renderer.render(result, undefined, pageDrawings, pageOcr);
+
+    // Exactly one callout — for page 1; page 2 has none.
+    expect((out.match(/Handwriting \(OCR\)/g) ?? []).length).toBe(1);
+  });
+});
+
 describe('TemplateMarkdownRenderer', () => {
   it('should render a complete note from the default template', () => {
     const renderer = new TemplateMarkdownRenderer(DEFAULT_TEMPLATE, 'pdfpp', ['test']);
