@@ -180,6 +180,10 @@ Turn on **Search handwriting (OCR)** to run local OCR over each notebook page. T
 
 OCR is **off by default** and requires Tesseract (see Prerequisites). Recognition quality depends on how neatly the page is written — printed/neat handwriting works well, dense cursive less so. All OCR runs on your machine; no image ever leaves your network. Set the language pack(s) with the **OCR language** field (e.g. `eng`, `eng+deu`).
 
+### Page templates
+
+Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) normally render on plain white, because the template art lives on the tablet at `/usr/share/remarkable/templates/` and isn't part of the synced document data. With **Render page templates** on (the default), the plugin fetches that art from the tablet over SFTP during sync and draws each page's template behind its strokes. `Blank` pages are unaffected, and until the art has been fetched (or for Syncthing-only setups) pages simply render on white as before. Toggle it in **Settings → Extraction**.
+
 ---
 
 ## How sync works

@@ -434,6 +434,7 @@ export async function runExtractionPipeline(
             truncateBlankSpace: config.truncateBlankSpace,
             ocrEnabled: config.ocrEnabled,
             ocrLanguage: config.ocrLanguage,
+            templatesDir: config.templatesDir,
           },
         );
         if (imageResult) {

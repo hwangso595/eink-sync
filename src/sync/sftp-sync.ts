@@ -664,6 +664,69 @@ export class SftpSyncEngine {
     return { filesDownloaded, bytesDownloaded, errors };
   }
 
+  /**
+   * Fetch the reMarkable page-template art from the tablet.
+   *
+   * The templates (ruled/grid/planner backgrounds) live at
+   * `/usr/share/remarkable/templates/` on the device and are NOT part of the
+   * synced xochitl data, so they must be pulled separately. Downloads
+   * `templates.json` and every `*.png` into `localTemplatesDir`, skipping files
+   * already present and up to date. Manages its own connection.
+   *
+   * Best-effort: returns the count and any per-file errors rather than throwing,
+   * so a template-fetch hiccup never fails the document sync.
+   */
+  async fetchTemplates(
+    localTemplatesDir: string,
+    remoteTemplatesDir = '/usr/share/remarkable/templates',
+  ): Promise<{ downloaded: number; errors: string[] }> {
+    const errors: string[] = [];
+    let downloaded = 0;
+    let conn: Client | undefined;
+
+    try {
+      const connection = await connectSftp(this.options);
+      conn = connection.conn;
+      const sftp = connection.sftp;
+
+      fs.mkdirSync(localTemplatesDir, { recursive: true });
+      const entries = await sftpReaddir(sftp, remoteTemplatesDir);
+
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const lower = entry.filename.toLowerCase();
+        // Only the PNG art and the name->file map are needed for rendering.
+        if (!lower.endsWith('.png') && entry.filename !== 'templates.json') continue;
+
+        const localFilePath = path.join(localTemplatesDir, entry.filename);
+        if (fs.existsSync(localFilePath)) {
+          try {
+            const localStat = fs.statSync(localFilePath);
+            const localMtime = Math.floor(localStat.mtimeMs / 1000);
+            if (entry.mtime <= localMtime && localStat.size === entry.size) {
+              continue; // up to date
+            }
+          } catch {
+            // fall through and re-download
+          }
+        }
+
+        try {
+          await sftpDownloadFile(sftp, entry.path, localFilePath, entry.mtime);
+          downloaded++;
+        } catch (err) {
+          errors.push(`${entry.filename}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } catch (err) {
+      errors.push(`templates: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try { conn?.end(); } catch { /* ignore */ }
+    }
+
+    return { downloaded, errors };
+  }
+
   /** Build a SftpSyncResult object. */
   private buildResult(
     success: boolean,

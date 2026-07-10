@@ -38,6 +38,8 @@ export interface RenderPageOptions {
   ocrLanguage?: string;
   /** Per-page OCR time budget in seconds (0 = unlimited). Defaults to 12. */
   ocrPageTimeoutSeconds?: number;
+  /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
+  templatesDir?: string;
 }
 
 /** Base timeout for the page renderer process when OCR is off. */
@@ -171,6 +173,9 @@ export async function renderPageImages(
           '--ocr', '--ocr-lang', options.ocrLanguage || 'eng',
           '--ocr-page-timeout', String(options.ocrPageTimeoutSeconds ?? DEFAULT_OCR_PAGE_TIMEOUT_S),
         );
+      }
+      if (options.templatesDir && fs.existsSync(options.templatesDir)) {
+        scriptArgs.push('--templates-dir', options.templatesDir);
       }
       const proc = spawn(pythonExe, scriptArgs, {
         stdio: ['ignore', 'pipe', 'pipe'],

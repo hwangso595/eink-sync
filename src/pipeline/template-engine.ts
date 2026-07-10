@@ -41,6 +41,29 @@ export interface PageTemplateEntry {
   page_number: number;
   highlights: HighlightTemplateContext[];
   annotation: string | null;
+  /** Raw OCR handwriting text for the page (empty when none / OCR off). */
+  ocr: string;
+  /** Pre-formatted, collapsed OCR callout block (empty when none). */
+  ocr_callout: string;
+}
+
+/**
+ * Format a page's OCR text as an Obsidian callout collapsed by default. Shared
+ * by the {{ocr_callout}} template variable and the {{annotations}} fallback so
+ * the two stay identical to the default renderer's output.
+ */
+function formatOcrCallout(text: string): string {
+  return ['> [!note]- Handwriting (OCR)', ...text.split('\n').map((l) => `> ${l}`)].join('\n');
+}
+
+/**
+ * Neutralize template delimiters in injected content so recognized handwriting
+ * that happens to contain `{{...}}` can't be re-interpreted as a template token
+ * by a later replacement pass and corrupt the note. Only affects text that
+ * actually contains the delimiters, so normal OCR output is unchanged.
+ */
+function neutralizeTemplateTokens(text: string): string {
+  return text.replace(/\{\{/g, '{ {').replace(/\}\}/g, '} }');
 }
 
 /** Variables available in the template context. */
@@ -160,6 +183,8 @@ function processEachBlocks(template: string, context: TemplateContext): string {
 
       rendered = rendered.replace(/\{\{page_number\}\}/g, String(page.page_number));
       rendered = rendered.replace(/\{\{annotation\}\}/g, page.annotation ?? '');
+      rendered = rendered.replace(/\{\{ocr_callout\}\}/g, page.ocr_callout);
+      rendered = rendered.replace(/\{\{ocr\}\}/g, page.ocr);
 
       // Process nested {{#each highlights}} within the page
       const innerRegex = /\{\{#each\s+highlights\}\}([\s\S]*?)\{\{\/each\}\}/g;
@@ -182,6 +207,13 @@ function processEachBlocks(template: string, context: TemplateContext): string {
       rendered = rendered.replace(ifRegex, (_m, body: string) => {
         return page.annotation ? body : '';
       });
+
+      // Process {{#if ocr_callout}} / {{#if ocr}} so the OCR block only appears
+      // on pages that actually have recognized text.
+      const ifOcrCalloutRegex = /\{\{#if\s+ocr_callout\}\}([\s\S]*?)\{\{\/if\}\}/g;
+      rendered = rendered.replace(ifOcrCalloutRegex, (_m, body: string) => (page.ocr_callout ? body : ''));
+      const ifOcrRegex = /\{\{#if\s+ocr\}\}([\s\S]*?)\{\{\/if\}\}/g;
+      rendered = rendered.replace(ifOcrRegex, (_m, body: string) => (page.ocr ? body : ''));
 
       return rendered;
     }).join('\n');
@@ -424,12 +456,16 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
       for (const p of pageOcr.keys()) allPageNums.add(p);
     }
 
-    const pages = [...allPageNums].sort((a, b) => a - b).map((pageNum) => ({
-      page_number: pageNum,
-      highlights: context.highlights.filter((h) => h.page === pageNum),
-      annotation: pageDrawings?.get(pageNum) ?? null,
-      ocr_text: pageOcr?.get(pageNum) ?? null,
-    }));
+    const pages = [...allPageNums].sort((a, b) => a - b).map((pageNum) => {
+      const ocr = neutralizeTemplateTokens(pageOcr?.get(pageNum) ?? '');
+      return {
+        page_number: pageNum,
+        highlights: context.highlights.filter((h) => h.page === pageNum),
+        annotation: pageDrawings?.get(pageNum) ?? null,
+        ocr,
+        ocr_callout: ocr ? formatOcrCallout(ocr) : '',
+      };
+    });
     context._pages = pages;
 
     // Also set {{annotations}} for simple templates
@@ -444,8 +480,7 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
           lines.push(`![[${filename}|500]]`);
         }
         if (ocrText) {
-          lines.push('> [!note]- Handwriting (OCR)');
-          for (const l of ocrText.split('\n')) lines.push(`> ${l}`);
+          lines.push(formatOcrCallout(neutralizeTemplateTokens(ocrText)));
         }
         lines.push('');
       }

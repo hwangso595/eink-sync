@@ -46,6 +46,9 @@ class DocumentContent:
     file_type: str  # "pdf", "epub", "notebook", or ""
     page_count: int
     page_uuids: list[str] = field(default_factory=list)
+    # reMarkable page-template name per page, parallel to page_uuids (e.g.
+    # "P Lines medium", "Blank"). Empty string when a page names no template.
+    page_templates: list[str] = field(default_factory=list)
     orientation: str = "portrait"
     # v6 .rm format uses cPages structure
     c_pages: Optional[dict] = None
@@ -113,6 +116,7 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
             data = json.load(f)
 
         page_uuids: list[str] = []
+        page_templates: list[str] = []
         page_redir: dict[int, int] = {}
         c_pages = data.get("cPages", None)
 
@@ -126,6 +130,12 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
                 page_id = page.get("id", page.get("uuid", ""))
                 if page_id:
                     page_uuids.append(page_id)
+                    # Template is stored as {"timestamp": ..., "value": "Name"}
+                    # in v6; keep it aligned with the page_uuids we actually kept.
+                    tmpl = page.get("template")
+                    if isinstance(tmpl, dict):
+                        tmpl = tmpl.get("value", "")
+                    page_templates.append(tmpl if isinstance(tmpl, str) else "")
                 # redir.value maps this page to its original PDF page index
                 redir = page.get("redir")
                 if isinstance(redir, dict) and "value" in redir:
@@ -171,6 +181,7 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
             file_type=data.get("fileType", ""),
             page_count=page_count,
             page_uuids=page_uuids,
+            page_templates=page_templates,
             orientation=data.get("orientation", "portrait"),
             c_pages=c_pages,
             page_redir=page_redir if page_redir else None,

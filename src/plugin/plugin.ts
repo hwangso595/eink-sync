@@ -845,6 +845,32 @@ export default class ReMarkableBridgePlugin extends Plugin {
       summaries.push(r.summary);
     }
 
+    // Pull the reMarkable page-template art (ruled/grid/planner backgrounds) so
+    // the renderer can draw it behind notebook strokes. Best-effort: the tablet
+    // is already reachable here, and any failure only means pages stay on white.
+    if (this.settings.extraction.renderTemplates) {
+      try {
+        const tmplEngine = new SftpSyncEngine({
+          host: this.settings.tabletIp,
+          port: this.settings.sshPort,
+          username: 'root',
+          password: this.settings.rootPassword,
+          timeoutMs: this.settings.sshTimeoutMs,
+          localSyncDir: resolvePath(this.app, targetSources[0].syncFolder),
+          includeEpub: this.settings.includeEpub,
+        });
+        const tr = await tmplEngine.fetchTemplates(this.getTemplatesDir());
+        if (tr.downloaded > 0) {
+          logger.info(`Fetched ${tr.downloaded} reMarkable template file(s)`);
+        }
+        if (tr.errors.length > 0) {
+          logger.warn(`Template fetch had issues: ${tr.errors.join('; ')}`);
+        }
+      } catch (err) {
+        logger.warn(`Template fetch skipped: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     syncResult.summary = targetSources.length === 1
       ? summaries[0]
       : `Synced ${targetSources.length} sources: ${syncResult.filesDownloaded} downloaded, ` +
@@ -1146,6 +1172,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       truncateBlankSpace: this.settings.extraction.truncateBlankSpace,
       ocrEnabled: this.settings.extraction.ocrEnabled,
       ocrLanguage: this.settings.extraction.ocrLanguage,
+      templatesDir: this.settings.extraction.renderTemplates ? this.getTemplatesDir() : undefined,
       uuidFilter: docUuid ? [docUuid] : undefined,
     };
 
@@ -1581,6 +1608,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
     return basePath
       ? `${basePath}/${configDir}/plugins/${this.manifest.id}`
       : `${configDir}/plugins/${this.manifest.id}`;
+  }
+
+  /**
+   * Local cache dir for reMarkable page-template art fetched from the tablet.
+   * Lives inside the plugin folder (not synced), so it persists across runs and
+   * is available to the Python renderer as an absolute path.
+   */
+  private getTemplatesDir(): string {
+    return path.join(this.getPluginDir(), 'rm-templates');
   }
 
   // -------------------------------------------------------------------

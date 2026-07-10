@@ -538,6 +538,19 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+
+    // 17. Render page templates
+    new Setting(containerEl)
+      .setName('Render page templates')
+      .setDesc('Draw the reMarkable page template (ruled lines, grid, planner) behind notebook strokes. The template art is fetched from the tablet over SFTP during sync; until then, pages render on plain white.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.extraction.renderTemplates)
+          .onChange(async (value) => {
+            this.plugin.settings.extraction.renderTemplates = value;
+            await this.plugin.saveSettings();
+          }),
+      );
   }
 
   // -------------------------------------------------------------------
