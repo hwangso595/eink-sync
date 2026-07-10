@@ -332,6 +332,20 @@ describe('TemplateMarkdownRenderer - OCR in note templates', () => {
     expect(out.indexOf('Handwriting (OCR)')).toBeGreaterThan(out.indexOf('Doc_p1.png'));
   });
 
+  it('neutralizes template tokens in OCR text so it cannot corrupt the note', () => {
+    const renderer = new TemplateMarkdownRenderer(pagesTemplate, 'pdfpp', []);
+    const result = makeExtractionResult([]);
+    const pageDrawings = new Map<number, string>([[1, 'Doc_p1.png']]);
+    // OCR that happens to contain template syntax must not be interpreted.
+    const pageOcr = new Map<number, string>([[1, 'value is {{title}} here']]);
+
+    const out = renderer.render(result, undefined, pageDrawings, pageOcr);
+
+    // The literal must survive un-substituted (title is "Test Document").
+    expect(out).not.toContain('value is Test Document here');
+    expect(out).toContain('{ {title} }');
+  });
+
   it('omits the OCR block on pages with no recognized text', () => {
     const renderer = new TemplateMarkdownRenderer(pagesTemplate, 'pdfpp', []);
     const result = makeExtractionResult([]);

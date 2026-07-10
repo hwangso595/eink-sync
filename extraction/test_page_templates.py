@@ -53,9 +53,13 @@ def test_resolver_maps_name_to_png_and_skips_blank():
         assert name_map.get("P Lines medium") == "P Lines medium"
         # Known template resolves to its PNG.
         assert _resolve_template_png(d, "P Lines medium", name_map) == os.path.join(d, "P Lines medium.png")
-        # "Blank" and empty never resolve.
+        # "Blank" and empty never resolve — including case/whitespace variants.
         assert _resolve_template_png(d, "Blank", name_map) is None
+        assert _resolve_template_png(d, "blank", name_map) is None
+        assert _resolve_template_png(d, "  Blank  ", name_map) is None
         assert _resolve_template_png(d, "", name_map) is None
+        # A trailing-space variant of a real template still resolves.
+        assert _resolve_template_png(d, "P Lines medium ", name_map) == os.path.join(d, "P Lines medium.png")
         # A template we don't have art for resolves to None.
         assert _resolve_template_png(d, "Dots large", name_map) is None
         # No templates dir -> None.

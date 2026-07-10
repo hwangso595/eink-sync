@@ -75,13 +75,17 @@ def _load_template_map(templates_dir: str) -> dict:
 def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
     """Resolve a page's template name to a PNG path, or None.
 
-    "Blank"/empty names have no background. Tries the templates.json filename
+    "Blank"/empty names have no background (matched case-insensitively and
+    trimmed, so "blank"/"Blank " count too). Tries the templates.json filename
     first, then the display name, each with a .png extension.
     """
-    if not templates_dir or not name or name == "Blank":
+    if not templates_dir or not name:
         return None
-    stem = name_map.get(name, name)
-    for candidate in (f"{stem}.png", f"{name}.png"):
+    normalized = name.strip()
+    if not normalized or normalized.lower() == "blank":
+        return None
+    stem = name_map.get(name) or name_map.get(normalized) or normalized
+    for candidate in (f"{stem}.png", f"{normalized}.png"):
         path = os.path.join(templates_dir, candidate)
         if os.path.exists(path):
             return path

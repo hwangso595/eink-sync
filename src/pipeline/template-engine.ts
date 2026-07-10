@@ -56,6 +56,16 @@ function formatOcrCallout(text: string): string {
   return ['> [!note]- Handwriting (OCR)', ...text.split('\n').map((l) => `> ${l}`)].join('\n');
 }
 
+/**
+ * Neutralize template delimiters in injected content so recognized handwriting
+ * that happens to contain `{{...}}` can't be re-interpreted as a template token
+ * by a later replacement pass and corrupt the note. Only affects text that
+ * actually contains the delimiters, so normal OCR output is unchanged.
+ */
+function neutralizeTemplateTokens(text: string): string {
+  return text.replace(/\{\{/g, '{ {').replace(/\}\}/g, '} }');
+}
+
 /** Variables available in the template context. */
 export interface TemplateContext {
   title: string;
@@ -447,7 +457,7 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     }
 
     const pages = [...allPageNums].sort((a, b) => a - b).map((pageNum) => {
-      const ocr = pageOcr?.get(pageNum) ?? '';
+      const ocr = neutralizeTemplateTokens(pageOcr?.get(pageNum) ?? '');
       return {
         page_number: pageNum,
         highlights: context.highlights.filter((h) => h.page === pageNum),
@@ -470,7 +480,7 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
           lines.push(`![[${filename}|500]]`);
         }
         if (ocrText) {
-          lines.push(formatOcrCallout(ocrText));
+          lines.push(formatOcrCallout(neutralizeTemplateTokens(ocrText)));
         }
         lines.push('');
       }
