@@ -1629,7 +1629,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /** Get the plugin's installation directory (where extraction/ scripts live). */
-  private getPluginDir(): string {
+  /** Absolute path to this plugin's folder (also read by the settings tab). */
+  getPluginDir(): string {
     const basePath = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.() ?? '';
     const configDir = this.app.vault.configDir;
     return basePath

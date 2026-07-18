@@ -308,6 +308,11 @@ def main() -> None:
                     out_path, args.ocr_lang, timeout_seconds=args.ocr_page_timeout,
                 )
                 cached["ocr_text"] = ocr_text
+                if ocr_text:
+                    print(
+                        f"Page {page_number}: OCR recognized {len(ocr_text)} char(s) (cached image)",
+                        file=sys.stderr, flush=True,
+                    )
             output["pages"].append({
                 "page_number": page_number,
                 "filename": filename,

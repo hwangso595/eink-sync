@@ -10,6 +10,7 @@
  * change them, but changing the sync folder requires reconfiguring Syncthing.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { App, PluginSettingTab, Setting, Notice, Modal } from 'obsidian';
 import type ReMarkableBridgePlugin from './plugin';
@@ -22,12 +23,20 @@ import {
 import { collisionKey } from './vault-isolation';
 import { isValidIpv4, sharesLocalSubnet, localIpv4Interfaces } from './net-utils';
 import { stopServices, removeServices } from '../sync/service-manager';
+import { getManagedEnvDir, getVenvPython } from '../pipeline/python-env';
+import {
+  getTesseractStatus, installTesseract, getInstallCommand, describeInstallCommand,
+  type TesseractStatus,
+} from '../pipeline/tesseract';
 import type { SyncProvider } from '../sync/sync-provider';
 
 const SAVE_DEBOUNCE_MS = 500;
 
 export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cached OCR-engine probe; null means "not probed since the last change". */
+  private tesseractStatus: TesseractStatus | null = null;
+  private tesseractProbeRunning = false;
 
   constructor(app: App, private plugin: ReMarkableBridgePlugin) {
     super(app, plugin);
@@ -532,15 +541,23 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // 15. OCR handwriting search
     new Setting(containerEl)
       .setName('Search handwriting (OCR)')
-      .setDesc('Run local OCR on notebook pages so handwriting becomes searchable text, folded under each page image. Requires Tesseract OCR installed on this computer (pip install pytesseract Pillow, plus the Tesseract binary). All processing stays on your machine.')
+      .setDesc('Run local OCR on notebook pages so handwriting becomes searchable text, folded under each page image. The Python packages are installed automatically; the Tesseract engine itself is a separate program (see below). All processing stays on your machine.')
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.extraction.ocrEnabled)
           .onChange(async (value) => {
             this.plugin.settings.extraction.ocrEnabled = value;
             await this.plugin.saveSettings();
+            // Surface the engine's status (and install button) as soon as OCR
+            // is switched on, instead of after a silently text-less sync.
+            this.display();
           }),
       );
+
+    // 15b. Tesseract engine status + one-click install (only while OCR is on)
+    if (this.plugin.settings.extraction.ocrEnabled) {
+      this.renderTesseractStatus(containerEl);
+    }
 
     // 16. OCR language
     new Setting(containerEl)
@@ -573,6 +590,79 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   // -------------------------------------------------------------------
   // Sync Sources section
   // -------------------------------------------------------------------
+
+  /**
+   * Report whether the Tesseract engine is usable and, when it is not, offer
+   * to install it. The Python OCR packages are provisioned with the managed
+   * env, but the engine is a native binary pip cannot deliver — without this
+   * the only symptom was notes silently missing handwriting text.
+   */
+  private renderTesseractStatus(containerEl: HTMLElement): void {
+    const setting = new Setting(containerEl).setName('Tesseract OCR engine');
+    const status = this.tesseractStatus;
+
+    if (!status) {
+      setting.setDesc('Checking whether the OCR engine is installed...');
+      void this.probeTesseract();
+      return;
+    }
+
+    if (status.available) {
+      setting.setDesc(
+        `Installed${status.version ? ` (version ${status.version})` : ''}. Handwriting on notebook pages will be indexed for search.`,
+      );
+      return;
+    }
+
+    const command = getInstallCommand();
+    setting.setDesc(
+      command?.automatable
+        ? `Not installed, so handwriting is not searchable yet. Installs via ${command.manager}; the download is a few hundred MB and can take a few minutes.`
+        : `Not installed, so handwriting is not searchable yet. Install it with: ${describeInstallCommand() ?? 'your system package manager'}`,
+    );
+
+    if (!command?.automatable) return;
+
+    setting.addButton((button) =>
+      button
+        .setButtonText('Install Tesseract')
+        .setCta()
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText('Installing...');
+          const result = await installTesseract({
+            onProgress: (message) => new Notice(`E-Ink Sync: ${message}`, 10_000),
+          });
+          new Notice(`E-Ink Sync: ${result.message}`, result.success ? 8_000 : 15_000);
+          // Re-probe rather than trusting the exit code: this also confirms
+          // the freshly installed binary is where ocr_engine.py looks.
+          this.tesseractStatus = null;
+          this.display();
+        }),
+    );
+  }
+
+  /** Probe the OCR engine once, then re-render with the result. */
+  private async probeTesseract(): Promise<void> {
+    if (this.tesseractProbeRunning) return;
+    this.tesseractProbeRunning = true;
+    try {
+      const python = getVenvPython(getManagedEnvDir());
+      const ocrEngine = path.join(this.plugin.getPluginDir(), 'extraction', 'ocr_engine.py');
+      this.tesseractStatus = fs.existsSync(python) && fs.existsSync(ocrEngine)
+        ? await getTesseractStatus(python, ocrEngine)
+        : {
+          available: false,
+          pytesseractInstalled: false,
+          pillowInstalled: false,
+          binaryFound: false,
+          version: null,
+          error: "The plugin's Python environment has not been created yet — it is set up on the first sync.",
+        };
+    } finally {
+      this.tesseractProbeRunning = false;
+      this.display();
+    }
+  }
 
   private renderSyncSourcesSection(containerEl: HTMLElement): void {
     new Setting(containerEl).setName('Sync sources').setHeading();
