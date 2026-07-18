@@ -13,6 +13,7 @@ import {
   ensureManagedPython,
   getManagedEnvDir,
   getVenvPython,
+  resetManagedPythonStateForTests,
   REQUIRED_PACKAGES,
   type CommandResult,
 } from './python-env';
@@ -68,6 +69,7 @@ describe('ensureManagedPython', () => {
   let envDir: string;
 
   beforeEach(() => {
+    resetManagedPythonStateForTests();
     envDir = makeTempEnvDir();
   });
 
@@ -138,9 +140,10 @@ describe('ensureManagedPython', () => {
     let importChecks = 0;
     const { runner } = makeRunner((cmd, args) => {
       if (cmd === venvPython && args[0] === '-c') {
-        // First import check fails (broken env), later ones succeed (repaired).
+        // The healthy-env check (tried twice) fails, later checks succeed
+        // once the packages have been reinstalled.
         importChecks++;
-        return importChecks === 1 ? fail : ok;
+        return importChecks <= 2 ? fail : ok;
       }
       if (cmd === 'uv') return ok; // --version + pip install repair
       return fail;
@@ -172,6 +175,69 @@ describe('ensureManagedPython', () => {
       code: ErrorCode.PYTHON_DEPS_MISSING,
     });
     await expect(ensureManagedPython({ envDir, runner })).rejects.toBeInstanceOf(BridgeError);
+  });
+
+  it('recreates an env dir that exists without an interpreter (uv would refuse)', async () => {
+    // Simulates a killed provisioning run or a dangling-interpreter venv:
+    // the directory is there, the python executable is not.
+    fs.mkdirSync(envDir, { recursive: true });
+    const strayFile = path.join(envDir, 'stray.txt');
+    fs.writeFileSync(strayFile, 'leftover');
+    const venvPython = getVenvPython(envDir);
+    const { runner } = makeRunner((cmd, args) => {
+      if (cmd === 'uv' && args[0] === 'venv') {
+        // uv fails on a pre-existing directory; the module must have
+        // removed it before ever calling this.
+        if (fs.existsSync(strayFile)) {
+          return { code: 2, stdout: '', stderr: 'A directory already exists' };
+        }
+        materializeVenvPython(envDir);
+        return ok;
+      }
+      if (cmd === 'uv') return ok;
+      if (cmd === venvPython) return ok;
+      return fail;
+    });
+
+    const result = await ensureManagedPython({ envDir, runner });
+
+    expect(result).toEqual({ pythonPath: venvPython, managed: true, created: true });
+    expect(fs.existsSync(strayFile)).toBe(false);
+  });
+
+  it('shares one provisioning attempt across concurrent calls', async () => {
+    const venvPython = getVenvPython(envDir);
+    const { runner, calls } = makeRunner((cmd, args) => {
+      if (cmd === 'uv' && args[0] === 'venv') {
+        materializeVenvPython(envDir);
+        return ok;
+      }
+      if (cmd === 'uv') return ok;
+      if (cmd === venvPython) return ok;
+      return fail;
+    });
+
+    const [a, b] = await Promise.all([
+      ensureManagedPython({ envDir, runner }),
+      ensureManagedPython({ envDir, runner }),
+    ]);
+
+    expect(a).toEqual(b);
+    expect(calls.filter((c) => c.cmd === 'uv' && c.args[0] === 'venv')).toHaveLength(1);
+  });
+
+  it('does not re-provision immediately after a failed attempt', async () => {
+    const { runner, calls } = makeRunner(() => fail);
+
+    await expect(ensureManagedPython({ envDir, runner })).rejects.toBeInstanceOf(BridgeError);
+    const callsAfterFirst = calls.length;
+    await expect(ensureManagedPython({ envDir, runner })).rejects.toBeInstanceOf(BridgeError);
+
+    // The second call skips provisioning (no uv/venv activity), only the
+    // system-Python fallback probes run again.
+    const secondCallCmds = calls.slice(callsAfterFirst).map((c) => c.cmd);
+    expect(secondCallCmds).not.toContain('uv');
+    expect(secondCallCmds).toEqual(['python3', 'python']);
   });
 
   it('installs OCR extras best-effort without failing the run', async () => {

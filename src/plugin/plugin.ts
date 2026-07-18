@@ -993,6 +993,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           new Notice('E-Ink Sync: Python environment ready.');
         }
       } catch (err) {
+        this.updateStatusBar('error');
         const msg = err instanceof BridgeError
           ? err.toUserMessage()
           : err instanceof Error ? err.message : String(err);
