@@ -40,6 +40,8 @@ export interface RenderPageOptions {
   ocrPageTimeoutSeconds?: number;
   /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
   templatesDir?: string;
+  /** Python executable to use (resolved managed env). Falls back to PATH detection. */
+  pythonPath?: string;
 }
 
 /** Base timeout for the page renderer process when OCR is off. */
@@ -140,14 +142,15 @@ export async function renderPageImages(
     fs.mkdirSync(drawingsPath, { recursive: true });
   }
 
-  // Detect Python executable
   const { spawn } = require('child_process');
-  let pythonExe = 'python';
-  try {
-    const { detectPythonPath } = require('./python-bridge');
-    pythonExe = await detectPythonPath();
-  } catch {
-    // Fall back to 'python'
+  let pythonExe = options.pythonPath ?? 'python';
+  if (!options.pythonPath) {
+    try {
+      const { detectPythonPath } = require('./python-bridge');
+      pythonExe = await detectPythonPath();
+    } catch {
+      // Fall back to 'python'
+    }
   }
 
   logger.info(`Rendering page images: ${doc.visibleName}, python=${pythonExe}`);

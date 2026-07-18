@@ -210,6 +210,11 @@ export interface ReMarkableBridgeSettings {
   debugLogging: boolean;
   autoExtractEnabled: boolean;
   includeEpub: boolean;
+  /**
+   * Let the plugin create and maintain its own Python environment (via uv or
+   * venv) with the required packages, instead of trusting the PATH Python.
+   */
+  managedPythonEnv: boolean;
   /** Whether to automatically sync from tablet on a timer (SFTP only). */
   autoSyncEnabled: boolean;
   /** Interval in minutes between automatic SFTP syncs. */
@@ -297,6 +302,7 @@ export const DEFAULT_SETTINGS: ReMarkableBridgeSettings = {
   debugLogging: false,
   autoExtractEnabled: true,
   includeEpub: true,
+  managedPythonEnv: true,
   autoSyncEnabled: false,
   autoSyncIntervalMinutes: 15,
   archiveEnabled: false,

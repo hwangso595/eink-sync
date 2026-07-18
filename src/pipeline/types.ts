@@ -213,4 +213,6 @@ export interface PipelineConfig {
   ocrLanguage?: string;
   /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
   templatesDir?: string;
+  /** Python executable to use (resolved managed env). Falls back to PATH detection. */
+  pythonPath?: string;
 }

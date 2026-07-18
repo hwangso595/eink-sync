@@ -66,6 +66,7 @@ import {
   runExtractionPipeline,
   type PipelineRunResult,
 } from '../pipeline/extraction-pipeline';
+import { ensureManagedPython } from '../pipeline/python-env';
 import type { PipelineConfig } from '../pipeline/types';
 
 // SFTP sync engine
@@ -977,6 +978,29 @@ export default class ReMarkableBridgePlugin extends Plugin {
       }
     }
 
+    // Resolve the Python interpreter once for all sources. A hard failure here
+    // aborts the run: proceeding without the deps would overwrite existing
+    // notes with empty "no highlights found" content.
+    let pythonPath: string | undefined;
+    if (this.settings.managedPythonEnv) {
+      try {
+        const env = await ensureManagedPython({
+          ocrExtras: this.settings.extraction.ocrEnabled,
+          onProgress: (message) => new Notice(message),
+        });
+        pythonPath = env.pythonPath;
+        if (env.created) {
+          new Notice('E-Ink Sync: Python environment ready.');
+        }
+      } catch (err) {
+        const msg = err instanceof BridgeError
+          ? err.toUserMessage()
+          : err instanceof Error ? err.message : String(err);
+        new Notice(`E-Ink Sync: extraction aborted — ${msg}`, 15_000);
+        throw err;
+      }
+    }
+
     this.updateStatusBar('extracting');
 
     // Aggregate results across all sources
@@ -1007,7 +1031,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           this.computeSourceCursorStatus(source.syncFolder);
 
         const sourceResult = await this.runExtractionForSource(
-          source, forceAll, template, docUuid,
+          source, forceAll, template, docUuid, pythonPath,
         );
 
         // Accumulate results
@@ -1120,6 +1144,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     forceAll: boolean,
     template: string | null,
     docUuid?: string,
+    pythonPath?: string,
   ): Promise<PipelineRunResult> {
     if (!source.syncFolder) {
       throw new Error(`Sync folder not configured for source "${source.label}".`);
@@ -1174,6 +1199,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       ocrLanguage: this.settings.extraction.ocrLanguage,
       templatesDir: this.settings.extraction.renderTemplates ? this.getTemplatesDir() : undefined,
       uuidFilter: docUuid ? [docUuid] : undefined,
+      pythonPath,
     };
 
     logger.info(`Running extraction for source "${source.label}" (${source.syncFolder})${docUuid ? ` [doc: ${docUuid}]` : ''}`);

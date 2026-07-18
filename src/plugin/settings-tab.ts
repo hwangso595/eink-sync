@@ -460,6 +460,23 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName('Managed Python environment')
+      .setDesc(
+        'Let the plugin create and maintain its own Python environment (via uv or venv) ' +
+        'with the required packages, instead of trusting whatever Python is on PATH. ' +
+        'Extraction aborts with an error instead of writing empty notes when no usable ' +
+        'environment exists.',
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.managedPythonEnv)
+          .onChange(async (value) => {
+            this.plugin.settings.managedPythonEnv = value;
+            await this.plugin.saveSettings();
+          }),
+      );
+
     // 11. Overwrite existing notes
     new Setting(containerEl)
       .setName('Overwrite existing notes')

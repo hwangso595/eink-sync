@@ -95,6 +95,8 @@ export interface DefaultDependenciesConfig {
   pdfLinkFormat?: 'pdfpp' | 'obsidian' | 'none';
   /** Default tags to add to frontmatter. */
   defaultTags?: string[];
+  /** Python executable to use (resolved managed env). Falls back to PATH detection. */
+  pythonPath?: string;
 }
 
 /**
@@ -127,7 +129,7 @@ export function createDefaultDependencies(config: DefaultDependenciesConfig = {}
 
   return {
     discovery: new XochitlDocumentDiscovery(),
-    extractor: new PythonHighlightExtractor(pluginDir, includeEpub),
+    extractor: new PythonHighlightExtractor(pluginDir, includeEpub, config.pythonPath),
     renderer,
   };
 }
@@ -195,6 +197,7 @@ export async function runExtractionPipeline(
     groupByPage: config.groupByPage,
     pdfLinkFormat: config.pdfLinkFormat,
     defaultTags: config.defaultTags,
+    pythonPath: config.pythonPath,
   });
 
   const result: PipelineRunResult = {
@@ -435,6 +438,7 @@ export async function runExtractionPipeline(
             ocrEnabled: config.ocrEnabled,
             ocrLanguage: config.ocrLanguage,
             templatesDir: config.templatesDir,
+            pythonPath: config.pythonPath,
           },
         );
         if (imageResult) {

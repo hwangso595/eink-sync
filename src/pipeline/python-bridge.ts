@@ -400,7 +400,11 @@ function pythonResultToExtractionResult(
 const MAX_DOC_UUID_ARGS = 100;
 
 export class PythonHighlightExtractor implements HighlightExtractor {
-  constructor(private pluginDir?: string, private includeEpub?: boolean) {}
+  constructor(
+    private pluginDir?: string,
+    private includeEpub?: boolean,
+    private pythonPath?: string,
+  ) {}
 
   async extractHighlights(
     documents: ReMarkableDocument[],
@@ -422,6 +426,7 @@ export class PythonHighlightExtractor implements HighlightExtractor {
       pluginDir: this.pluginDir,
       includeEpub: this.includeEpub,
       docUuids,
+      pythonPath: this.pythonPath,
     };
 
     const output = await runPythonExtraction(opts);
