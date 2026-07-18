@@ -193,15 +193,62 @@ describe('SftpSyncEngine', () => {
       expect(toDownload).toHaveLength(1);
     });
 
-    it('should include annotation directories with newer mtime', () => {
+    it('should include annotation directories whose document metadata changed', () => {
       const engine = new SftpSyncEngine(defaultOptions(tempDir));
 
       const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
-      const localDir = path.join(tempDir, dirName);
-      fs.mkdirSync(localDir);
-      fs.utimesSync(localDir, new Date(1600000000000), new Date(1600000000000));
+      fs.mkdirSync(path.join(tempDir, dirName));
+      const metaPath = path.join(tempDir, `${dirName}.metadata`);
+      fs.writeFileSync(metaPath, '{}');
+      fs.utimesSync(metaPath, new Date(1600000000000), new Date(1600000000000));
 
       const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: `/xochitl/${dirName}.metadata`,
+          filename: `${dirName}.metadata`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+        {
+          path: `/xochitl/${dirName}`,
+          filename: dirName,
+          size: 0,
+          mtime: 1500000000,
+          isDirectory: true,
+        },
+      ];
+
+      const toDownload = engine.compareFiles(remoteFiles);
+      expect(toDownload.map((f) => f.filename)).toEqual([dirName, `${dirName}.metadata`]);
+    });
+
+    it('should skip annotation directories for unchanged documents', () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      fs.mkdirSync(path.join(tempDir, dirName));
+      for (const ext of ['.metadata', '.content']) {
+        const filePath = path.join(tempDir, `${dirName}${ext}`);
+        fs.writeFileSync(filePath, '{}');
+        fs.utimesSync(filePath, new Date(1700000000000), new Date(1700000000000));
+      }
+
+      const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: `/xochitl/${dirName}.metadata`,
+          filename: `${dirName}.metadata`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+        {
+          path: `/xochitl/${dirName}.content`,
+          filename: `${dirName}.content`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
         {
           path: `/xochitl/${dirName}`,
           filename: dirName,
@@ -212,16 +259,77 @@ describe('SftpSyncEngine', () => {
       ];
 
       const toDownload = engine.compareFiles(remoteFiles);
-      expect(toDownload).toHaveLength(1);
+      expect(toDownload).toHaveLength(0);
     });
 
-    it('should always include annotation directories for deeper file comparison', () => {
+    it('should include unchanged-doc directories when the local copy is missing', () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      // Local metadata is fresh, but the annotation dir was never downloaded
+      const metaPath = path.join(tempDir, `${dirName}.metadata`);
+      fs.writeFileSync(metaPath, '{}');
+      fs.utimesSync(metaPath, new Date(1700000000000), new Date(1700000000000));
+
+      const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: `/xochitl/${dirName}.metadata`,
+          filename: `${dirName}.metadata`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+        {
+          path: `/xochitl/${dirName}`,
+          filename: dirName,
+          size: 0,
+          mtime: 1700000000,
+          isDirectory: true,
+        },
+      ];
+
+      const toDownload = engine.compareFiles(remoteFiles);
+      expect(toDownload.map((f) => f.filename)).toEqual([dirName]);
+    });
+
+    it('should include unchanged-doc directories carrying the incomplete marker', () => {
       const engine = new SftpSyncEngine(defaultOptions(tempDir));
 
       const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
       const localDir = path.join(tempDir, dirName);
       fs.mkdirSync(localDir);
-      fs.utimesSync(localDir, new Date(1800000000000), new Date(1800000000000));
+      // A previous partial download left the marker behind
+      fs.writeFileSync(path.join(localDir, '.eink-sync-incomplete'), '');
+      const metaPath = path.join(tempDir, `${dirName}.metadata`);
+      fs.writeFileSync(metaPath, '{}');
+      fs.utimesSync(metaPath, new Date(1700000000000), new Date(1700000000000));
+
+      const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: `/xochitl/${dirName}.metadata`,
+          filename: `${dirName}.metadata`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+        {
+          path: `/xochitl/${dirName}`,
+          filename: dirName,
+          size: 0,
+          mtime: 1700000000,
+          isDirectory: true,
+        },
+      ];
+
+      const toDownload = engine.compareFiles(remoteFiles);
+      expect(toDownload.map((f) => f.filename)).toEqual([dirName]);
+    });
+
+    it('should include directories with no metadata sibling in the listing', () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      fs.mkdirSync(path.join(tempDir, dirName));
 
       const remoteFiles: RemoteFileInfo[] = [
         {
@@ -233,7 +341,6 @@ describe('SftpSyncEngine', () => {
         },
       ];
 
-      // Directories are always included so individual files inside are compared
       const toDownload = engine.compareFiles(remoteFiles);
       expect(toDownload).toHaveLength(1);
     });
