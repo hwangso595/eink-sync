@@ -36,6 +36,7 @@ import { PythonHighlightExtractor } from './python-bridge';
 import { DefaultMarkdownRenderer, generateOutputFilename, resolveOutputBaseNames, scanExistingNoteBaseNames, type PageDrawings } from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
 import { renderPageImages, type PageImageResult } from './page-image-renderer';
+import { preserveTypedNotes } from './notes-preservation';
 import type { PageOcr } from './types';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
@@ -503,8 +504,10 @@ export async function runExtractionPipeline(
 
       // Render or merge markdown
       let markdownContent: string;
-      if (!config.overwrite && fs.existsSync(outputFilePath)) {
-        const existingContent = fs.readFileSync(outputFilePath, 'utf-8');
+      const existingContent = fs.existsSync(outputFilePath)
+        ? fs.readFileSync(outputFilePath, 'utf-8')
+        : null;
+      if (!config.overwrite && existingContent !== null) {
         markdownContent = renderer.mergeWithExisting(
           existingContent,
           extractionResult,
@@ -516,6 +519,13 @@ export async function runExtractionPipeline(
       } else {
         markdownContent = renderer.render(extractionResult, sourcePdfName, pageDrawings, pageOcr);
         logger.debug(`Created new note: ${outputFilePath}`);
+      }
+
+      // Typed user notes survive EVERY regeneration path, including overwrite
+      // mode: re-attach them by anchor, appending any unmatched note to a
+      // "Preserved notes" callout rather than ever dropping it.
+      if (existingContent !== null) {
+        markdownContent = preserveTypedNotes(existingContent, markdownContent);
       }
 
       // If there are warnings, prepend a warning callout to the content

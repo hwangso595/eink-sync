@@ -25,6 +25,7 @@
 import type { ExtractionResult, ExtractedHighlight, PageDrawings, PageOcr, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
+import { preserveTypedNotes } from './notes-preservation';
 import { logger } from '../utils/logger';
 
 // Re-exported for backwards compatibility (public API / tests import it here).
@@ -517,34 +518,19 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
       return fresh;
     }
 
-    // Extract user notes from the existing section (using whichever marker pair was found)
-    const existingSection = existingContent.substring(
-      start.index, end.index + end.marker.length
-    );
-    const preservedNotes = extractNoteBlocks(existingSection);
-
-    // Get the new section from the fresh render (always uses current markers)
+    // Get the new section from the fresh render (always uses current markers).
+    // Typed user notes are NOT handled here: the pipeline re-attaches them on
+    // every write path via preserveTypedNotes() (notes-preservation.ts), which
+    // matches by anchor and never drops content — the old positional re-insert
+    // here silently destroyed notes whenever the fresh render had fewer slots.
     const newStartIdx = fresh.indexOf(HIGHLIGHTS_SECTION_START);
     const newEndIdx = fresh.indexOf(HIGHLIGHTS_SECTION_END);
     if (newStartIdx === -1 || newEndIdx === -1) {
       return fresh;
     }
-    let newSection = fresh.substring(
+    const newSection = fresh.substring(
       newStartIdx, newEndIdx + HIGHLIGHTS_SECTION_END.length
     );
-
-    // Re-insert preserved notes positionally
-    // The Nth <!-- notes --><!-- /notes --> in the new section gets the Nth preserved note
-    let noteIdx = 0;
-    newSection = newSection.replace(/<!-- notes -->\s*<!-- \/notes -->/g, (match) => {
-      if (noteIdx < preservedNotes.length && preservedNotes[noteIdx]) {
-        const content = preservedNotes[noteIdx];
-        noteIdx++;
-        return `<!-- notes -->\n${content}\n<!-- /notes -->`;
-      }
-      noteIdx++;
-      return match;
-    });
 
     // Reassemble: before markers + new section + after markers
     const before = existingContent.substring(0, start.index);
@@ -552,29 +538,10 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
 
     const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
 
-    return updatedBefore + newSection + after;
+    // Typed user notes must survive the section swap (the pipeline applies
+    // this again for the overwrite path; the helper is idempotent).
+    return preserveTypedNotes(existingContent, updatedBefore + newSection + after);
   }
 
 }
 
-/**
- * Extract user-written notes from %%note%%...%%/note%% and
- * %%page-note%%...%%/page-note%% marker pairs in existing content.
- *
- * Notes are identified by their position (Nth %%note%% block = index N).
- * Returns an array of { marker, content } where marker is the opening tag
- * to search for when re-inserting.
- */
-/**
- * Extract user notes from <!-- notes --> ... <!-- /notes --> pairs.
- * Returns array of note content strings indexed by position.
- */
-function extractNoteBlocks(section: string): string[] {
-  const notes: string[] = [];
-  const regex = /<!-- notes -->([\s\S]*?)<!-- \/notes -->/g;
-  let match;
-  while ((match = regex.exec(section)) !== null) {
-    notes.push(match[1].trim());
-  }
-  return notes;
-}
