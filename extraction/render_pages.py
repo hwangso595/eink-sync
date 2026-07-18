@@ -7,9 +7,10 @@ if sys.stderr.encoding != 'utf-8':
 """
 CLI entry point for collecting reMarkable page images.
 
-Uses the tablet's own pre-rendered cache PNGs when available (full resolution,
-pixel-perfect rendering with all pen textures). Falls back to our own PNG
-renderer when cache images don't exist.
+Renders each page's strokes to PNG with our own renderer (tablet
+.cache/.thumbnails PNGs are ignored: lower fidelity, and their mtimes churn
+on every page view). A per-doc render cache next to the output images skips
+pages whose .rm file hasn't changed since the last run.
 
 Usage:
     python render_pages.py --xochitl-path /path --doc-uuid UUID --output-dir /path/to/dir
@@ -29,7 +30,6 @@ Output format (JSON on stdout):
 import argparse
 import json
 import os
-import shutil
 import sys
 
 # Redirect fd 1 to stderr to prevent PyMuPDF C-level stdout pollution.
@@ -103,9 +103,32 @@ def _safe_filename(name: str) -> str:
     return name.strip() or "Untitled"
 
 
+def _load_render_cache(cache_path: str, settings: dict) -> dict:
+    """Load the per-doc render cache; discard it when render settings changed."""
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("settings") == settings and isinstance(data.get("pages"), dict):
+            return data["pages"]
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+def _save_render_cache(cache_path: str, settings: dict, pages: dict) -> None:
+    """Atomically persist the per-doc render cache (best-effort)."""
+    try:
+        tmp_path = f"{cache_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"settings": settings, "pages": pages}, f, ensure_ascii=False)
+        os.replace(tmp_path, cache_path)
+    except OSError:
+        pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Collect reMarkable page images (cache or rendered)"
+        description="Render reMarkable page images to PNG"
     )
     parser.add_argument("--xochitl-path", required=True)
     parser.add_argument("--doc-uuid", required=True)
@@ -172,8 +195,6 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     rm_dir = os.path.join(args.xochitl_path, args.doc_uuid)
-    cache_dir = os.path.join(args.xochitl_path, f"{args.doc_uuid}.cache")
-    thumb_dir = os.path.join(args.xochitl_path, f"{args.doc_uuid}.thumbnails")
 
     # Find source PDF for rendering strokes on top of page content
     source_pdf = None
@@ -181,8 +202,6 @@ def main() -> None:
         pdf_candidate = os.path.join(args.xochitl_path, f"{args.doc_uuid}.pdf")
         if os.path.exists(pdf_candidate):
             source_pdf = pdf_candidate
-    has_cache = os.path.isdir(cache_dir)
-    has_thumbs = os.path.isdir(thumb_dir)
 
     # Truncation only makes sense for notebook pages (PDF pages have fixed
     # geometry tied to their background).
@@ -206,6 +225,20 @@ def main() -> None:
         except Exception as e:
             print(f"OCR setup failed: {e}", file=sys.stderr, flush=True)
 
+    # Per-doc render cache: skip re-rendering pages whose .rm is unchanged.
+    # Keyed by page UUID and invalidated wholesale when pixel-affecting
+    # settings change. Lives next to the page images as a dotfile so Obsidian
+    # ignores it (and Syncthing shares it between machines).
+    cache_settings = {
+        "truncate_blank": truncate_blank,
+        "templates": bool(templates_dir),
+    }
+    render_cache_path = os.path.join(
+        args.output_dir, f".render-cache-{args.doc_uuid}.json"
+    )
+    render_cache = _load_render_cache(render_cache_path, cache_settings)
+    new_cache: dict = {}
+
     pages_collected = 0
 
     for page_idx, page_uuid in enumerate(page_uuids):
@@ -223,17 +256,12 @@ def main() -> None:
         # Get .rm file modification time for staleness comparison
         rm_mtime = os.path.getmtime(rm_path)
 
-        # Include mtime hash in filename so Obsidian's image cache picks up changes.
-        # Combine .rm mtime with cache/thumbnail mtime so the hash changes
-        # when the tablet re-renders the page (e.g., after closing the document).
-        source_mtime = int(rm_mtime)
-        cache_png_path = os.path.join(cache_dir, f"{page_uuid}.png") if has_cache else ""
-        thumb_png_path = os.path.join(thumb_dir, f"{page_uuid}.png") if has_thumbs else ""
-        if cache_png_path and os.path.exists(cache_png_path):
-            source_mtime = max(source_mtime, int(os.path.getmtime(cache_png_path)))
-        elif thumb_png_path and os.path.exists(thumb_png_path):
-            source_mtime = max(source_mtime, int(os.path.getmtime(thumb_png_path)))
-        mtime_hash = format(source_mtime & 0xFFFF, '04x')
+        # Include an .rm-mtime hash in the filename so Obsidian's image cache
+        # picks up changes; an unchanged page keeps a stable name. (Tablet
+        # .cache/.thumbnails PNGs are deliberately ignored: our renderer
+        # produces higher-resolution output including glyph highlights, and
+        # their mtimes churn on every page view.)
+        mtime_hash = format(int(rm_mtime) & 0xFFFF, '04x')
         filename = f"{doc_name}_p{page_number}_{mtime_hash}.png"
         out_path = os.path.join(args.output_dir, filename)
 
@@ -247,28 +275,35 @@ def main() -> None:
                 except OSError:
                     pass
 
-        # Tablet cache skipped: the cache PNG doesn't include glyph highlights
-        # (text-selection highlights are a UI overlay, not baked into the cache).
-        # Our renderer handles both strokes and glyph highlights correctly.
-
-        # Skip thumbnails — our renderer produces higher resolution (1404x1872)
-        # than the tablet's thumbnails (384x512). Cache is still preferred when
-        # fresh since it's tablet-rendered at full resolution.
-        if False:  # Thumbnail rendering disabled
-            thumb_png = os.path.join(thumb_dir, f"{page_uuid}.png")
-            if has_thumbs and os.path.exists(thumb_png):
-                thumb_mtime = os.path.getmtime(thumb_png)
-                if thumb_mtime >= rm_mtime - 2.0:
-                    shutil.copy2(thumb_png, out_path)
-                    pages_collected += 1
-                continue
-            else:
-                print(
-                    f"Page {page_number}: thumbnail is stale ({int(rm_mtime - thumb_mtime)}s behind), using renderer",
-                    file=sys.stderr, flush=True,
+        # Reuse the previous render when the page is unchanged: same output
+        # filename (encodes doc name, page position, and .rm mtime) and the
+        # PNG still on disk. OCR may still run on the existing image when it
+        # was never attempted (ocr_text None: OCR just enabled or Tesseract
+        # newly installed).
+        cached = render_cache.get(page_uuid)
+        if (
+            cached
+            and cached.get("filename") == filename
+            and cached.get("rm_mtime") == int(rm_mtime)
+            and os.path.exists(out_path)
+        ):
+            ocr_text = cached.get("ocr_text")
+            if ocr_text is None and ocr_page_image is not None:
+                ocr_text = ocr_page_image(
+                    out_path, args.ocr_lang, timeout_seconds=args.ocr_page_timeout,
                 )
+                cached["ocr_text"] = ocr_text
+            output["pages"].append({
+                "page_number": page_number,
+                "filename": filename,
+                "has_strokes": True,
+                "highlight_texts": cached.get("highlight_texts", []),
+                "ocr_text": ocr_text or "",
+            })
+            new_cache[page_uuid] = cached
+            pages_collected += 1
+            continue
 
-        # Try 3: Fall back to our own renderer
         try:
             # PDF documents use 300-DPI logical coordinates; notebooks use 1:1 pixels.
             doc_coord_scale = 0.73 if not is_notebook else 1.0
@@ -346,12 +381,20 @@ def main() -> None:
                         "highlight_texts": highlight_texts,
                         "ocr_text": ocr_text,
                     })
+                    new_cache[page_uuid] = {
+                        "filename": filename,
+                        "rm_mtime": int(rm_mtime),
+                        "highlight_texts": highlight_texts,
+                        # None (vs "") marks OCR as never attempted for this render
+                        "ocr_text": ocr_text if ocr_page_image is not None else None,
+                    }
                     pages_collected += 1
         except Exception as e:
             output["errors"].append(f"Page {page_number}: {e}")
             print(f"Page {page_number} error: {e}", file=sys.stderr, flush=True)
 
     output["success"] = True
+    _save_render_cache(render_cache_path, cache_settings, new_cache)
     print(
         f"Collected {pages_collected} page(s) with strokes",
         file=sys.stderr, flush=True,

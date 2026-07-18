@@ -427,5 +427,50 @@ class TestHighlightOnlyPagesSkipAnnotation(unittest.TestCase):
         self.assertTrue(has_pen, "Page with ballpoint stroke should have pen drawings")
 
 
+class TestRenderCache(unittest.TestCase):
+    """Per-doc render cache: unchanged pages skip re-rendering."""
+
+    SETTINGS = {"truncate_blank": True, "templates": False}
+
+    def _entry(self):
+        return {
+            "uuid-1": {
+                "filename": "Doc_p1_abcd.png",
+                "rm_mtime": 1700000000,
+                "highlight_texts": ["some text"],
+                "ocr_text": None,
+            }
+        }
+
+    def test_cache_roundtrip(self):
+        from render_pages import _load_render_cache, _save_render_cache
+
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, ".render-cache-x.json")
+            _save_render_cache(path, self.SETTINGS, self._entry())
+            self.assertEqual(_load_render_cache(path, self.SETTINGS), self._entry())
+
+    def test_settings_change_invalidates_cache(self):
+        from render_pages import _load_render_cache, _save_render_cache
+
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, ".render-cache-x.json")
+            _save_render_cache(path, self.SETTINGS, self._entry())
+            changed = {"truncate_blank": False, "templates": False}
+            self.assertEqual(_load_render_cache(path, changed), {})
+
+    def test_missing_or_corrupt_cache_returns_empty(self):
+        from render_pages import _load_render_cache
+
+        with tempfile.TemporaryDirectory() as td:
+            missing = os.path.join(td, "nope.json")
+            self.assertEqual(_load_render_cache(missing, self.SETTINGS), {})
+
+            corrupt = os.path.join(td, "bad.json")
+            with open(corrupt, "w", encoding="utf-8") as f:
+                f.write("{not json")
+            self.assertEqual(_load_render_cache(corrupt, self.SETTINGS), {})
+
+
 if __name__ == "__main__":
     unittest.main()
