@@ -1,6 +1,6 @@
 {
   "name": "eink-sync",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "ReMarkable-to-Obsidian bridge: local-first highlight extraction without cloud dependency",
   "main": "main.js",
   "scripts": {
