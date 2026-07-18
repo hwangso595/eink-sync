@@ -27,6 +27,7 @@ except ImportError:
     fitz = None  # type: ignore[assignment]
 
 from constants import RM_SCREEN_WIDTH, RM_SCREEN_HEIGHT
+from template_renderer import render_template_cached
 from stroke_renderer import (
     Stroke,
     StrokePoint,
@@ -422,6 +423,7 @@ def render_strokes_to_png(
     glyph_highlights: list = None,
     truncate_blank: bool = False,
     background_png: str = None,
+    background_template: str = None,
 ) -> int:
     """
     Render a list of strokes as a PNG image using PyMuPDF.
@@ -579,14 +581,30 @@ def render_strokes_to_png(
         # the page origin (x=0 is centre, y=0 is top) using the same offsets the
         # strokes use, so lines stay aligned even when the page was shifted. A
         # missing/unreadable template silently leaves the white background.
-        if background_png and os.path.exists(background_png):
+        #
+        # Vector templates (firmware 3.x) are rendered here rather than by the
+        # caller: only now is the final page height known, and a scrolled page
+        # is taller than one screen, so the ruling must be drawn to fit it.
+        template_art = background_png
+        template_height = RM_SCREEN_HEIGHT
+        if background_template and os.path.exists(background_template):
+            page_height = max(canvas_h_int - offset_y, RM_SCREEN_HEIGHT)
+            rendered = render_template_cached(
+                background_template,
+                os.path.join(os.path.dirname(background_template), '.rendered'),
+                canvas_height=page_height,
+            )
+            if rendered:
+                template_art, template_height = rendered, page_height
+
+        if template_art and os.path.exists(template_art):
             try:
                 tmpl_left = offset_x - RM_SCREEN_WIDTH / 2
                 tmpl_rect = fitz.Rect(
                     tmpl_left, offset_y,
-                    tmpl_left + RM_SCREEN_WIDTH, offset_y + RM_SCREEN_HEIGHT,
+                    tmpl_left + RM_SCREEN_WIDTH, offset_y + template_height,
                 )
-                page.insert_image(tmpl_rect, filename=background_png)
+                page.insert_image(tmpl_rect, filename=template_art)
             except Exception:
                 pass  # keep the plain white background on any template failure
 
@@ -927,6 +945,7 @@ def render_rm_file_to_png(
     coord_scale: float = None,
     truncate_blank: bool = False,
     background_png: str = None,
+    background_template: str = None,
 ) -> int:
     """
     Convenience: parse an .rm file and render its strokes as a PNG.
@@ -935,7 +954,9 @@ def render_rm_file_to_png(
     1.0 for notebooks (defaults to auto-detect if omitted).
     Also renders glyph-range highlights (text selections) as filled rectangles.
     truncate_blank crops trailing blank space on short notebook pages.
-    background_png draws a reMarkable page template behind notebook strokes.
+    background_png draws PNG template art behind notebook strokes (older
+    firmware); background_template does the same from a firmware 3.x
+    `.template` vector definition, drawn to the full page height.
     """
     strokes = extract_strokes(rm_path)
     glyph_hls = extract_glyph_highlights(rm_path)
@@ -946,4 +967,5 @@ def render_rm_file_to_png(
                                  coord_scale=coord_scale,
                                  glyph_highlights=glyph_hls,
                                  truncate_blank=truncate_blank,
-                                 background_png=background_png)
+                                 background_png=background_png,
+                                 background_template=background_template)
