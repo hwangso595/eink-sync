@@ -33,6 +33,19 @@ export {
   checkPythonDependencies,
   PythonHighlightExtractor,
 } from './python-bridge';
+export {
+  ensureManagedPython,
+  getManagedEnvDir,
+  getVenvPython,
+  REQUIRED_PACKAGES,
+  OCR_PACKAGES,
+} from './python-env';
+export type {
+  ManagedPythonOptions,
+  ManagedPythonResult,
+  CommandRunner,
+  CommandResult,
+} from './python-env';
 export type {
   PythonExtractionOutput,
   PythonDocumentResult,
