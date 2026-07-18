@@ -292,6 +292,39 @@ describe('SftpSyncEngine', () => {
       expect(toDownload.map((f) => f.filename)).toEqual([dirName]);
     });
 
+    it('should include unchanged-doc directories carrying the incomplete marker', () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+      const localDir = path.join(tempDir, dirName);
+      fs.mkdirSync(localDir);
+      // A previous partial download left the marker behind
+      fs.writeFileSync(path.join(localDir, '.eink-sync-incomplete'), '');
+      const metaPath = path.join(tempDir, `${dirName}.metadata`);
+      fs.writeFileSync(metaPath, '{}');
+      fs.utimesSync(metaPath, new Date(1700000000000), new Date(1700000000000));
+
+      const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: `/xochitl/${dirName}.metadata`,
+          filename: `${dirName}.metadata`,
+          size: 2,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+        {
+          path: `/xochitl/${dirName}`,
+          filename: dirName,
+          size: 0,
+          mtime: 1700000000,
+          isDirectory: true,
+        },
+      ];
+
+      const toDownload = engine.compareFiles(remoteFiles);
+      expect(toDownload.map((f) => f.filename)).toEqual([dirName]);
+    });
+
     it('should include directories with no metadata sibling in the listing', () => {
       const engine = new SftpSyncEngine(defaultOptions(tempDir));
 

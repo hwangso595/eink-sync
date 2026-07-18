@@ -459,6 +459,35 @@ class TestRenderCache(unittest.TestCase):
             changed = {"truncate_blank": False, "templates": False}
             self.assertEqual(_load_render_cache(path, changed), {})
 
+    def test_entry_freshness_checks_template_and_mtime(self):
+        from render_pages import _cache_entry_fresh
+
+        with tempfile.TemporaryDirectory() as td:
+            png = os.path.join(td, "Doc_p1_abcd.png")
+            with open(png, "wb") as f:
+                f.write(b"png")
+            entry = {
+                "filename": "Doc_p1_abcd.png",
+                "rm_mtime": 1700000000,
+                "template": "P Lines medium",
+                "highlight_texts": [],
+                "ocr_text": "",
+            }
+            fresh = lambda **kw: _cache_entry_fresh(
+                {**entry, **kw.get("entry", {})},
+                kw.get("filename", "Doc_p1_abcd.png"),
+                kw.get("rm_mtime", 1700000000),
+                kw.get("template", "P Lines medium"),
+                kw.get("out_path", png),
+            )
+            self.assertTrue(fresh())
+            # A template switch rewrites .content without touching the .rm
+            self.assertFalse(fresh(template="Grid"))
+            self.assertFalse(fresh(rm_mtime=1700000001))
+            self.assertFalse(fresh(filename="Doc_p2_abcd.png"))
+            self.assertFalse(fresh(out_path=os.path.join(td, "missing.png")))
+            self.assertFalse(_cache_entry_fresh(None, "x.png", 1, None, png))
+
     def test_missing_or_corrupt_cache_returns_empty(self):
         from render_pages import _load_render_cache
 

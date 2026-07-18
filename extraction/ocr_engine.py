@@ -234,19 +234,28 @@ def ocr_page_image(
     image_path: str,
     lang: str = DEFAULT_LANG,
     timeout_seconds: float = 0,
-) -> str:
+):
     """
-    Best-effort OCR for the render pipeline: return the recognized text, or an
-    empty string on any failure. Never raises, so a missing binary, a slow
-    page (see timeout_seconds), or an odd image can't take down an extraction
-    run — the page's drawing still renders; only its OCR text is dropped.
+    Best-effort OCR for the render pipeline. Never raises, so a missing
+    binary, a slow page (see timeout_seconds), or an odd image can't take
+    down an extraction run — the page's drawing still renders.
+
+    Returns the recognized text ("" when OCR ran but found none), or None
+    when OCR *failed* (Tesseract error or per-page timeout) — callers cache
+    "" as a final answer but retry None on a later run.
     """
     try:
-        return ocr_image_file(image_path, lang, timeout_seconds).text
+        result = ocr_image_file(image_path, lang, timeout_seconds)
+        if result.confidence < 0:  # Tesseract error, incl. timeout
+            print(f"OCR failed for {os.path.basename(image_path)}: "
+                  f"{'; '.join(result.warnings)}",
+                  file=sys.stderr, flush=True)
+            return None
+        return result.text
     except Exception as e:
         print(f"OCR skipped for {os.path.basename(image_path)}: {e}",
               file=sys.stderr, flush=True)
-        return ""
+        return None
 
 
 if __name__ == "__main__":

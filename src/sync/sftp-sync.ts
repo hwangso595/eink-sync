@@ -124,6 +124,14 @@ const SKIP_EXTENSIONS = new Set([
 ]);
 
 /**
+ * Marker file left inside a local annotation dir whose last download had
+ * errors. Its presence forces compareFiles() to re-include the dir on the
+ * next sync even when the doc's metadata looks up to date, so a partial
+ * download can never masquerade as a complete one.
+ */
+const INCOMPLETE_MARKER = '.eink-sync-incomplete';
+
+/**
  * Check whether a filename should be skipped.
  */
 function shouldSkipEntry(filename: string, isDirectory: boolean): boolean {
@@ -275,8 +283,9 @@ function sftpDownloadFile(
         reject(new Error(`Failed to download ${remotePath}: ${err.message}`));
         return;
       }
-      // Preserve remote mtime so freshness comparisons between
-      // .rm files and cache/thumbnail PNGs work correctly
+      // Preserve remote mtime so the next sync's freshness comparisons
+      // (fileNeedsDownload, per-file checks in downloadDirectory) see
+      // unchanged files as up to date instead of re-downloading them
       if (remoteMtime && remoteMtime > 0) {
         try {
           fs.utimesSync(tmpPath, remoteMtime, remoteMtime);
@@ -391,69 +400,6 @@ export class SftpSyncEngine {
   }
 
   /**
-   * Run an incremental sync: only download files newer than the given timestamp.
-   * This is a convenience wrapper around sync() that pre-filters by mtime.
-   */
-  async syncIncremental(
-    sinceTimestamp: number,
-    onProgress?: SftpProgressCallback,
-  ): Promise<SftpSyncResult> {
-    const progress = onProgress ?? (() => {});
-    const startTime = Date.now();
-    const errors: string[] = [];
-    let filesDownloaded = 0;
-    let filesSkipped = 0;
-    let bytesDownloaded = 0;
-
-    fs.mkdirSync(this.options.localSyncDir, { recursive: true });
-
-    let conn: Client | undefined;
-    let sftp: SFTPWrapper | undefined;
-
-    try {
-      progress('connecting', `Connecting to ${this.options.host}...`);
-      const connection = await connectSftp(this.options);
-      conn = connection.conn;
-      sftp = connection.sftp;
-
-      progress('listing', 'Reading file list from tablet...');
-      const remoteFiles = await this.listRemoteFiles(sftp);
-
-      // Filter to files modified after the given timestamp
-      const sinceSeconds = Math.floor(sinceTimestamp / 1000);
-      const newerFiles = remoteFiles.filter((f) => f.mtime > sinceSeconds);
-
-      progress('comparing', `Found ${newerFiles.length} file(s) modified since last sync...`);
-      const toDownload = this.compareFiles(newerFiles);
-      filesSkipped = newerFiles.length - toDownload.length;
-
-      if (toDownload.length === 0) {
-        progress('complete', 'All files are up to date.');
-        return this.buildResult(true, 0, filesSkipped, 0, Date.now() - startTime, errors);
-      }
-
-      const dl = await this.downloadAll(sftp, toDownload, progress);
-      filesDownloaded = dl.filesDownloaded;
-      bytesDownloaded = dl.bytesDownloaded;
-      errors.push(...dl.errors);
-
-      progress('complete', `Downloaded ${filesDownloaded} file(s).`);
-      return this.buildResult(
-        errors.length === 0, filesDownloaded, filesSkipped, bytesDownloaded, Date.now() - startTime, errors,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      progress('error', msg);
-      errors.push(msg);
-      return this.buildResult(false, filesDownloaded, filesSkipped, bytesDownloaded, Date.now() - startTime, errors);
-    } finally {
-      if (conn) {
-        try { conn.end(); } catch { /* ignore */ }
-      }
-    }
-  }
-
-  /**
    * Download the compared set sequentially: annotation dirs first, then files.
    *
    * When a document's annotation dir had download errors, its .metadata and
@@ -549,15 +495,13 @@ export class SftpSyncEngine {
   /**
    * List files inside a remote annotation directory (UUID folder).
    * These typically contain .rm files with pen stroke data.
+   *
+   * Throws on listing failure — swallowing it here would make the dir look
+   * successfully synced (zero errors), defeating the retry logic that keys
+   * off download errors.
    */
   async listRemoteAnnotationDir(sftp: SFTPWrapper, dirPath: string): Promise<RemoteFileInfo[]> {
-    try {
-      return await sftpReaddir(sftp, dirPath);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn(`Failed to list annotation dir ${dirPath}: ${msg}`);
-      return [];
-    }
+    return await sftpReaddir(sftp, dirPath);
   }
 
   /**
@@ -595,7 +539,12 @@ export class SftpSyncEngine {
     for (const remote of remoteFiles) {
       if (remote.isDirectory) {
         const localDir = path.join(this.options.localSyncDir, remote.filename);
-        if (docChanged.get(remote.filename) !== false || !fs.existsSync(localDir)) {
+        const incomplete = fs.existsSync(path.join(localDir, INCOMPLETE_MARKER));
+        if (
+          docChanged.get(remote.filename) !== false
+          || incomplete
+          || !fs.existsSync(localDir)
+        ) {
           dirs.push(remote);
         }
         continue;
@@ -657,45 +606,64 @@ export class SftpSyncEngine {
     dirInfo: RemoteFileInfo,
   ): Promise<{ filesDownloaded: number; bytesDownloaded: number; errors: string[] }> {
     const localDir = path.join(this.options.localSyncDir, dirInfo.filename);
-    fs.mkdirSync(localDir, { recursive: true });
 
     let filesDownloaded = 0;
     let bytesDownloaded = 0;
     const errors: string[] = [];
 
+    // List first, before creating the local dir: a failed listing must not
+    // consume compareFiles()'s missing-local-dir fallback.
+    let entries: RemoteFileInfo[];
     try {
-      const entries = await this.listRemoteAnnotationDir(sftp, dirInfo.path);
-
-      for (const entry of entries) {
-        if (entry.isDirectory) continue; // Skip nested directories
-
-        const localFilePath = path.join(localDir, entry.filename);
-
-        // Check if local file exists and is up to date
-        if (fs.existsSync(localFilePath)) {
-          try {
-            const localStat = fs.statSync(localFilePath);
-            const localMtime = Math.floor(localStat.mtimeMs / 1000);
-            if (entry.mtime <= localMtime && localStat.size === entry.size) {
-              continue; // Up to date
-            }
-          } catch {
-            // Stat failed -> download
-          }
-        }
-
-        try {
-          await sftpDownloadFile(sftp, entry.path, localFilePath, entry.mtime);
-          filesDownloaded++;
-          bytesDownloaded += entry.size;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          errors.push(`${dirInfo.filename}/${entry.filename}: ${msg}`);
-        }
-      }
+      entries = await this.listRemoteAnnotationDir(sftp, dirInfo.path);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to list annotation dir ${dirInfo.path}: ${msg}`);
       errors.push(`${dirInfo.filename}: ${msg}`);
+      return { filesDownloaded, bytesDownloaded, errors };
+    }
+
+    fs.mkdirSync(localDir, { recursive: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory) continue; // Skip nested directories
+
+      const localFilePath = path.join(localDir, entry.filename);
+
+      // Check if local file exists and is up to date
+      if (fs.existsSync(localFilePath)) {
+        try {
+          const localStat = fs.statSync(localFilePath);
+          const localMtime = Math.floor(localStat.mtimeMs / 1000);
+          if (entry.mtime <= localMtime && localStat.size === entry.size) {
+            continue; // Up to date
+          }
+        } catch {
+          // Stat failed -> download
+        }
+      }
+
+      try {
+        await sftpDownloadFile(sftp, entry.path, localFilePath, entry.mtime);
+        filesDownloaded++;
+        bytesDownloaded += entry.size;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${dirInfo.filename}/${entry.filename}: ${msg}`);
+      }
+    }
+
+    // Maintain the incomplete marker so a partial download is re-attempted
+    // next sync even after the doc's metadata catches up locally.
+    const markerPath = path.join(localDir, INCOMPLETE_MARKER);
+    try {
+      if (errors.length > 0) {
+        fs.writeFileSync(markerPath, '');
+      } else {
+        fs.rmSync(markerPath, { force: true });
+      }
+    } catch {
+      // Best-effort: marker maintenance must not fail the sync
     }
 
     return { filesDownloaded, bytesDownloaded, errors };

@@ -115,6 +115,22 @@ def _load_render_cache(cache_path: str, settings: dict) -> dict:
     return {}
 
 
+def _cache_entry_fresh(cached, filename: str, rm_mtime: int, template, out_path: str) -> bool:
+    """True when a cached page entry still matches the current render inputs.
+
+    The filename encodes doc name, page position, and .rm mtime; the template
+    name is checked separately because a template switch rewrites .content
+    without touching the page's .rm.
+    """
+    return bool(
+        cached
+        and cached.get("filename") == filename
+        and cached.get("rm_mtime") == rm_mtime
+        and cached.get("template") == template
+        and os.path.exists(out_path)
+    )
+
+
 def _save_render_cache(cache_path: str, settings: dict, pages: dict) -> None:
     """Atomically persist the per-doc render cache (best-effort)."""
     try:
@@ -275,18 +291,17 @@ def main() -> None:
                 except OSError:
                     pass
 
-        # Reuse the previous render when the page is unchanged: same output
-        # filename (encodes doc name, page position, and .rm mtime) and the
-        # PNG still on disk. OCR may still run on the existing image when it
-        # was never attempted (ocr_text None: OCR just enabled or Tesseract
-        # newly installed).
+        page_template = (
+            content.page_templates[page_idx]
+            if page_idx < len(content.page_templates) else None
+        )
+
+        # Reuse the previous render when the page is unchanged. OCR may still
+        # run on the existing image when it never succeeded (ocr_text None:
+        # OCR just enabled, Tesseract newly installed, or a previous attempt
+        # failed/timed out).
         cached = render_cache.get(page_uuid)
-        if (
-            cached
-            and cached.get("filename") == filename
-            and cached.get("rm_mtime") == int(rm_mtime)
-            and os.path.exists(out_path)
-        ):
+        if _cache_entry_fresh(cached, filename, int(rm_mtime), page_template, out_path):
             ocr_text = cached.get("ocr_text")
             if ocr_text is None and ocr_page_image is not None:
                 ocr_text = ocr_page_image(
@@ -328,9 +343,9 @@ def main() -> None:
                 # Notebook pages (no PDF backing) get their reMarkable template
                 # drawn behind the strokes when template art is available.
                 background_png = None
-                if page_pdf is None and templates_dir and page_idx < len(content.page_templates):
+                if page_pdf is None and templates_dir and page_template:
                     background_png = _resolve_template_png(
-                        templates_dir, content.page_templates[page_idx], template_map,
+                        templates_dir, page_template, template_map,
                     )
 
                 drawn = render_rm_file_to_png(rm_path, out_path,
@@ -361,16 +376,17 @@ def main() -> None:
                             file=sys.stderr, flush=True,
                         )
 
-                    # Local OCR of the rendered handwriting (notebook pages only).
-                    ocr_text = ""
+                    # Local OCR of the rendered handwriting (notebook pages
+                    # only). None = not attempted or failed — retried next run.
+                    ocr_text_raw = None
                     if ocr_page_image is not None:
-                        ocr_text = ocr_page_image(
+                        ocr_text_raw = ocr_page_image(
                             out_path, args.ocr_lang,
                             timeout_seconds=args.ocr_page_timeout,
                         )
-                        if ocr_text:
+                        if ocr_text_raw:
                             print(
-                                f"Page {page_number}: OCR recognized {len(ocr_text)} char(s)",
+                                f"Page {page_number}: OCR recognized {len(ocr_text_raw)} char(s)",
                                 file=sys.stderr, flush=True,
                             )
 
@@ -379,14 +395,14 @@ def main() -> None:
                         "filename": filename,
                         "has_strokes": True,
                         "highlight_texts": highlight_texts,
-                        "ocr_text": ocr_text,
+                        "ocr_text": ocr_text_raw or "",
                     })
                     new_cache[page_uuid] = {
                         "filename": filename,
                         "rm_mtime": int(rm_mtime),
+                        "template": page_template,
                         "highlight_texts": highlight_texts,
-                        # None (vs "") marks OCR as never attempted for this render
-                        "ocr_text": ocr_text if ocr_page_image is not None else None,
+                        "ocr_text": ocr_text_raw,
                     }
                     pages_collected += 1
         except Exception as e:
