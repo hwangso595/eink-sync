@@ -8,6 +8,8 @@ build/
 !jest.config.js
 !esbuild.config.mjs
 !scripts/*.mjs
+# Hand-written ambient declarations (not tsc output)
+!src/types/*.d.ts
 
 # Obsidian per-plugin user data (written at runtime)
 data.json
