@@ -19,6 +19,7 @@ import * as path from 'path';
 import { ExtractionResult, ExtractedHighlight, MarkdownRenderer, PageOcr } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
+import { preserveTypedNotes } from './notes-preservation';
 import { logger } from '../utils/logger';
 import {
   HIGHLIGHTS_SECTION_START,
@@ -307,7 +308,9 @@ export function mergeWithExistingNote(
     // Update frontmatter highlight count if present
     const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
 
-    return updatedBefore + newSection + after;
+    // Typed user notes (<!-- notes --> blocks, e.g. added manually or via a
+    // custom template) must survive the section swap.
+    return preserveTypedNotes(existingContent, updatedBefore + newSection + after);
   }
 
   // No markers found: append the highlights section at the end
