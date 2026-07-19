@@ -332,7 +332,10 @@ def main() -> None:
         # failed/timed out).
         cached = render_cache.get(page_uuid)
         if _cache_entry_fresh(cached, filename, int(rm_mtime), page_template, out_path):
-            ocr_text = cached.get("ocr_text")
+            # Cached OCR text is only reported while OCR is switched on.
+            # Replaying it regardless made turning OCR off do nothing: the
+            # text is kept (re-enabling then costs no re-run) but withheld.
+            ocr_text = cached.get("ocr_text") if ocr_page_image is not None else None
             if ocr_text is None and ocr_page_image is not None:
                 ocr_text = ocr_page_image(
                     out_path, args.ocr_lang, timeout_seconds=args.ocr_page_timeout,

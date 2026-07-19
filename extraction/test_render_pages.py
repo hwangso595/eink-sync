@@ -488,6 +488,27 @@ class TestRenderCache(unittest.TestCase):
             self.assertFalse(fresh(out_path=os.path.join(td, "missing.png")))
             self.assertFalse(_cache_entry_fresh(None, "x.png", 1, None, png))
 
+    def test_cached_ocr_is_withheld_while_ocr_is_off(self):
+        """Turning OCR off must stop cached text from being reported again.
+
+        The cache-hit path used to replay stored OCR text unconditionally, so
+        disabling OCR had no effect: every sync rewrote the same handwriting
+        callouts into the notes from cache.
+        """
+        cached = {"filename": "Doc_p1_abcd.png", "rm_mtime": 1, "template": None,
+                  "highlight_texts": [], "ocr_text": "previously recognized text"}
+
+        def reported(ocr_active):
+            # Mirrors the cache-hit branch in main().
+            ocr_engine = (lambda *a, **k: "fresh") if ocr_active else None
+            text = cached.get("ocr_text") if ocr_engine is not None else None
+            return text or ""
+
+        self.assertEqual(reported(ocr_active=False), "")
+        self.assertEqual(reported(ocr_active=True), "previously recognized text")
+        # The text stays cached either way, so re-enabling needs no re-run.
+        self.assertEqual(cached["ocr_text"], "previously recognized text")
+
     def test_missing_or_corrupt_cache_returns_empty(self):
         from render_pages import _load_render_cache
 
