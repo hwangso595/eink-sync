@@ -43,6 +43,7 @@ export const RUNTIME_PY_FILES = [
   // render_pages.py closure (adds these on top of the shared modules above)
   'render_pages.py',
   'png_renderer.py',
+  'template_renderer.py',
   // Optional local OCR for handwriting search (imported lazily by render_pages).
   'ocr_engine.py',
 ];
