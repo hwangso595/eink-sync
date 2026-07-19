@@ -39,6 +39,7 @@ os.dup2(2, 1)
 from metadata_parser import parse_metadata_file, parse_content_file
 from png_renderer import render_rm_file_to_png, extract_highlight_texts, extract_glyph_highlight_texts
 from stroke_renderer import extract_strokes, extract_glyph_highlights, HIGHLIGHTER_PEN_TYPES, ERASER_PEN_TYPES
+from template_renderer import TEMPLATE_RENDERER_VERSION
 
 
 def _print_json(data: dict) -> None:
@@ -73,11 +74,12 @@ def _load_template_map(templates_dir: str) -> dict:
 
 
 def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
-    """Resolve a page's template name to a PNG path, or None.
+    """Resolve a page's template name to PNG art shipped by older firmware.
 
     "Blank"/empty names have no background (matched case-insensitively and
     trimmed, so "blank"/"Blank " count too). Tries the templates.json filename
-    first, then the display name, each with a .png extension.
+    first, then the display name. Firmware 3.x ships no PNGs at all -- see
+    _resolve_template_source for the vector format.
     """
     if not templates_dir or not name:
         return None
@@ -85,11 +87,36 @@ def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
     if not normalized or normalized.lower() == "blank":
         return None
     stem = name_map.get(name) or name_map.get(normalized) or normalized
+
     for candidate in (f"{stem}.png", f"{normalized}.png"):
         path = os.path.join(templates_dir, candidate)
         if os.path.exists(path):
             return path
+
     return None
+
+
+def _resolve_template_source(templates_dir: str, name: str, name_map: dict):
+    """Resolve a page's template to (png_art, template_definition).
+
+    Older firmware ships PNG art, which is drawn as-is. Firmware 3.x ships
+    `.template` vector definitions, which png_renderer draws once it knows the
+    page's final height (scrolled pages are taller than one screen).
+    """
+    png = _resolve_template_png(templates_dir, name, name_map)
+    if png:
+        return png, None
+    if not templates_dir or not name:
+        return None, None
+    normalized = name.strip()
+    if not normalized or normalized.lower() == "blank":
+        return None, None
+    stem = name_map.get(name) or name_map.get(normalized) or normalized
+    for candidate in (f"{stem}.template", f"{normalized}.template"):
+        path = os.path.join(templates_dir, candidate)
+        if os.path.exists(path):
+            return None, path
+    return None, None
 
 
 def _safe_filename(name: str) -> str:
@@ -248,6 +275,9 @@ def main() -> None:
     cache_settings = {
         "truncate_blank": truncate_blank,
         "templates": bool(templates_dir),
+        # Bumping the template renderer changes page pixels, so cached images
+        # drawn by an older version must be redrawn.
+        "template_renderer": TEMPLATE_RENDERER_VERSION,
     }
     render_cache_path = os.path.join(
         args.output_dir, f".render-cache-{args.doc_uuid}.json"
@@ -302,7 +332,10 @@ def main() -> None:
         # failed/timed out).
         cached = render_cache.get(page_uuid)
         if _cache_entry_fresh(cached, filename, int(rm_mtime), page_template, out_path):
-            ocr_text = cached.get("ocr_text")
+            # Cached OCR text is only reported while OCR is switched on.
+            # Replaying it regardless made turning OCR off do nothing: the
+            # text is kept (re-enabling then costs no re-run) but withheld.
+            ocr_text = cached.get("ocr_text") if ocr_page_image is not None else None
             if ocr_text is None and ocr_page_image is not None:
                 ocr_text = ocr_page_image(
                     out_path, args.ocr_lang, timeout_seconds=args.ocr_page_timeout,
@@ -343,8 +376,9 @@ def main() -> None:
                 # Notebook pages (no PDF backing) get their reMarkable template
                 # drawn behind the strokes when template art is available.
                 background_png = None
+                background_template = None
                 if page_pdf is None and templates_dir and page_template:
-                    background_png = _resolve_template_png(
+                    background_png, background_template = _resolve_template_source(
                         templates_dir, page_template, template_map,
                     )
 
@@ -353,7 +387,8 @@ def main() -> None:
                                               page_index=pdf_page_idx,
                                               coord_scale=doc_coord_scale,
                                               truncate_blank=truncate_blank,
-                                              background_png=background_png)
+                                              background_png=background_png,
+                                              background_template=background_template)
                 if drawn > 0 or glyph_hls:
                     print(
                         f"Page {page_number}: rendered {drawn} strokes, {len(glyph_hls)} glyph highlight(s)",

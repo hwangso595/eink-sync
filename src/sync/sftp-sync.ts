@@ -675,7 +675,8 @@ export class SftpSyncEngine {
    * The templates (ruled/grid/planner backgrounds) live at
    * `/usr/share/remarkable/templates/` on the device and are NOT part of the
    * synced xochitl data, so they must be pulled separately. Downloads
-   * `templates.json` and every `*.png` into `localTemplatesDir`, skipping files
+   * `templates.json`, every `*.png` (older firmware) and every `*.template`
+   * (firmware 3.x vector definitions) into `localTemplatesDir`, skipping files
    * already present and up to date. Manages its own connection.
    *
    * Best-effort: returns the count and any per-file errors rather than throwing,
@@ -700,8 +701,11 @@ export class SftpSyncEngine {
       for (const entry of entries) {
         if (entry.isDirectory) continue;
         const lower = entry.filename.toLowerCase();
-        // Only the PNG art and the name->file map are needed for rendering.
-        if (!lower.endsWith('.png') && entry.filename !== 'templates.json') continue;
+        // Two firmware generations: older devices ship PNG art, firmware 3.x
+        // ships `.template` vector definitions (and no PNGs at all). Take
+        // both, plus the name->file map.
+        if (!lower.endsWith('.png') && !lower.endsWith('.template')
+            && entry.filename !== 'templates.json') continue;
 
         const localFilePath = path.join(localTemplatesDir, entry.filename);
         if (fs.existsSync(localFilePath)) {
