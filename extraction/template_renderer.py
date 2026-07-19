@@ -427,11 +427,19 @@ def build_segments(
     `height` instead would silently change every expression that reads
     `templateHeight`.
     """
+    # `paperOrigin*` is the top-left of the square drawing area the device
+    # centres on the screen -- the same quantity "Lines medium" spells out as
+    # `templateWidth / 2 - templateHeight / 2`. Dot and isometric grids offset
+    # from it; without it their constants fail to resolve and they render
+    # nothing at all.
+    square = max(float(width), float(height))
     variables = {
         'templateWidth': float(width),
         'templateHeight': float(height),
         'parentWidth': float(width),
         'parentHeight': float(height),
+        'paperOriginX': (float(width) - square) / 2,
+        'paperOriginY': (float(height) - square) / 2,
     }
     variables = resolve_constants(template.get('constants'), variables)
     canvas = (

@@ -151,6 +151,26 @@ class TestBuildSegments(unittest.TestCase):
         tall = build_segments(LINES_MEDIUM, 1404, 1872, 1404, 6182)
         self.assertAlmostEqual(short[0][1][0], tall[0][1][0])
 
+    def test_paper_origin_is_available_to_constants(self):
+        # Dot and isometric grids offset from paperOriginX; when it is missing
+        # their constants fail to resolve and the whole template draws nothing.
+        template = {
+            "formatVersion": 1,
+            "constants": [{"xpos": "paperOriginX + 10"}],
+            "items": [{
+                "type": "group",
+                "boundingBox": {"x": "xpos", "y": 0, "width": 40, "height": 40},
+                "repeat": {"columns": "infinite", "rows": "infinite"},
+                "children": [{"type": "path", "data": ["M", 0, 0, "L", 1, 0]}],
+            }],
+        }
+        segments = build_segments(template, 1404, 1872)
+        self.assertGreater(len(segments), 100)
+        # The square drawing area is centred, so its origin sits left of the page.
+        xs = [s[1][0] for s in segments]
+        self.assertLess(min(xs), 0)
+        self.assertGreater(max(xs), 1404 - 40)
+
     def test_text_items_are_skipped(self):
         template = {
             "formatVersion": 1,
