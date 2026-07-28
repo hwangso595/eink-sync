@@ -1,6 +1,6 @@
 # E-Ink Sync
 
-Sync reMarkable documents, notebooks, and highlights with Obsidian over SFTP or Syncthing. Everything stays on your local network, and reMarkable Cloud is not required.
+Sync reMarkable documents, notebooks, and highlights over SFTP or Syncthing. No reMarkable Cloud required.
 
 ## What it does
 
@@ -58,11 +58,17 @@ Fix: **Settings > Apps > Advanced app settings > App execution aliases** -- turn
 
 ## Installation
 
+### From Community Plugins
+
+1. Open **Settings > Community plugins** in Obsidian.
+2. Select **Browse** and search for **E-Ink Sync**.
+3. Select **Install**, then enable the plugin.
+
 ### From source (development)
 
 ```bash
-git clone <repo-url>
-cd remarkable-obsidian
+git clone https://github.com/hwangso595/eink-sync.git
+cd eink-sync
 npm install
 npm run build
 ```
@@ -123,6 +129,15 @@ Click the reMarkable icon in the sidebar to open the library view, then click th
 4. Updates your highlight notes
 
 You can also use the command palette: **E-Ink Sync: Extract highlights**.
+
+### Archiving and deleting documents
+
+Use the document actions in the library view to remove documents from the tablet:
+
+- **Archive from tablet** keeps the complete document in your configured Archive folder and removes it from the reMarkable. With SFTP, E-Ink Sync downloads and verifies the latest document files before deleting the tablet copy. With Syncthing, moving the files into Archive propagates the deletion to the tablet.
+- **Delete permanently** removes the document and all of its sidecar files from the reMarkable, Sync folders, and Archive folder. You can permanently delete an already archived document.
+
+Archive must be outside every Sync folder so archived files are not copied back to the tablet.
 
 ### What gets extracted
 
