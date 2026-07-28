@@ -177,7 +177,7 @@ export function renderMarkdown(
     pdfLinkFormat = 'pdfpp',
     defaultTags = [],
   } = options;
-  // Clean the visible name — strip file extension if present
+  // Clean the visible name; strip file extension if present
   const cleanName = stripFileExtension(result.document.visibleName);
   const isNotebook = result.document.type === 'notebook';
   const pdfName = isNotebook ? null : (sourcePdfName ?? ensurePdfExtension(result.document.visibleName));
@@ -472,7 +472,9 @@ function buildPageTagsByNumber(
 
 export function generateOutputFilename(visibleName: string): string {
   const sanitized = stripFileExtension(visibleName)
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .split('')
+    .filter((character) => character.charCodeAt(0) > 31 && !'<>:"/\\|?*'.includes(character))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -540,10 +542,10 @@ export function scanExistingNoteBaseNames(outputPath: string): Map<string, strin
  *   1. STICKY: if a document already has a note (looked up by UUID via
  *      `existingByUuid`), it keeps that note's exact name forever. Its filename
  *      never changes just because another same-named document appeared or was
- *      removed — so links and transclusions never break.
+ *      removed; so links and transclusions never break.
  *   2. COLLISION-FREE: a document without an existing note gets the clean
  *      sanitized name, unless that name is already taken (by an existing note or
- *      by another brand-new document sharing the name) — then it gets a short
+ *      by another brand-new document sharing the name); then it gets a short
  *      UUID suffix. When two brand-new documents collide, BOTH are suffixed.
  *
  * The result is deterministic: it depends only on the (uuid, visibleName) set

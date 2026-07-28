@@ -86,13 +86,13 @@ export interface ManagedPythonResult {
 export function getManagedEnvDir(): string {
   const platform = process.platform;
   if (platform === 'win32') {
-    const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const base = path.join(os.homedir(), 'AppData', 'Local');
     return path.join(base, 'eink-sync', 'pyenv');
   }
   if (platform === 'darwin') {
     return path.join(os.homedir(), 'Library', 'Application Support', 'eink-sync', 'pyenv');
   }
-  const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  const base = path.join(os.homedir(), '.local', 'share');
   return path.join(base, 'eink-sync', 'pyenv');
 }
 
@@ -221,7 +221,7 @@ export function resetManagedPythonStateForTests(): void {
  *
  * @throws BridgeError(PYTHON_DEPS_MISSING) when neither the managed env nor
  *         the system Python can provide the required imports. Callers must
- *         abort the run — proceeding would write empty notes.
+ *         abort the run; proceeding would write empty notes.
  */
 export async function ensureManagedPython(
   options: ManagedPythonOptions = {},
@@ -245,7 +245,7 @@ async function ensureManagedPythonInner(
   const progress = options.onProgress ?? (() => undefined);
   const failures: string[] = [];
 
-  // 1. Existing healthy env — the fast path for every run after the first.
+  // 1. Existing healthy env; the fast path for every run after the first.
   //    The check is retried once: a single transient failure (load, spawn
   //    hiccup) must not send a working env into the repair path, which can
   //    end up deleting it.

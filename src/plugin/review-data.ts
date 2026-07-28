@@ -8,7 +8,6 @@
  * are excluded from the pending list. Dismissed highlights can be
  * restored.
  *
- * Privacy: Pure computation on local data. Zero network calls.
  */
 
 import type { ExtractedHighlight } from '../pipeline/types';

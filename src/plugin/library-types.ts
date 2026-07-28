@@ -26,7 +26,7 @@ export interface LibraryDocument {
   /**
    * Collision-free base name (no extension) for this document's highlight note
    * and page images. Equals the sanitized visible name, except when two or more
-   * documents share a name — then each gets a short UUID suffix so their notes
+   * documents share a name; then each gets a short UUID suffix so their notes
    * don't collide. Use this (not `name`) to locate the `.md` note.
    */
   noteBaseName: string;

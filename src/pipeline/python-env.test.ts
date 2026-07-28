@@ -1,5 +1,5 @@
 /**
- * Tests for python-env.ts — managed Python environment provisioning.
+ * Tests for python-env.ts; managed Python environment provisioning.
  *
  * The command runner is injected so no real Python/uv is required. Venv
  * existence is simulated with real temp directories because the module

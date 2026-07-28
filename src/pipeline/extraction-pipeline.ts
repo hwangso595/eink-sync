@@ -458,7 +458,7 @@ export async function runExtractionPipeline(
         }
       } catch (drawErr) {
         renderFailed = true;
-        logger.error(`renderPageImages failed for ${doc.visibleName}: ${drawErr}`);
+        logger.error(`renderPageImages failed for ${doc.visibleName}: ${String(drawErr)}`);
       }
 
       logger.info(

@@ -3,14 +3,14 @@
  *
  * Highlight notes contain `<!-- notes --> ... <!-- /notes -->` blocks as slots
  * for the user's own typed input. That input must survive EVERY regeneration
- * of the managed section — the previous implementation re-inserted notes
+ * of the managed section; the previous implementation re-inserted notes
  * positionally (Nth old block -> Nth new block), which silently destroyed all
  * of them whenever the fresh render had fewer slots (e.g. a run that produced
  * zero highlights) and mis-attached them whenever highlights shifted.
  *
- * This module re-attaches each note to its ANCHOR — the content lines directly
+ * This module re-attaches each note to its ANCHOR; the content lines directly
  * above the block (the highlight blockquote, the page-image embed, or the
- * `### Page N` header) — normalized so re-rendered image hashes don't break
+ * `### Page N` header); normalized so re-rendered image hashes don't break
  * the match. Any note that cannot be matched is never dropped: it is appended
  * to the end of the managed section under a "Preserved notes" callout with its
  * original context, for the user to re-place.
@@ -26,7 +26,7 @@ const NOTES_BLOCK_RE = /<!-- notes -->([\s\S]*?)<!-- \/notes -->/g;
 /**
  * Lines that delimit structure rather than content: section markers (current
  * and legacy styles) and notes-block markers. They must never be part of an
- * anchor — a highlight that sits directly after the start marker would
+ * anchor; a highlight that sits directly after the start marker would
  * otherwise get a different anchor in a legacy-marker note than in a fresh
  * render, and consecutive notes blocks would anchor to each other.
  */
@@ -139,7 +139,7 @@ export function preserveTypedNotes(
   const newStart = findHighlightsStart(newContent);
   const newEnd = findHighlightsEnd(newContent);
   if (!newStart || !newEnd) {
-    // No managed section in the new content at all — never drop the notes.
+    // No managed section in the new content at all; never drop the notes.
     return newContent.trimEnd() + '\n\n' + renderOrphanAppendix(preserved) + '\n';
   }
 
@@ -176,7 +176,7 @@ export function preserveTypedNotes(
     return `<!-- notes -->\n${note.content}\n<!-- /notes -->`;
   });
 
-  // Anything left in the queues has no home in the new section — append it.
+  // Anything left in the queues has no home in the new section; append it.
   const orphans: AnchoredNote[] = [];
   for (const queue of byKey.values()) orphans.push(...queue);
   if (orphans.length > 0) {

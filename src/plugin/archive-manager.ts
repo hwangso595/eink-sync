@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { logger } from '../utils/logger';
+import { isRecord, parseJson } from '../utils/json';
 import { isValidUuid } from './uuid-validation';
 
 /** Remote xochitl data directory on the tablet. */
@@ -25,7 +26,7 @@ export interface ArchiveOptions {
   /**
    * If true, ignore the disk usage threshold and archive all eligible docs.
    * NOTE: `force` only bypasses the disk-usage gate. It does NOT bypass the
-   * local-backup verification below — archiving deletes from the tablet, so we
+   * local-backup verification below; archiving deletes from the tablet, so we
    * never delete a document we can't prove is already in the vault.
    */
   force: boolean;
@@ -41,7 +42,7 @@ export interface ArchiveOptions {
 /**
  * Confirm a document is safely backed up in the local sync folder before we
  * delete it from the tablet. Requires the metadata + content sidecars and the
- * actual document body (the source PDF/EPUB, or — for notebooks — the page
+ * actual document body (the source PDF/EPUB, or; for notebooks; the page
  * directory with at least one stroke file).
  *
  * Conservative by design: any doubt returns false, so the doc is kept on the
@@ -74,7 +75,7 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
   if (!nonEmptyFile(`${base}.content`)) return false;
 
   // Document body: a synced source file, or a non-empty annotation dir
-  // (notebooks have no source file — their content lives entirely in {uuid}/).
+  // (notebooks have no source file; their content lives entirely in {uuid}/).
   const hasBody =
     nonEmptyFile(`${base}.pdf`) ||
     nonEmptyFile(`${base}.epub`) ||
@@ -93,17 +94,28 @@ export async function tabletFilesBackedUpLocally(
   ssh: SSHExecutor,
   localSyncDir: string,
   uuid: string,
+  options: { allowSftpSkippedFiles?: boolean } = {},
 ): Promise<boolean> {
   // List every non-empty file the delete removes with its size -- sidecar
   // files, {uuid}/ strokes, and files inside sidecar dirs like {uuid}.highlights
   // -- skipping regenerable caches. Each must exist locally at the SAME size, so
   // a truncated/partial local copy can't pass the gate.
+  // SFTP deliberately omits xochitl-generated files that extraction never
+  // reads. They are safe to remove during archive but must not make a complete
+  // SFTP backup fail verification. Syncthing/automatic archive keeps the more
+  // conservative default and verifies these entries when present.
+  const sftpExclusions = options.allowSftpSkippedFiles
+    ? `-not -path './${uuid}.pagedata' ` +
+      `-not -path './${uuid}.local' ` +
+      `-not -path './${uuid}.highlights/*' `
+    : '';
   const find = await ssh.execute(
     `cd ${XOCHITL_DIR} && find . -maxdepth 3 -type f -size +0c ` +
     `\\( -path './${uuid}.*' -o -path './${uuid}/*' \\) ` +
     `-not -path './${uuid}.cache/*' ` +
     `-not -path './${uuid}.thumbnails/*' ` +
     `-not -path './${uuid}.textconversion/*' ` +
+    sftpExclusions +
     `-exec stat -c '%s %n' {} \\; 2>/dev/null`,
   );
   if (find.exitCode !== 0) return false;
@@ -150,7 +162,7 @@ export async function archiveOldDocuments(
   const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
 
   if (!localSyncDir) {
-    logger.warn('Archive aborted: no local sync directory provided — refusing to delete unverified documents');
+    logger.warn('Archive aborted: no local sync directory provided; refusing to delete unverified documents');
     return 0;
   }
 
@@ -193,15 +205,16 @@ export async function archiveOldDocuments(
     if (catResult.exitCode !== 0) continue;
 
     try {
-      const meta = JSON.parse(catResult.stdout);
-      const lastOpened = parseInt(meta.lastOpened ?? '0', 10);
-      const lastModified = parseInt(meta.lastModified ?? '0', 10);
+      const meta = parseJson(catResult.stdout);
+      if (!isRecord(meta)) continue;
+      const lastOpened = parseInt(typeof meta.lastOpened === 'string' ? meta.lastOpened : '0', 10);
+      const lastModified = parseInt(typeof meta.lastModified === 'string' ? meta.lastModified : '0', 10);
       const lastActivity = Math.max(lastOpened, lastModified);
 
       if (lastActivity > cutoffTimestamp) continue;
 
       if (lastOpened === 0) {
-        const created = parseInt(meta.createdTime ?? '0', 10);
+        const created = parseInt(typeof meta.createdTime === 'string' ? meta.createdTime : '0', 10);
         if (created > cutoffTimestamp) continue;
       }
 
@@ -253,7 +266,7 @@ export async function archiveOldDocuments(
       `echo '${doc.uuid}*' >> ${XOCHITL_DIR}/.stignore && echo '${doc.uuid}/' >> ${XOCHITL_DIR}/.stignore`
     );
 
-    // Delete from tablet — explicit, auditable file list (no glob).
+    // Delete from tablet; explicit, auditable file list (no glob).
     // Covers every sidecar/dir xochitl creates for a document.
     const u = doc.uuid;
     // Only delete files we verified are backed up, plus the regenerable caches

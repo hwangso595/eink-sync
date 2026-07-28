@@ -6,7 +6,7 @@ import { EXTRACTION_DIR, RUNTIME_PY_FILES } from './scripts/runtime-assets.mjs';
 
 const isWatch = process.argv.includes('--watch');
 
-// Plugin to handle .node native bindings — ssh2 has optional native crypto
+// Plugin to handle .node native bindings; ssh2 has optional native crypto
 // that falls back to pure JS when unavailable.
 const nativeNodePlugin = {
   name: 'native-node-bindings',

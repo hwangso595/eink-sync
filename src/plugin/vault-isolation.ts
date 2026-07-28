@@ -23,13 +23,13 @@
  * tablet. This is intentional -- they are tiny JSON files (~200 bytes) and
  * harmless on the tablet filesystem.
  *
- * Privacy: Pure local filesystem operations. No network calls.
  */
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { isRecord, parseJson } from '../utils/json';
 
 // -------------------------------------------------------------------
 // Constants
@@ -62,8 +62,8 @@ export function hashFolderPath(folderAbsPath: string): string {
 
 /**
  * Get the directory where claim files are stored.
- * This is `<pluginDataDir>/claims/` — inside the plugin's own data directory,
- * NOT inside the managed (synced) folders. This avoids Syncthing conflicts.
+ * Claims live in `<pluginDataDir>/claims/`, inside the plugin's own data
+ * directory rather than the managed folders. This avoids Syncthing conflicts.
  */
 export function getClaimsDir(pluginDataDir: string): string {
   return path.join(pluginDataDir, CLAIMS_SUBDIR);
@@ -234,10 +234,11 @@ export function readClaimFile(folderAbsPath: string, pluginDataDir?: string): Cl
     }
 
     const raw = fs.readFileSync(claimPath, 'utf-8');
-    const parsed = JSON.parse(raw);
+    const parsed = parseJson(raw);
 
     // Validate required fields
     if (
+      !isRecord(parsed) ||
       typeof parsed.vaultPath !== 'string' ||
       typeof parsed.pluginId !== 'string' ||
       typeof parsed.timestamp !== 'number'
@@ -246,7 +247,15 @@ export function readClaimFile(folderAbsPath: string, pluginDataDir?: string): Cl
       return null;
     }
 
-    return parsed as ClaimFileContents;
+    return {
+      vaultPath: parsed.vaultPath,
+      pluginId: parsed.pluginId,
+      timestamp: parsed.timestamp,
+      folderPath: typeof parsed.folderPath === 'string' ? parsed.folderPath : undefined,
+      _note: typeof parsed._note === 'string'
+        ? parsed._note
+        : 'E-Ink Sync vault isolation claim.',
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.debug(`Could not read claim file for ${folderAbsPath}: ${msg}`);
@@ -506,7 +515,7 @@ export function writeClaimsAndCheckCollisions(
       if (collision.isStale) {
         result.staleClaimsFound++;
         logger.debug(
-          `Stale claim found in ${folderAbs} from vault "${collision.otherVaultPath}" — ignoring`,
+          `Stale claim found in ${folderAbs} from vault "${collision.otherVaultPath}"; ignoring`,
         );
       } else {
         result.collisions.push(collision);

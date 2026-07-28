@@ -27,26 +27,48 @@
  *   when multiple sources are configured.
  *
  * Three configurable folder paths:
- *   syncFolder       — where Syncthing puts raw tablet files
- *   highlightsFolder — where extracted highlight notes go
- *   archiveFolder    — where archived documents are moved
+ *   syncFolder      ; where Syncthing puts raw tablet files
+ *   highlightsFolder; where extracted highlight notes go
+ *   archiveFolder   ; where archived documents are moved
  *
  * All default to the same parent folder "reMarkable/" with subfolders.
  */
 
-import * as os from 'os';
 import type { ConnectionMethod } from '../types/config';
+
+const DEVICE_KEY_STORAGE = 'eink-sync:device-key';
+let sessionDeviceKey: string | null = null;
 
 /**
  * Return the device key used for per-device extraction timestamps.
- * Uses os.hostname() for a stable, human-readable identifier.
+ *
+ * The random identifier is stored in the local Obsidian browser profile. It
+ * distinguishes installations without reading or persisting the computer's
+ * hostname, username, network interfaces, or other fingerprinting data.
  */
 export function getDeviceKey(): string {
-  return os.hostname();
+  if (sessionDeviceKey) return sessionDeviceKey;
+
+  try {
+    const stored = window.localStorage.getItem(DEVICE_KEY_STORAGE);
+    if (stored) {
+      sessionDeviceKey = stored;
+      return stored;
+    }
+    const generated = crypto.randomUUID();
+    window.localStorage.setItem(DEVICE_KEY_STORAGE, generated);
+    sessionDeviceKey = generated;
+    return generated;
+  } catch {
+    // Storage may be unavailable in tests or a hardened browser profile. Keep
+    // a random key stable for this plugin session without reading identity data.
+    sessionDeviceKey = crypto.randomUUID();
+    return sessionDeviceKey;
+  }
 }
 
 /**
- * Per-device state that is stored in a separate file (device-state-<hostname>.json)
+ * Per-device state stored in a separate file keyed by a random local ID
  * to avoid Syncthing conflicts on data.json. Each device only writes its own
  * device state file, so no two devices ever touch the same file.
  */
@@ -127,7 +149,7 @@ export interface SyncSource {
   /**
    * @deprecated Moved to DeviceState.sourceTimestamps (keyed by source ID).
    * Kept for backward compatibility during migration from older data.json files.
-   * Per-device extraction timestamps, keyed by `os.hostname()`.
+   * Per-device extraction timestamps, keyed by a random local installation ID.
    */
   lastExtractionTimestamps: Record<string, number>;
   /**

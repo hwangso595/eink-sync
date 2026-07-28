@@ -208,7 +208,7 @@ function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SF
       username: options.username,
       password: options.password,
       readyTimeout: options.timeoutMs,
-      // Pin the tablet's host key (TOFU) — see ssh/host-key-store.
+      // Pin the tablet's host key (TOFU); see ssh/host-key-store.
       hostVerifier: makeHostVerifier(options.host),
       // reMarkable uses dropbear SSH with limited algorithm support
       algorithms: {
@@ -403,7 +403,7 @@ export class SftpSyncEngine {
    * Download the compared set sequentially: annotation dirs first, then files.
    *
    * When a document's annotation dir had download errors, its .metadata and
-   * .content files are held back this run — the stale local metadata makes
+   * .content files are held back this run; the stale local metadata makes
    * compareFiles() re-include the dir on the next sync instead of silently
    * leaving pages missing.
    */
@@ -475,7 +475,7 @@ export class SftpSyncEngine {
       if (entry.isDirectory) {
         // Include only UUID-named annotation directories. UUID.cache /
         // UUID.thumbnails hold tablet-rendered previews that the pipeline
-        // renders itself from stroke data — syncing them would re-download
+        // renders itself from stroke data; syncing them would re-download
         // every page's preview each scan (they're touched on every page view).
         if (isUuidLike(entry.filename)) {
           relevant.push(entry);
@@ -496,7 +496,7 @@ export class SftpSyncEngine {
    * List files inside a remote annotation directory (UUID folder).
    * These typically contain .rm files with pen stroke data.
    *
-   * Throws on listing failure — swallowing it here would make the dir look
+   * Throws on listing failure; swallowing it here would make the dir look
    * successfully synced (zero errors), defeating the retry logic that keys
    * off download errors.
    */
@@ -511,14 +511,14 @@ export class SftpSyncEngine {
    * - New files (not present locally)
    * - Changed files (newer mtime for .metadata/.content)
    * - PDFs/EPUBs: skip if local file exists with matching size (immutable)
-   * - Annotation dirs: only when the document changed — judged by its
+   * - Annotation dirs: only when the document changed; judged by its
    *   .metadata/.content files, which xochitl rewrites on every save. Dirs
    *   with no metadata sibling in the listing or no local copy are always
    *   included (conservative fallback; per-file comparison inside
    *   downloadDirectory() still deduplicates).
    *
    * Directories are ordered before files so page data lands before the
-   * .metadata/.content that gates it — a failed dir download leaves the old
+   * .metadata/.content that gates it; a failed dir download leaves the old
    * metadata in place and is retried on the next sync.
    */
   compareFiles(remoteFiles: RemoteFileInfo[]): RemoteFileInfo[] {

@@ -30,7 +30,7 @@ Thumbs.db
 # Generator notes (internal)
 .generator/
 
-# Local dev/debug scripts that read tablet credentials — never commit
+# Local dev/debug scripts that read tablet credentials. Never commit these.
 probe-tablet.mjs
 
 # Python

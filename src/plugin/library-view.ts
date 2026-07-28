@@ -9,14 +9,14 @@
  * Uses Obsidian CSS variables exclusively -- no custom colors.
  * Respects dark/light theme automatically.
  *
- * Privacy: All data comes from the local synced folder. Zero network calls.
+ * Privacy: Library data comes from the local synced folder. Tablet mutations
+ * use the user's configured local SSH connection; no external services.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { ItemView, TFile, WorkspaceLeaf, setIcon, Menu, Notice, Setting } from 'obsidian';
 import { logger } from '../utils/logger';
-import { isValidIpv4, localIpv4Interfaces, sharesLocalSubnet } from './net-utils';
 import type ReMarkableBridgePlugin from './plugin';
 import type {
   LibraryDocument,
@@ -32,8 +32,13 @@ import {
 } from './library-data';
 import { resolvePath, formatRelativeTime } from './helpers';
 import { isValidUuid } from './uuid-validation';
-import type { SSHExecutor } from '../ssh/ssh-client';
 import type { SyncProgressCallback } from '../sync/sync-provider';
+import {
+  archiveLocalDocumentCopies,
+  deleteDocumentFromTablet,
+  deleteLocalDocumentCopies,
+} from './document-deletion';
+import { hasLocalBackup, tabletFilesBackedUpLocally } from './archive-manager';
 
 /** View type identifier for Obsidian's view registry. */
 export const LIBRARY_VIEW_TYPE = 'remarkable-library-view';
@@ -196,17 +201,12 @@ export class ReMarkableLibraryView extends ItemView {
         // to miss, and a later extraction-only run happily re-reads the stale
         // local files and reports "No new highlights found" -- which masks the
         // fact that we never reached the tablet at all. Raise a toast and flip
-        // the status bar. When the saved Wi-Fi IP isn't on this computer's
-        // network, name the most common cause: a DHCP address that moved.
+        // the status bar. For Wi-Fi, surface common causes without reading this
+        // computer's network-interface identity.
         const ip = this.plugin.settings.tabletIp;
         const onWifi = this.plugin.settings.connectionMethod === 'wifi';
         let hint = '';
-        if (onWifi && ip && isValidIpv4(ip) && !sharesLocalSubnet(ip)) {
-          const locals = localIpv4Interfaces().map((i) => i.address).join(', ') || 'unknown';
-          hint =
-            ` The saved tablet IP ${ip} isn't on this computer's network (this machine: ${locals}) ` +
-            `— it may have changed. Update it in settings, or use "Detect via USB".`;
-        } else if (onWifi && ip) {
+        if (onWifi && ip) {
           hint =
             ` Couldn't reach the tablet at ${ip}. Make sure it's awake and on Wi-Fi; ` +
             `if its IP changed, update it in settings.`;
@@ -217,7 +217,7 @@ export class ReMarkableLibraryView extends ItemView {
       }
 
       const partialSuffix = totalErrors > 0
-        ? ` (${totalErrors} file error(s) — see console)`
+        ? ` (${totalErrors} file error(s); see console)`
         : '';
       const syncErrorSuffix = !allSuccess
         ? ` Sync reported errors${firstError ? `: ${firstError}` : ''}.`
@@ -332,7 +332,7 @@ export class ReMarkableLibraryView extends ItemView {
         if (fs.existsSync(archivePath)) {
           try {
             const { documents: archDocs } = buildLibrary(archivePath, outputPath);
-            archivedDocs = archDocs.map(d => ({ ...d, syncStatus: 'archived' as DocumentSyncStatus }));
+            archivedDocs = archDocs.map(d => ({ ...d, syncStatus: 'archived' }));
           } catch (archErr) {
             logger.warn('Archive scan failed:', archErr);
           }
@@ -441,7 +441,7 @@ export class ReMarkableLibraryView extends ItemView {
 
     this.sourceFilterEl.addEventListener('change', () => {
       this.sourceFilter = this.sourceFilterEl!.value;
-      this.refreshLibrary();
+      void this.refreshLibrary();
     });
 
     // Controls row: sort + refresh
@@ -503,7 +503,7 @@ export class ReMarkableLibraryView extends ItemView {
     });
     setIcon(addBtn, 'plus');
     addBtn.addEventListener('click', () => {
-      this.plugin.sendDocumentToRemarkable();
+      void this.plugin.sendDocumentToRemarkable();
     });
 
     // Sync & Refresh button
@@ -513,7 +513,7 @@ export class ReMarkableLibraryView extends ItemView {
     });
     setIcon(refreshBtn, 'refresh-cw');
     refreshBtn.addEventListener('click', () => {
-      this.syncAndRefresh(refreshBtn);
+      void this.syncAndRefresh(refreshBtn);
     });
   }
 
@@ -719,7 +719,7 @@ export class ReMarkableLibraryView extends ItemView {
 
     // Click: open highlights first, fall back to source file
     item.addEventListener('click', () => {
-      this.openHighlightNote(doc);
+      void this.openHighlightNote(doc);
     });
 
     // Right-click: context menu
@@ -882,14 +882,14 @@ export class ReMarkableLibraryView extends ItemView {
     if (noteFile instanceof TFile) {
       await this.plugin.app.workspace.getLeaf(false).openFile(noteFile);
     } else {
-      // Note doesn't exist yet — extract then open
+      // Note doesn't exist yet; extract then open
       await this.extractSingleDocument(doc);
       // Try again after extraction
       const created = this.plugin.app.vault.getAbstractFileByPath(notePath);
       if (created instanceof TFile) {
         await this.plugin.app.workspace.getLeaf(false).openFile(created);
       } else {
-        // No highlights — open source file instead
+        // No highlights; open source file instead
         await this.openSourceFile(doc);
       }
     }
@@ -898,7 +898,7 @@ export class ReMarkableLibraryView extends ItemView {
   /** Sync from tablet, then extract highlights for a single document. */
   private async extractSingleDocument(doc: LibraryDocument): Promise<void> {
     try {
-      // Sync first — pull latest files from tablet via the unified provider.
+      // Sync first; pull latest files from tablet via the unified provider.
       // A failed sync is non-fatal here (we fall back to existing local files),
       // but it must be surfaced rather than silently swallowed.
       new Notice(`Syncing "${doc.name}" from tablet...`);
@@ -947,7 +947,9 @@ export class ReMarkableLibraryView extends ItemView {
       const syncDir = resolvePath(this.plugin.app, sources.length > 0 ? sources[0].syncFolder : this.plugin.settings.syncFolder);
       const archiveDir = resolvePath(this.plugin.app, this.plugin.settings.archiveFolder);
 
-      const entries = fs.readdirSync(archiveDir).filter((f: string) => f.startsWith(doc.uuid));
+      const entries = fs.readdirSync(archiveDir).filter(
+        (entry: string) => entry === doc.uuid || entry.startsWith(`${doc.uuid}.`),
+      );
       if (entries.length === 0) {
         new Notice(`No archived files found for "${doc.name}".`);
         return;
@@ -960,7 +962,7 @@ export class ReMarkableLibraryView extends ItemView {
       new Notice(
         this.plugin.isPushCapable()
           ? `"${doc.name}" sent back to reMarkable. Syncthing will sync it.`
-          : `"${doc.name}" restored to your vault. (SFTP is download-only — the tablet is unchanged.)`,
+          : `"${doc.name}" restored to your vault. (SFTP is download-only; the tablet is unchanged.)`,
       );
       await this.refreshLibrary();
     } catch (err) {
@@ -969,45 +971,81 @@ export class ReMarkableLibraryView extends ItemView {
     }
   }
 
-  /**
-   * Archive: move from Sync to Archive folder.
-   * Syncthing propagates the removal to the tablet automatically.
-   * No SSH needed.
-   */
+  /** Archive locally in Obsidian and remove the document from the tablet. */
   private async archiveDocument(doc: LibraryDocument): Promise<void> {
     if (!isValidUuid(doc.uuid)) {
       new Notice(`Cannot archive: invalid document UUID.`);
       return;
     }
 
-    try {
-      const archiveDir = resolvePath(this.plugin.app, this.plugin.settings.archiveFolder);
-      fs.mkdirSync(archiveDir, { recursive: true });
+    if (!this.plugin.settings.archiveFolder) {
+      new Notice('Cannot archive: configure an Archive folder in settings first.');
+      return;
+    }
 
-      // Find the document in any source folder
-      let found = false;
+    try {
+      const canPush = this.plugin.isPushCapable();
+
+      // SFTP must pull the latest tablet state before the safety checks below.
+      // Archiving promises to retain the document, so a partial sync is a hard
+      // stop rather than permission to delete the tablet copy.
+      if (!canPush) {
+        new Notice(`Syncing the latest copy of "${doc.name}" before archiving...`);
+        const syncResult = await this.plugin.getSyncProvider(doc.sourceId).sync();
+        if (!syncResult.success || syncResult.errors.length > 0) {
+          const detail = syncResult.errors[0] ? ` ${syncResult.errors[0]}` : '';
+          throw new Error(`Latest tablet files could not be backed up.${detail}`);
+        }
+      }
+
+      // Locate the freshly synced local document.
+      let syncDir = '';
       for (const source of this.plugin.getSyncSources()) {
-        const syncDir = resolvePath(this.plugin.app, source.syncFolder);
-        if (!fs.existsSync(syncDir)) continue;
-        const entries = fs.readdirSync(syncDir).filter((f: string) => f.startsWith(doc.uuid));
-        if (entries.length > 0) {
-          for (const entry of entries) {
-            fs.renameSync(path.join(syncDir, entry), path.join(archiveDir, entry));
-          }
-          found = true;
+        if (!source.syncFolder) continue;
+        const candidate = resolvePath(this.plugin.app, source.syncFolder);
+        if (!fs.existsSync(candidate)) continue;
+        const hasEntries = fs.readdirSync(candidate).some(
+          (entry: string) => entry === doc.uuid || entry.startsWith(`${doc.uuid}.`),
+        );
+        if (hasEntries) {
+          syncDir = candidate;
           break;
         }
       }
 
-      if (!found) {
+      if (!syncDir) {
         new Notice(`No files found for "${doc.name}".`);
         return;
       }
 
+      if (!canPush) {
+        if (!hasLocalBackup(syncDir, doc.uuid)) {
+          throw new Error('The local backup is incomplete; the tablet copy was not deleted.');
+        }
+        await this.plugin.withSSH(async (ssh) => {
+          if (!(await tabletFilesBackedUpLocally(
+            ssh,
+            syncDir,
+            doc.uuid,
+            { allowSftpSkippedFiles: true },
+          ))) {
+            throw new Error(
+              'The tablet has files that are not fully backed up; its copy was not deleted.',
+            );
+          }
+          await deleteDocumentFromTablet(ssh, doc.uuid);
+        });
+        this.plugin.scheduleXochitlRestart();
+      }
+
+      const archiveDir = resolvePath(this.plugin.app, this.plugin.settings.archiveFolder);
+      const moved = archiveLocalDocumentCopies(doc.uuid, syncDir, archiveDir);
+      if (moved === 0) throw new Error('No local document files were available to archive.');
+
       new Notice(
-        this.plugin.isPushCapable()
-          ? `"${doc.name}" archived. Syncthing will remove it from the tablet.`
-          : `"${doc.name}" archived in your vault. (SFTP is download-only — it stays on the tablet and will re-sync unless removed there.)`,
+        canPush
+          ? `"${doc.name}" archived in Obsidian. Syncthing will remove it from the tablet.`
+          : `"${doc.name}" archived in Obsidian and removed from the tablet.`,
       );
       await this.refreshLibrary();
     } catch (err) {
@@ -1016,10 +1054,7 @@ export class ReMarkableLibraryView extends ItemView {
     }
   }
 
-  /**
-   * Delete from sync folder. Syncthing propagates deletion to tablet.
-   * No SSH needed.
-   */
+  /** Permanently delete from the local sync folder and the tablet. */
   private async deleteDocument(doc: LibraryDocument): Promise<void> {
     if (!isValidUuid(doc.uuid)) {
       new Notice(`Cannot delete: invalid document UUID.`);
@@ -1029,28 +1064,37 @@ export class ReMarkableLibraryView extends ItemView {
     const canPush = this.plugin.isPushCapable();
     const confirmed = confirm(
       `Permanently delete "${doc.name}"?\n\n` +
-      (canPush
-        ? `This removes it from your vault and the tablet. This cannot be undone.`
-        : `This removes it from your vault only. SFTP is download-only, so it stays on the ` +
-          `tablet and will re-download on the next sync. This cannot be undone.`)
+      `This removes it from your vault and the tablet. This cannot be undone.`
     );
     if (!confirmed) return;
 
     try {
-      // Search all source folders for the document
-      for (const source of this.plugin.getSyncSources()) {
-        const syncDir = resolvePath(this.plugin.app, source.syncFolder);
-        if (!fs.existsSync(syncDir)) continue;
-        const entries = fs.readdirSync(syncDir).filter((f: string) => f.startsWith(doc.uuid));
-        for (const entry of entries) {
-          fs.rmSync(path.join(syncDir, entry), { recursive: true, force: true });
-        }
+      // Syncthing propagates the local deletion and remains usable while the
+      // tablet is offline. SFTP is pull-only, so explicitly delete over SSH
+      // first and verify success before touching the local backup.
+      if (!canPush) {
+        new Notice(`Deleting "${doc.name}" from the tablet...`);
+        await this.plugin.withSSH((ssh) => deleteDocumentFromTablet(ssh, doc.uuid));
+        // The remote deletion is already committed at this point. Restart even
+        // if a later local filesystem operation fails, so xochitl drops the
+        // deleted document from its in-memory library.
+        this.plugin.scheduleXochitlRestart();
       }
+
+      // Delete from every local sync source and from Archive. Ignore blank
+      // folder settings so they can never resolve to the vault root.
+      const localDirectories = this.plugin.getSyncSources()
+        .filter((source) => Boolean(source.syncFolder))
+        .map((source) => resolvePath(this.plugin.app, source.syncFolder));
+      if (this.plugin.settings.archiveFolder) {
+        localDirectories.push(resolvePath(this.plugin.app, this.plugin.settings.archiveFolder));
+      }
+      deleteLocalDocumentCopies(doc.uuid, localDirectories);
 
       new Notice(
         canPush
           ? `"${doc.name}" deleted. Syncthing will remove it from the tablet.`
-          : `"${doc.name}" removed from your vault. (It remains on the tablet in SFTP mode.)`,
+          : `"${doc.name}" deleted from your vault and tablet.`,
       );
       await this.refreshLibrary();
     } catch (err) {

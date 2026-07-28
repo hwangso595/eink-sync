@@ -6,7 +6,7 @@
  *   - findHighlightsStart/End accept either marker form.
  *   - Writers (markdown-renderer, template-engine) emit only current markers.
  *   - On merge, a vault note containing legacy markers is rewritten to use
- *     the current markers — the section moves over without duplication.
+ *     the current markers; the section moves over without duplication.
  *   - Round-trip: parse a legacy-marker note, then re-merge; result has
  *     current markers only.
  */
@@ -105,7 +105,7 @@ describe('mergeWithExistingNote - legacy marker migration', () => {
     expect(merged).toContain(HIGHLIGHTS_SECTION_START);
     expect(merged).toContain(HIGHLIGHTS_SECTION_END);
 
-    // Legacy markers are gone — the old section was replaced wholesale,
+    // Legacy markers are gone; the old section was replaced wholesale,
     // not appended next to.
     expect(merged).not.toContain(LEGACY_HIGHLIGHTS_SECTION_START);
     expect(merged).not.toContain(LEGACY_HIGHLIGHTS_SECTION_END);

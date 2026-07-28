@@ -1,12 +1,9 @@
 /**
  * Small networking helpers for the settings UI.
  *
- * Used to catch the most common sync-breaking mistake: a saved tablet IP that
- * is no longer on the same network as this computer (e.g. after switching
- * Wi-Fi). All local-only; no network calls.
+ * Pure IPv4 validation and comparison helpers. Callers provide any interface
+ * data explicitly; the plugin does not enumerate host network interfaces.
  */
-
-import * as os from 'os';
 
 /** True if `value` is a syntactically valid dotted-quad IPv4 address. */
 export function isValidIpv4(value: string): boolean {
@@ -32,31 +29,13 @@ export interface LocalInterface {
   netmask: string;
 }
 
-/** Enumerate this machine's non-internal IPv4 interfaces. */
-export function localIpv4Interfaces(): LocalInterface[] {
-  const result: LocalInterface[] = [];
-  const ifaces = os.networkInterfaces();
-  for (const addrs of Object.values(ifaces)) {
-    if (!addrs) continue;
-    for (const a of addrs) {
-      // Node <18 exposes `family` as 'IPv4'; newer as 4. Accept both.
-      const isV4 = a.family === 'IPv4' || (a.family as unknown as number) === 4;
-      if (isV4 && !a.internal) {
-        result.push({ address: a.address, netmask: a.netmask });
-      }
-    }
-  }
-  return result;
-}
-
 /**
- * Whether `targetIp` plausibly shares a subnet with any local interface,
- * using each interface's own netmask. Returns true when there are no local
- * interfaces to compare against (can't claim a mismatch we can't see).
+ * Whether `targetIp` shares a subnet with one of the explicitly supplied
+ * interfaces. Returns true when there are none to compare against.
  */
 export function sharesLocalSubnet(
   targetIp: string,
-  interfaces: LocalInterface[] = localIpv4Interfaces(),
+  interfaces: LocalInterface[],
 ): boolean {
   const target = ipToInt(targetIp);
   if (target === null) return true; // not our job to flag invalid here

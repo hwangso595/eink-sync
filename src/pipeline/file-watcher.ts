@@ -238,7 +238,7 @@ export class XochitlFileWatcher {
       try {
         listener(event, detail);
       } catch (err) {
-        logger.error(`File watcher listener error: ${err}`);
+        logger.error(`File watcher listener error: ${String(err)}`);
       }
     }
   }

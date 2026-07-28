@@ -8,11 +8,12 @@
  * Privacy: Only calls localhost Syncthing API. No external network calls.
  */
 
+import { requestUrl } from 'obsidian';
 import type { SyncProvider, SyncProgressCallback, SyncResult } from './sync-provider';
-import type { SSHExecutor } from '../ssh/ssh-client';
 import { ReMarkableSSHClient } from '../ssh/ssh-client';
 import { stopServices, removeServices } from './service-manager';
 import { logger } from '../utils/logger';
+import { isRecord } from '../utils/json';
 
 /** How long to wait after triggering a rescan before considering sync settled. */
 const RESCAN_SETTLE_MS = 5000;
@@ -58,15 +59,17 @@ export class SyncthingProvider implements SyncProvider {
     onProgress?.('scanning', 'Asking Syncthing to check for changes...');
 
     try {
-      const res = await fetch(`${apiUrl}/rest/db/scan?folder=${folderId}`, {
+      const res = await requestUrl({
+        url: `${apiUrl}/rest/db/scan?folder=${encodeURIComponent(folderId)}`,
         method: 'POST',
         headers: { 'X-API-Key': apiKey },
+        throw: false,
       });
 
       // fetch() only rejects on network errors, not HTTP 4xx/5xx. A 403 (bad
       // API key) or 404 (bad folder ID) resolves normally, so we must inspect
       // the status ourselves or a misconfigured Syncthing would report success.
-      if (!res.ok) {
+      if (res.status < 200 || res.status >= 300) {
         onProgress?.('error', `Syncthing rescan failed (HTTP ${res.status}).`);
         return {
           success: false,
@@ -78,7 +81,7 @@ export class SyncthingProvider implements SyncProvider {
       }
 
       onProgress?.('waiting', 'Syncthing scanning... waiting for sync to settle.');
-      await new Promise(resolve => setTimeout(resolve, RESCAN_SETTLE_MS));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, RESCAN_SETTLE_MS));
 
       onProgress?.('complete', 'Sync complete.');
       return {
@@ -107,10 +110,12 @@ export class SyncthingProvider implements SyncProvider {
     if (!apiKey || !folderId) return false;
 
     try {
-      const res = await fetch(`${apiUrl}/rest/config/folders/${folderId}`, {
+      const res = await requestUrl({
+        url: `${apiUrl}/rest/config/folders/${encodeURIComponent(folderId)}`,
         headers: { 'X-API-Key': apiKey },
+        throw: false,
       });
-      return res.ok;
+      return res.status >= 200 && res.status < 300;
     } catch {
       return false;
     }
@@ -159,21 +164,26 @@ export class SyncthingProvider implements SyncProvider {
     if (!apiKey || !folderId) return;
 
     try {
-      const res = await fetch(`${apiUrl}/rest/config/folders/${folderId}`, {
+      const res = await requestUrl({
+        url: `${apiUrl}/rest/config/folders/${encodeURIComponent(folderId)}`,
         headers: { 'X-API-Key': apiKey },
+        throw: false,
       });
-      if (!res.ok) return;
+      if (res.status < 200 || res.status >= 300) return;
 
-      const folderConfig = await res.json();
+      const folderConfig: unknown = res.json;
+      if (!isRecord(folderConfig)) return;
       folderConfig.paused = paused;
 
-      await fetch(`${apiUrl}/rest/config/folders/${folderId}`, {
+      await requestUrl({
+        url: `${apiUrl}/rest/config/folders/${encodeURIComponent(folderId)}`,
         method: 'PUT',
         headers: {
           'X-API-Key': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(folderConfig),
+        throw: false,
       });
 
       logger.info(`Syncthing folder ${folderId} ${paused ? 'paused' : 'resumed'}`);

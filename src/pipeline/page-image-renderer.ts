@@ -11,14 +11,81 @@
  * (1404x1872). Returns a Map from page number to PNG filename, or null
  * if no strokes are found.
  *
- * Privacy: Pure local computation. Zero network calls.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import type { PageDrawings } from './markdown-renderer';
 import type { ExtractedHighlight, PageOcr } from './types';
+import { detectPythonPath } from './python-bridge';
 import { logger } from '../utils/logger';
+
+interface RenderedPage {
+  page_number: number;
+  filename: string;
+  has_strokes: boolean;
+  highlight_texts?: string[];
+  ocr_text?: string;
+}
+
+interface RenderOutput {
+  success: boolean;
+  pages: RenderedPage[];
+  errors?: string[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function pageUuidsFromContent(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const cPages = value.cPages;
+  if (isRecord(cPages) && Array.isArray(cPages.pages)) {
+    return cPages.pages.flatMap((page): string[] => {
+      if (typeof page === 'string') return [page];
+      if (!isRecord(page) || page.deleted === true) return [];
+      const id = typeof page.id === 'string'
+        ? page.id
+        : typeof page.uuid === 'string' ? page.uuid : '';
+      return id ? [id] : [];
+    });
+  }
+  return Array.isArray(value.pages)
+    ? value.pages.filter((page): page is string => typeof page === 'string')
+    : [];
+}
+
+function isRenderedPage(value: unknown): value is RenderedPage {
+  if (!isRecord(value)) return false;
+  return typeof value.page_number === 'number'
+    && typeof value.filename === 'string'
+    && typeof value.has_strokes === 'boolean'
+    && (value.highlight_texts === undefined || (
+      Array.isArray(value.highlight_texts)
+      && value.highlight_texts.every((text) => typeof text === 'string')
+    ))
+    && (value.ocr_text === undefined || typeof value.ocr_text === 'string');
+}
+
+function parseRenderOutput(json: string): RenderOutput {
+  const value: unknown = JSON.parse(json);
+  if (!isRecord(value) || typeof value.success !== 'boolean') {
+    throw new Error('Invalid render_pages output structure');
+  }
+  const pages = value.pages;
+  const errors = value.errors;
+  if (!Array.isArray(pages) || !pages.every(isRenderedPage)) {
+    throw new Error('Invalid render_pages page data');
+  }
+  if (errors !== undefined && (
+    !Array.isArray(errors) || !errors.every((error) => typeof error === 'string')
+  )) {
+    throw new Error('Invalid render_pages error data');
+  }
+  return { success: value.success, pages, errors };
+}
 
 /** Result of renderPageImages: page drawings, renderer highlights, and OCR text. */
 export interface PageImageResult {
@@ -97,15 +164,8 @@ export async function renderPageImages(
   // first (the extra stat() calls are negligible next to the render itself).
   let strokedPageCount = 0;
   try {
-    const content = JSON.parse(fs.readFileSync(contentPath, 'utf-8'));
-    let pageUuids: string[] = [];
-    if (content.cPages?.pages) {
-      pageUuids = content.cPages.pages
-        .filter((p: any) => !p.deleted)
-        .map((p: any) => p.id || p);
-    } else if (content.pages) {
-      pageUuids = content.pages;
-    }
+    const content: unknown = JSON.parse(fs.readFileSync(contentPath, 'utf-8'));
+    const pageUuids = pageUuidsFromContent(content);
 
     for (const uuid of pageUuids) {
       const rmPath = path.join(rmDir, `${uuid}.rm`);
@@ -142,11 +202,9 @@ export async function renderPageImages(
     fs.mkdirSync(drawingsPath, { recursive: true });
   }
 
-  const { spawn } = require('child_process');
   let pythonExe = options.pythonPath ?? 'python';
   if (!options.pythonPath) {
     try {
-      const { detectPythonPath } = require('./python-bridge');
       pythonExe = await detectPythonPath();
     } catch {
       // Fall back to 'python'
@@ -191,16 +249,16 @@ export async function renderPageImages(
       proc.stdout?.on('data', (data: Buffer) => { stdout += data.toString(); });
       proc.stderr?.on('data', (data: Buffer) => { stderr += data.toString(); });
 
-      proc.on('close', (code: number) => {
+      proc.on('close', (code: number | null) => {
         if (stderr) {
           logger.debug(`render_pages stderr: ${stderr.trim()}`);
         }
 
         if (code === 0) {
           try {
-            let parsed: Record<string, unknown>;
+            let parsed: RenderOutput;
             try {
-              parsed = JSON.parse(stdout);
+              parsed = parseRenderOutput(stdout);
             } catch {
               // Fallback: find the last line that looks like JSON
               // (handles MuPDF stdout pollution)
@@ -214,21 +272,14 @@ export async function renderPageImages(
                   `first 200 chars: ${stdout.slice(0, 200)})`,
                 );
               }
-              parsed = JSON.parse(jsonLine);
+              parsed = parseRenderOutput(jsonLine);
             }
 
             if (parsed.success) {
-              const pages = parsed.pages as Array<{
-                page_number: number;
-                filename: string;
-                has_strokes: boolean;
-                highlight_texts?: string[];
-                ocr_text?: string;
-              }>;
               const map: PageDrawings = new Map();
               const rendererHighlights: ExtractedHighlight[] = [];
               const pageOcr: PageOcr = new Map();
-              for (const page of pages) {
+              for (const page of parsed.pages) {
                 if (page.has_strokes) {
                   map.set(page.page_number, page.filename);
                 }
@@ -248,11 +299,10 @@ export async function renderPageImages(
               }
               resolve({ pageDrawings: map, rendererHighlights, pageOcr });
             } else {
-              const errors = parsed.errors as string[] | undefined;
-              reject(new Error(errors?.join('; ') || 'render_pages failed'));
+              reject(new Error(parsed.errors?.join('; ') || 'render_pages failed'));
             }
           } catch (e) {
-            reject(new Error(`Failed to parse render_pages output: ${e}`));
+            reject(new Error(`Failed to parse render_pages output: ${String(e)}`));
           }
         } else {
           reject(new Error(stderr || `render_pages exit code ${code}`));
@@ -272,7 +322,7 @@ export async function renderPageImages(
     // A genuine render failure (spawn/timeout/exit/parse) on a document that we
     // already confirmed HAS strokes. Propagate it so the pipeline preserves any
     // existing note rather than clearing drawings it could not re-render.
-    logger.warn(`Page image rendering failed for ${doc.visibleName}: ${err}`);
+    logger.warn(`Page image rendering failed for ${doc.visibleName}: ${String(err)}`);
     throw err instanceof Error ? err : new Error(String(err));
   }
 }

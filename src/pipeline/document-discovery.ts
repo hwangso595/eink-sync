@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ReMarkableDocument, DocumentDiscovery } from './types';
 import { logger } from '../utils/logger';
+import { isRecord, parseJson } from '../utils/json';
 
 /** Raw JSON shape of a .metadata file. */
 interface MetadataJson {
@@ -65,16 +66,17 @@ interface ParsedContent {
 function parseMetadataFile(filePath: string): ParsedMetadata | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data: MetadataJson = JSON.parse(raw);
+    const data = parseJson(raw);
+    if (!isRecord(data)) return null;
     const basename = path.basename(filePath, '.metadata');
 
     return {
       uuid: basename,
-      visibleName: data.visibleName ?? 'Untitled',
-      parentUuid: data.parent ?? '',
-      docType: data.type ?? 'DocumentType',
-      lastModified: parseInt(data.lastModified ?? '0', 10),
-      deleted: data.deleted ?? false,
+      visibleName: typeof data.visibleName === 'string' ? data.visibleName : 'Untitled',
+      parentUuid: typeof data.parent === 'string' ? data.parent : '',
+      docType: typeof data.type === 'string' ? data.type : 'DocumentType',
+      lastModified: parseInt(typeof data.lastModified === 'string' ? data.lastModified : '0', 10),
+      deleted: typeof data.deleted === 'boolean' ? data.deleted : false,
     };
   } catch {
     logger.warn(`Failed to parse metadata: ${filePath}`);
@@ -90,27 +92,30 @@ function parseMetadataFile(filePath: string): ParsedMetadata | null {
 function parseContentFile(filePath: string): ParsedContent | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data: ContentJson = JSON.parse(raw);
+    const data = parseJson(raw);
+    if (!isRecord(data)) return null;
     const basename = path.basename(filePath, '.content');
 
     let pageUuids: string[] = [];
 
     // v6 format: cPages.pages[].id
-    if (data.cPages?.pages) {
-      pageUuids = data.cPages.pages
-        .filter((p) => !p.deleted)
-        .map((p) => p.id ?? p.uuid ?? '')
-        .filter((id) => id !== '');
+    const cPages = data.cPages;
+    if (isRecord(cPages) && Array.isArray(cPages.pages)) {
+      pageUuids = cPages.pages.flatMap((page): string[] => {
+        if (!isRecord(page) || page.deleted === true) return [];
+        if (typeof page.id === 'string') return [page.id];
+        return typeof page.uuid === 'string' ? [page.uuid] : [];
+      });
     }
     // Legacy format: pages array
-    else if (data.pages) {
-      pageUuids = data.pages;
+    else if (Array.isArray(data.pages)) {
+      pageUuids = data.pages.filter((page): page is string => typeof page === 'string');
     }
 
     return {
       uuid: basename,
-      fileType: data.fileType ?? '',
-      pageCount: data.pageCount ?? pageUuids.length,
+      fileType: typeof data.fileType === 'string' ? data.fileType : '',
+      pageCount: typeof data.pageCount === 'number' ? data.pageCount : pageUuids.length,
       pageUuids,
     };
   } catch {
@@ -150,7 +155,7 @@ export function discoverDocuments(xochitlPath: string): ReMarkableDocument[] {
  * that are in the tablet trash: either directly (`parent === 'trash'`) or via any
  * ancestor folder that is trashed. reMarkable moves items to trash by pointing
  * them (or their containing folder) at the special `trash` parent, keeping them
- * on disk with `deleted: false` until the trash is emptied — so callers must
+ * on disk with `deleted: false` until the trash is emptied; so callers must
  * exclude these to match what the tablet shows.
  *
  * The walk is cycle-safe (a corrupt parent loop resolves to "not trashed" rather
@@ -190,7 +195,7 @@ export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResul
   const entries = fs.readdirSync(xochitlPath);
 
   // Phase 0: Parse every .metadata (documents AND folders) and build a parent
-  // map so we can exclude anything in the tablet's trash — a doc trashed directly
+  // map so we can exclude anything in the tablet's trash; a doc trashed directly
   // (parent === 'trash') or one whose ancestor folder was trashed. reMarkable
   // keeps trashed items on disk with deleted=false until the trash is emptied, so
   // filtering on `deleted` alone leaves them showing up in the vault.
@@ -247,7 +252,7 @@ export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResul
       if (corruptContent.has(uuid)) {
         logger.warn(
           `Document "${meta.visibleName}" (${uuid}) has a partial/corrupt .content file ` +
-          `— likely mid-sync. It will be picked up on the next sync once the file finishes transferring.`,
+          `- likely mid-sync. It will be picked up on the next sync once the file finishes transferring.`,
         );
       } else {
         logger.warn(
@@ -265,13 +270,15 @@ export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResul
 
     const hasPdf = fs.existsSync(path.join(xochitlPath, `${uuid}.pdf`));
 
-    const docType = isNotebook ? 'notebook' : (isEpub ? 'epub' : 'pdf');
+    const docType: ReMarkableDocument['type'] = isNotebook
+      ? 'notebook'
+      : (isEpub ? 'epub' : 'pdf');
 
     documents.push({
       uuid,
       visibleName: meta.visibleName,
       parentUuid: meta.parentUuid,
-      type: docType as 'pdf' | 'epub' | 'notebook',
+      type: docType,
       lastModified: meta.lastModified,
       pageCount: content.pageCount,
       pageUuids: content.pageUuids,

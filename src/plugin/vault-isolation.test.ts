@@ -74,7 +74,7 @@ describe('buildClaimContents', () => {
 // writeClaimFile / readClaimFile / removeClaimFile
 // -------------------------------------------------------------------
 
-describe('claim file lifecycle (legacy — in managed folder)', () => {
+describe('claim file lifecycle (legacy; in managed folder)', () => {
   let tempDir: string;
 
   beforeEach(() => {

@@ -2,7 +2,7 @@
  * Tests for the OCR-aware render process timeout.
  *
  * OCR runs per page inside a single Python process, so with OCR enabled the
- * process budget must scale with the page count — otherwise a large notebook
+ * process budget must scale with the page count; otherwise a large notebook
  * would blow the fixed 120s and fail the whole (otherwise fine) render.
  */
 

@@ -122,4 +122,19 @@ describe('tabletFilesBackedUpLocally', () => {
   it('refuses when the tablet listing fails', async () => {
     expect(await tabletFilesBackedUpLocally(mockSsh('', 1), tmpDir(), uuid)).toBe(false);
   });
+
+  it('allows SFTP-regenerable sidecars to be omitted from backup verification', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.pdf`, 'PDFDATA');
+    const ssh = mockSsh(`7 ./${uuid}.pdf\n`);
+
+    expect(await tabletFilesBackedUpLocally(
+      ssh,
+      dir,
+      uuid,
+      { allowSftpSkippedFiles: true },
+    )).toBe(true);
+    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.pagedata`));
+    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.highlights/*`));
+  });
 });

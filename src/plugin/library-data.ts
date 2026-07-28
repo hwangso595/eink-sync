@@ -6,7 +6,6 @@
  * discovery to support all document types (PDF, EPUB, notebook)
  * and reconstructs the folder tree from UUID parent references.
  *
- * Privacy: All data comes from the local synced folder. Zero network calls.
  */
 
 import * as fs from 'fs';
@@ -15,6 +14,7 @@ import { logger } from '../utils/logger';
 import type { DocumentType } from '../pipeline/types';
 import { resolveOutputBaseNames, scanExistingNoteBaseNames } from '../pipeline/markdown-renderer';
 import { computeTrashedUuids } from '../pipeline/document-discovery';
+import { isRecord, parseJson } from '../utils/json';
 import type {
   LibraryDocument,
   LibraryFolder,
@@ -22,25 +22,6 @@ import type {
   DocumentSyncStatus,
   SortConfig,
 } from './library-types';
-
-/** Raw JSON shape of a .metadata file. */
-interface MetadataJson {
-  visibleName?: string;
-  parent?: string;
-  type?: string;
-  lastModified?: string;
-  deleted?: boolean;
-}
-
-/** Raw JSON shape of a .content file. */
-interface ContentJson {
-  fileType?: string;
-  pageCount?: number;
-  pages?: string[];
-  cPages?: {
-    pages?: Array<{ id?: string; uuid?: string }>;
-  };
-}
 
 /** Intermediate parsed entry before hierarchy reconstruction. */
 interface ParsedEntry {
@@ -58,15 +39,16 @@ interface ParsedEntry {
 function parseMetadata(filePath: string): ParsedEntry | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data: MetadataJson = JSON.parse(raw);
+    const data = parseJson(raw);
+    if (!isRecord(data)) return null;
     const uuid = path.basename(filePath, '.metadata');
     return {
       uuid,
-      visibleName: data.visibleName ?? 'Untitled',
-      parentUuid: data.parent ?? '',
-      entryType: data.type ?? 'DocumentType',
-      lastModified: parseInt(data.lastModified ?? '0', 10),
-      deleted: data.deleted ?? false,
+      visibleName: typeof data.visibleName === 'string' ? data.visibleName : 'Untitled',
+      parentUuid: typeof data.parent === 'string' ? data.parent : '',
+      entryType: typeof data.type === 'string' ? data.type : 'DocumentType',
+      lastModified: parseInt(typeof data.lastModified === 'string' ? data.lastModified : '0', 10),
+      deleted: typeof data.deleted === 'boolean' ? data.deleted : false,
     };
   } catch {
     return null;
@@ -79,17 +61,19 @@ function parseMetadata(filePath: string): ParsedEntry | null {
 function parseContent(filePath: string): { fileType: string; pageCount: number } | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const data: ContentJson = JSON.parse(raw);
-    let pageCount = data.pageCount ?? 0;
+    const data = parseJson(raw);
+    if (!isRecord(data)) return null;
+    let pageCount = typeof data.pageCount === 'number' ? data.pageCount : 0;
     if (pageCount === 0) {
-      if (data.cPages?.pages) {
-        pageCount = data.cPages.pages.length;
-      } else if (data.pages) {
+      const cPages = data.cPages;
+      if (isRecord(cPages) && Array.isArray(cPages.pages)) {
+        pageCount = cPages.pages.length;
+      } else if (Array.isArray(data.pages)) {
         pageCount = data.pages.length;
       }
     }
     return {
-      fileType: data.fileType ?? '',
+      fileType: typeof data.fileType === 'string' ? data.fileType : '',
       pageCount,
     };
   } catch {
@@ -228,7 +212,7 @@ export function buildLibrary(
   const pathCache = new Map<string, string>();
 
   // Resolve stable, collision-free note base names across ALL documents, so the
-  // library links each row to the exact note the pipeline writes — reusing an
+  // library links each row to the exact note the pipeline writes; reusing an
   // existing note's name (by UUID) so the link stays put even if the name would
   // otherwise change.
   const baseNames = resolveOutputBaseNames(
@@ -275,7 +259,7 @@ export function buildLibrary(
       // yet implemented. This will be addressed when Syncthing event API
       // integration is added in a future sprint. Until then, pending/error
       // counts in the status modal will always be 0.
-      syncStatus: 'synced' as DocumentSyncStatus,
+      syncStatus: 'synced',
       folderPath,
       parentUuid: meta.parentUuid,
       hasSourceFile,

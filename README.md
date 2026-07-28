@@ -1,13 +1,13 @@
 # E-Ink Sync
 
-Local-first bridge between your reMarkable tablet and Obsidian. Extract PDF highlights as linked markdown -- no cloud, no subscription, no data leaving your network.
+Sync reMarkable documents, notebooks, and highlights with Obsidian over SFTP or Syncthing. Everything stays on your local network, and reMarkable Cloud is not required.
 
 ## What it does
 
 1. **Syncs** your reMarkable's document files to your computer via Syncthing (local network only)
 2. **Extracts** text highlights from PDFs into Obsidian markdown notes with backlinks
 3. **Renders** pen stroke annotations as PNG images embedded in your notes
-4. **Manages** your tablet library from an Obsidian sidebar -- browse, search, archive, delete
+4. **Manages** your tablet library from an Obsidian sidebar: browse, search, archive, and delete
 
 Works with reMarkable 1 (512MB RAM) and reMarkable 2. Supports firmware 3.0+ (v6 .rm format) and legacy firmware (v3/v5 format).
 
@@ -15,9 +15,9 @@ Works with reMarkable 1 (512MB RAM) and reMarkable 2. Supports firmware 3.0+ (v6
 
 ## Why this plugin needs Python
 
-Most Obsidian plugins are pure JavaScript. This one isn't — and the answer to "why?" is short: the reMarkable's v6 `.rm` binary format has exactly one mature parser, [`rmscene`](https://github.com/ricklupton/rmscene), and it's Python. There's no JavaScript port. Similarly, [`PyMuPDF`](https://pymupdf.readthedocs.io/) is the only library that reliably extracts PDF text *together with* its bounding-box coordinates — which is what makes correlating a highlight rectangle back to the underlying text actually work. `pdf.js` exposes text but not coordinates cleanly.
+reMarkable firmware 3.x stores annotations in v6 `.rm` files. E-Ink Sync uses [`rmscene`](https://github.com/ricklupton/rmscene) to parse those files and [`PyMuPDF`](https://pymupdf.readthedocs.io/) to match highlight coordinates with PDF text. Both are Python libraries, so extraction runs in a local Python process.
 
-The plugin spawns Python only when you trigger sync or extraction; if Python isn't installed, the plugin still loads and surfaces a clear error in the setup wizard rather than silently breaking.
+Python runs only during sync or extraction. If it is unavailable, the plugin still loads and the setup wizard explains what is missing.
 
 ---
 
@@ -25,12 +25,12 @@ The plugin spawns Python only when you trigger sync or extraction; if Python isn
 
 | Requirement | Version | Why |
 |-------------|---------|-----|
-| **Obsidian** | 1.5.0+ | Plugin host |
+| **Obsidian** | 1.7.2+ | Plugin host |
 | **Python** | 3.8+ | Highlight extraction and page rendering (see above) |
 | **rmscene** | latest | Parses v6 .rm annotation files |
 | **PyMuPDF** | latest | Extracts text from PDF pages, renders page images |
 | **Syncthing** | any | Syncs files between tablet and computer (local network) |
-| **Tesseract** _(optional)_ | 5.x | Local handwriting OCR — only needed for **Search handwriting (OCR)** |
+| **Tesseract** _(optional)_ | 5.x | Local handwriting OCR; only needed for **Search handwriting (OCR)** |
 
 ### Install Python dependencies
 
@@ -178,7 +178,7 @@ Turn on **Search handwriting (OCR)** to run local OCR over each notebook page. T
 > Remember: buy milk and coffee
 ```
 
-OCR is **off by default** and requires Tesseract (see Prerequisites). Recognition quality depends on how neatly the page is written — printed/neat handwriting works well, dense cursive less so. All OCR runs on your machine; no image ever leaves your network. Set the language pack(s) with the **OCR language** field (e.g. `eng`, `eng+deu`).
+OCR is **off by default** and requires Tesseract (see Prerequisites). Recognition quality depends on how neatly the page is written; printed/neat handwriting works well, dense cursive less so. All OCR runs on your machine; no image ever leaves your network. Set the language pack(s) with the **OCR language** field (e.g. `eng`, `eng+deu`).
 
 ### Page templates
 
@@ -245,7 +245,7 @@ Each source can optionally specify its own highlights subfolder to keep notes or
 
 If you sync your Obsidian vault between computers via Syncthing, the plugin is designed to avoid conflicts:
 
-- **Extraction timestamps are device-scoped** -- each computer writes its own timestamp keyed by hostname, so two machines extracting at different times don't conflict on `data.json`
+- **Extraction timestamps are device-scoped** -- each installation uses a random local ID, so two computers extracting at different times do not conflict on `data.json`
 - **Highlight note output is deterministic** -- `date_highlighted` uses the document's modification date from the tablet (same on both machines), not the extraction date
 - **No plugin files in synced folders** -- claim files and internal state are stored in `.obsidian/plugins/` (not synced by default), not in the sync/highlights folders
 
@@ -335,13 +335,14 @@ The pipeline delegates to Python for two tasks: (1) parsing .rm files via `rmsce
 
 ## Permissions & data access
 
-This plugin requests broader access than a typical Obsidian plugin because it bridges your tablet (an external device on your local network) to your vault. Here's exactly what it does and why:
+E-Ink Sync needs broader access than a typical Obsidian plugin because it reads reMarkable files and communicates with the tablet. These capabilities are limited to the features listed below.
 
 | Capability | Why it's needed |
 |---|---|
-| **Filesystem access outside the vault** | Reads `.rm`/`.metadata`/`.content` files from the Syncthing sync folder (which lives outside your vault, since Syncthing manages it). Writes rendered PNGs and extracted markdown into your vault. |
-| **Shell execution** (`child_process`) | Spawns Python for highlight extraction (`rmscene` + `PyMuPDF`) and SSH for one-time tablet setup. Both are essential -- there's no JavaScript equivalent for parsing reMarkable's v6 `.rm` binary format. |
-| **Hostname read** (`os.hostname`) | Scopes the "last extracted at" timestamp per machine, so if you sync your vault between two computers via Syncthing they don't fight over `data.json` and produce sync-conflict files. |
+| **Direct filesystem access** | Reads raw `.rm`/`.metadata`/`.content` files from the configured sync folder, which may be inside or outside the vault. It also manages the plugin's extraction runtime and writes rendered images/notes to configured vault folders. |
+| **Shell execution** (`child_process`) | Spawns Python without a shell for highlight extraction (`rmscene` + `PyMuPDF`). SSH/SFTP access is limited to the configured reMarkable tablet for setup, sync, archive, delete, and restart operations. Both are essential because there is no JavaScript equivalent for parsing reMarkable's v6 `.rm` format. |
+| **Dynamic feature check** (`new Function`) | Comes from the bundled `ssh2` dependency, which uses a tiny generated function only to test whether the JavaScript runtime supports BigInt exponentiation. The plugin itself does not evaluate user-provided or downloaded code. |
+| **Random local installation ID** | Scopes extraction state per Obsidian installation without reading the hostname, username, environment variables, or network interfaces. The random ID never leaves the local plugin profile. |
 | **Vault file enumeration** | Used by the "Send document to reMarkable" command to find PDFs/EPUBs in your vault. |
 
 The plugin **never** makes external network requests. All sync happens over your local network via Syncthing or SSH to your tablet. No data goes to reMarkable Cloud, no telemetry, no analytics, no third-party servers.
