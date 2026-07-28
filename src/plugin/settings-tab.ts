@@ -21,8 +21,7 @@ import {
 } from './folder-migration-modal';
 import { collisionKey } from './vault-isolation';
 import { isValidIpv4 } from './net-utils';
-import { stopServices, removeServices } from '../sync/service-manager';
-import type { SyncProvider } from '../sync/sync-provider';
+import { confirmAction } from './confirmation-modal';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -263,10 +262,14 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               // Switching to SFTP; use the old Syncthing provider to clean up
               const oldProvider = this.plugin.getSyncProvider();
 
-              const wantsRemove = confirm(
-                'Would you like to stop and remove Syncthing from your tablet? ' +
-                'This frees up RAM on the tablet.',
-              );
+              const wantsRemove = await confirmAction(this.app, {
+                title: 'Remove Syncthing?',
+                message:
+                  'Would you like to stop and remove Syncthing from your tablet? ' +
+                  'This frees up RAM on the tablet.',
+                confirmText: 'Remove Syncthing',
+                dangerous: true,
+              });
               if (wantsRemove) {
                 try {
                   await oldProvider.remove();
@@ -683,7 +686,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           } catch {
             button.setButtonText('Failed');
           }
-          setTimeout(() => {
+          window.setTimeout(() => {
             button.setDisabled(false);
             button.setButtonText('Extract');
           }, 3000);
@@ -703,7 +706,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           );
           button.setButtonText('Done');
           button.setDisabled(true);
-          setTimeout(() => {
+          window.setTimeout(() => {
             button.setButtonText('Reset');
             button.setDisabled(false);
           }, 3000);
@@ -716,10 +719,14 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       button
         .setButtonText('Remove')
         .onClick(async () => {
-          const confirmed = confirm(
-            `Remove sync source "${source.label}"?\n\n` +
-            'This only removes the configuration. Sync folder and highlight notes will remain on disk.',
-          );
+          const confirmed = await confirmAction(this.app, {
+            title: 'Remove sync source?',
+            message:
+              `Remove sync source "${source.label}"?\n\n` +
+              'This only removes the configuration. Sync folder and highlight notes will remain on disk.',
+            confirmText: 'Remove source',
+            dangerous: true,
+          });
           if (!confirmed) return;
 
           const updated = this.plugin.getSyncSources().filter((s) => s.id !== source.id);
@@ -819,7 +826,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             } catch {
               button.setButtonText('Error');
             }
-            setTimeout(() => {
+            window.setTimeout(() => {
               button.setDisabled(false);
               button.setButtonText('Test');
             }, 3000);
@@ -841,7 +848,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             } catch {
               button.setButtonText('Failed');
             }
-            setTimeout(() => {
+            window.setTimeout(() => {
               button.setDisabled(false);
               button.setButtonText('Extract');
             }, 3000);
@@ -1086,7 +1093,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             );
             button.setButtonText('Done');
             button.setDisabled(true);
-            setTimeout(() => {
+            window.setTimeout(() => {
               button.setButtonText('Reset');
               button.setDisabled(false);
             }, 3000);

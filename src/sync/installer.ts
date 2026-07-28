@@ -17,7 +17,7 @@
 
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { BridgeError, ErrorCode } from '../types/errors';
-import { ENTWARE_PATH, SYNCTHING_BIN_PATH } from './types';
+import { SYNCTHING_BIN_PATH } from './types';
 import { logger } from '../utils/logger';
 
 /** Callback for reporting installation progress. */

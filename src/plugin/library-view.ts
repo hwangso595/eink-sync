@@ -39,6 +39,7 @@ import {
   deleteLocalDocumentCopies,
 } from './document-deletion';
 import { hasLocalBackup, tabletFilesBackedUpLocally } from './archive-manager';
+import { confirmAction } from './confirmation-modal';
 
 /** View type identifier for Obsidian's view registry. */
 export const LIBRARY_VIEW_TYPE = 'remarkable-library-view';
@@ -52,7 +53,7 @@ export class ReMarkableLibraryView extends ItemView {
   private collapsedFolders = new Set<string>();
   private contentContainer: HTMLElement | null = null;
   /** Timer handle for debouncing search input. */
-  private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private searchDebounceTimer: number | null = null;
   /** Debounce delay in milliseconds for search keystrokes. */
   private static readonly SEARCH_DEBOUNCE_MS = 200;
   /** Current source filter: 'all' or a source ID. */
@@ -111,7 +112,7 @@ export class ReMarkableLibraryView extends ItemView {
       await this.syncWithProgress(statusEl);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await new Promise(resolve => window.setTimeout(resolve, 1000));
     btn.removeClass('is-loading');
     await this.refreshLibrary();
   }
@@ -407,9 +408,9 @@ export class ReMarkableLibraryView extends ItemView {
     searchInput.addEventListener('input', () => {
       this.searchQuery = searchInput.value;
       if (this.searchDebounceTimer) {
-        clearTimeout(this.searchDebounceTimer);
+        window.clearTimeout(this.searchDebounceTimer);
       }
-      this.searchDebounceTimer = setTimeout(() => {
+      this.searchDebounceTimer = window.setTimeout(() => {
         this.renderDocumentList();
       }, ReMarkableLibraryView.SEARCH_DEBOUNCE_MS);
     });
@@ -1062,10 +1063,14 @@ export class ReMarkableLibraryView extends ItemView {
     }
 
     const canPush = this.plugin.isPushCapable();
-    const confirmed = confirm(
-      `Permanently delete "${doc.name}"?\n\n` +
-      `This removes it from your vault and the tablet. This cannot be undone.`
-    );
+    const confirmed = await confirmAction(this.app, {
+      title: 'Delete document?',
+      message:
+        `Permanently delete "${doc.name}"?\n\n` +
+        'This removes it from your vault and the tablet. This cannot be undone.',
+      confirmText: 'Delete permanently',
+      dangerous: true,
+    });
     if (!confirmed) return;
 
     try {

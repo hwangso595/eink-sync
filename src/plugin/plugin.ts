@@ -29,13 +29,10 @@ import {
 import { ReMarkableBridgeSettingTab } from './settings-tab';
 import { SetupWizardModal } from './setup-wizard';
 import { ReMarkableLibraryView, LIBRARY_VIEW_TYPE } from './library-view';
-import { SyncStatusModal } from './sync-status-modal';
-import { buildLibrary } from './library-data';
 
 // Sprint 1 imports
 import { ReMarkableSSHClient, type SSHExecutor } from '../ssh/ssh-client';
 import type { SSHConfig } from '../types/config';
-import type { DeviceInfo } from '../types/device';
 import {
   connectAndVerify,
   testConnection,
@@ -73,7 +70,7 @@ import type { PipelineConfig } from '../pipeline/types';
 import { SftpSyncEngine, type SftpProgressCallback, type SftpSyncResult } from '../sync/sftp-sync';
 
 // Sync providers (unified abstraction over SFTP and Syncthing)
-import type { SyncProvider, SyncProgressCallback as SyncProviderProgressCallback } from '../sync/sync-provider';
+import type { SyncProvider } from '../sync/sync-provider';
 import { SftpProvider } from '../sync/sftp-provider';
 import { SyncthingProvider } from '../sync/syncthing-provider';
 
@@ -92,7 +89,7 @@ import { BridgeError, ErrorCode } from '../types/errors';
 
 // Utilities
 import { logger, setLogLevel, LogLevel } from '../utils/logger';
-import { resolvePath, ensureFolders, formatRelativeTime, hashString, getVaultBasePath } from './helpers';
+import { resolvePath, ensureFolders, hashString, getVaultBasePath } from './helpers';
 
 // Extracted modules
 import { SyncCoordinator } from './sync-coordinator';
@@ -107,7 +104,6 @@ import {
   collisionKey,
   type Collision,
   type OutsideVaultWarning,
-  type VaultIsolationResult,
 } from './vault-isolation';
 
 /** Hardcoded debounce for auto-extraction (seconds). */
@@ -157,10 +153,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
   );
   /** File watchers for automatic extraction (one per sync source). */
   private fileWatchers: XochitlFileWatcher[] = [];
-  /**
-   * @deprecated Kept for backward compatibility. Use fileWatchers array instead.
-   */
-  private fileWatcher: XochitlFileWatcher | null = null;
   /** Handle for the deferred xochitl-restart timeout in pushPdfToSyncFolder. */
   private pdfSyncTimeoutHandle: number | null = null;
   /** Handle for the debounced xochitl restart. */
@@ -1315,8 +1307,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
       }
     }
 
-    // Keep legacy field pointing to first watcher for backward compat
-    this.fileWatcher = this.fileWatchers.length > 0 ? this.fileWatchers[0] : null;
   }
 
   /** Stop all file watchers. */
@@ -1325,7 +1315,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
       watcher.stop();
     }
     this.fileWatchers = [];
-    this.fileWatcher = null;
   }
 
   // -------------------------------------------------------------------

@@ -142,20 +142,16 @@ export interface SyncSource {
   /** Syncthing folder ID for this source. */
   syncthingFolderId: string;
   /**
-   * @deprecated Use `lastExtractionTimestamps` instead.
-   * Kept temporarily for migration from older data.json files.
+   * Legacy scalar timestamp kept only while migrating older data.json files.
    */
   lastExtractionTimestamp?: number | null;
   /**
-   * @deprecated Moved to DeviceState.sourceTimestamps (keyed by source ID).
-   * Kept for backward compatibility during migration from older data.json files.
-   * Per-device extraction timestamps, keyed by a random local installation ID.
+   * Legacy per-device timestamps kept while migrating to
+   * DeviceState.sourceTimestamps, which is keyed by source ID.
    */
   lastExtractionTimestamps: Record<string, number>;
   /**
-   * @deprecated Moved to DeviceState.sourcePathHashes (keyed by source ID).
-   * Kept for backward compatibility during migration from older data.json files.
-   * Hash of syncFolder at the time lastExtractionTimestamps was set.
+   * Legacy path hash kept while migrating to DeviceState.sourcePathHashes.
    */
   syncFolderPathHash: string | null;
   /**
@@ -260,21 +256,18 @@ export function getDrawingsFolder(settings: ReMarkableBridgeSettings): string {
 /** Non-settings plugin data stored in data.json. */
 export interface PluginData extends ReMarkableBridgeSettings {
   /**
-   * @deprecated Kept for backward compatibility during migration.
-   * New code should use `syncSources[n].lastExtractionTimestamps`.
+   * Legacy top-level timestamp kept for data.json migration.
    */
   lastExtractionTimestamp: number | null;
   /**
-   * @deprecated Kept for backward compatibility during migration.
-   * New code should use `syncSources[n].syncFolderPathHash`.
+   * Legacy top-level path hash kept for data.json migration.
    */
   syncFolderPathHash: string | null;
   /** Named sync sources for multi-device support. */
   syncSources: SyncSource[];
   /**
-   * @deprecated Moved to DeviceState.dismissedCollisions.
-   * Kept for backward compatibility during migration from older data.json files.
-   * Dismissed collision warnings, keyed by collision key (folder::otherVault).
+   * Legacy collision list kept while migrating to
+   * DeviceState.dismissedCollisions.
    */
   dismissedCollisions: string[];
 }

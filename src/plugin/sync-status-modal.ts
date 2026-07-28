@@ -121,7 +121,12 @@ export class SyncStatusModal extends Modal {
     this.renderDetailRow(details, 'Highlights', `${summary.totalHighlights}`);
 
     // Last extraction
-    const lastExtraction = this.plugin.getPluginData().lastExtractionTimestamp;
+    const extractionTimestamps = Object.values(
+      this.plugin.getDeviceState().sourceTimestamps,
+    );
+    const lastExtraction = extractionTimestamps.length > 0
+      ? Math.max(...extractionTimestamps)
+      : null;
     this.renderDetailRow(
       details,
       'Last extraction',
@@ -221,7 +226,7 @@ export class SyncStatusModal extends Modal {
             const msg = err instanceof Error ? err.message : String(err);
             new Notice(`E-Ink Sync: ${msg}`, 6000);
           }
-          setTimeout(() => {
+          window.setTimeout(() => {
             btn.setDisabled(false);
             btn.setButtonText('Test');
           }, 3000);

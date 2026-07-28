@@ -22,11 +22,10 @@
  * Privacy: Pure computation, no network calls.
  */
 
-import type { ExtractionResult, ExtractedHighlight, PageDrawings, PageOcr, MarkdownRenderer } from './types';
+import type { ExtractionResult, PageDrawings, PageOcr, MarkdownRenderer } from './types';
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { preserveTypedNotes } from './notes-preservation';
-import { logger } from '../utils/logger';
 
 // Re-exported for backwards compatibility (public API / tests import it here).
 export { formatPdfLink };
@@ -544,4 +543,3 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
   }
 
 }
-
