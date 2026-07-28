@@ -178,7 +178,7 @@ function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SF
   return new Promise((resolve, reject) => {
     const conn = new Client();
 
-    const timeoutId = setTimeout(() => {
+    const timeoutId = window.setTimeout(() => {
       conn.destroy();
       reject(new Error(
         `SFTP connection to ${options.host}:${options.port} timed out after ${options.timeoutMs}ms.`,
@@ -186,7 +186,7 @@ function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SF
     }, options.timeoutMs + 1000);
 
     conn.on('ready', () => {
-      clearTimeout(timeoutId);
+      window.clearTimeout(timeoutId);
       conn.sftp((err, sftp) => {
         if (err) {
           conn.end();
@@ -198,7 +198,7 @@ function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SF
     });
 
     conn.on('error', (err) => {
-      clearTimeout(timeoutId);
+      window.clearTimeout(timeoutId);
       reject(new Error(`SSH connection failed: ${err.message}`));
     });
 
@@ -245,19 +245,6 @@ function sftpReaddir(sftp: SFTPWrapper, remotePath: string): Promise<RemoteFileI
         isDirectory: (entry.attrs.mode & 0o040000) !== 0,
       }));
       resolve(entries);
-    });
-  });
-}
-
-/** Get file stats for a remote path. */
-function sftpStat(sftp: SFTPWrapper, remotePath: string): Promise<{ size: number; mtime: number }> {
-  return new Promise((resolve, reject) => {
-    sftp.stat(remotePath, (err, stats) => {
-      if (err) {
-        reject(new Error(`Failed to stat ${remotePath}: ${err.message}`));
-        return;
-      }
-      resolve({ size: stats.size, mtime: stats.mtime });
     });
   });
 }

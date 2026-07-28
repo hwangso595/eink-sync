@@ -18,28 +18,6 @@ import { ReMarkableDocument, DocumentDiscovery } from './types';
 import { logger } from '../utils/logger';
 import { isRecord, parseJson } from '../utils/json';
 
-/** Raw JSON shape of a .metadata file. */
-interface MetadataJson {
-  visibleName?: string;
-  parent?: string;
-  type?: string;
-  lastModified?: string;
-  deleted?: boolean;
-  pinned?: boolean;
-  version?: number;
-}
-
-/** Raw JSON shape of a .content file. */
-interface ContentJson {
-  fileType?: string;
-  pageCount?: number;
-  pages?: string[];
-  orientation?: string;
-  cPages?: {
-    pages?: Array<{ id?: string; uuid?: string; deleted?: boolean }>;
-  };
-}
-
 /** Parsed metadata for a single xochitl entry. */
 interface ParsedMetadata {
   uuid: string;

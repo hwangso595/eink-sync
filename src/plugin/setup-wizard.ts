@@ -511,7 +511,7 @@ export class SetupWizardModal extends Modal {
               } catch {
                 button.setButtonText('Failed (is tablet connected?)');
               }
-              setTimeout(() => {
+              window.setTimeout(() => {
                 button.setDisabled(false);
                 button.setButtonText('Get Device ID');
               }, 5000);

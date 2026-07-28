@@ -15,13 +15,11 @@ import { logger } from '../utils/logger';
 import {
   parseFirmwareVersion,
   getInstallationPath,
-  usesV6FileFormat,
   type InstallationPath,
 } from './firmware';
 
 /** Paths where Entware should be installed (on /home, survives OTA). */
 const ENTWARE_HOME_PATH = '/home/root/.entware';
-const ENTWARE_BIN_PATH = '/home/root/.entware/bin';
 const SYNCTHING_BINARY_PATH = '/home/root/.entware/bin/syncthing';
 
 /** Systemd service file location. */

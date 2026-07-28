@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release version
+        run: |
+          node -e "const m=require('./manifest.json'); if (m.version !== process.env.GITHUB_REF_NAME) throw new Error('Tag must match manifest version')"
+
+      - name: Verify source
+        run: |
+          npx tsc --noEmit
+          npx eslint manifest.json src --quiet --format stylish
+          npm test -- --runInBand
+
+      - name: Build release assets
+        run: npm run build
+
+      - name: Verify release assets
+        run: |
+          test -s main.js
+          test -s manifest.json
+          test -s styles.css
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            main.js manifest.json styles.css

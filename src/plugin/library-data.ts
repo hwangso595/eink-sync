@@ -19,7 +19,6 @@ import type {
   LibraryDocument,
   LibraryFolder,
   LibrarySyncSummary,
-  DocumentSyncStatus,
   SortConfig,
 } from './library-types';
 

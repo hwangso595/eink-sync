@@ -9,10 +9,8 @@
 
 import type { SyncProvider, SyncProgressCallback, SyncResult } from './sync-provider';
 import { SftpSyncEngine, type SftpProgressCallback } from './sftp-sync';
-import type { SSHExecutor } from '../ssh/ssh-client';
 import { ReMarkableSSHClient } from '../ssh/ssh-client';
 import { stopServices, removeServices } from './service-manager';
-import { logger } from '../utils/logger';
 
 export interface SftpProviderConfig {
   host: string;

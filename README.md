@@ -65,6 +65,16 @@ Fix: **Settings > Apps > Advanced app settings > App execution aliases** -- turn
 2. Select **Browse** and search for **E-Ink Sync**.
 3. Select **Install**, then enable the plugin.
 
+### Verify release provenance
+
+GitHub Actions builds and attests every downloadable release asset. After downloading an asset, verify that it was built from this repository:
+
+```bash
+gh attestation verify main.js --repo hwangso595/eink-sync
+gh attestation verify manifest.json --repo hwangso595/eink-sync
+gh attestation verify styles.css --repo hwangso595/eink-sync
+```
+
 ### From source (development)
 
 ```bash
@@ -342,7 +352,7 @@ templates/            # Handlebars template for highlight notes
 The plugin has three layers:
 
 1. **Device layer** (`ssh/`, `device/`) -- SSH connection, firmware detection, Syncthing installation on the tablet
-2. **Sync layer** (`sync/`) -- Syncthing configuration, file sync orchestration
+2. **Sync layer** (`sync/`) -- Direct SFTP transfer, optional Syncthing configuration, and sync orchestration
 3. **Pipeline layer** (`pipeline/`, `extraction/`) -- Document discovery, Python-based highlight extraction, markdown rendering
 
 The pipeline delegates to Python for two tasks: (1) parsing .rm files via `rmscene` and extracting highlight text via `PyMuPDF`, and (2) rendering annotated pages as PNGs. Communication is one-directional: TypeScript spawns Python with CLI arguments, Python returns JSON on stdout.
@@ -358,10 +368,10 @@ E-Ink Sync needs broader access than a typical Obsidian plugin because it reads 
 | **Direct filesystem access** | Reads raw `.rm`/`.metadata`/`.content` files from the configured sync folder, which may be inside or outside the vault. It also manages the plugin's extraction runtime and writes rendered images/notes to configured vault folders. |
 | **Shell execution** (`child_process`) | Spawns Python without a shell for highlight extraction (`rmscene` + `PyMuPDF`). SSH/SFTP access is limited to the configured reMarkable tablet for setup, sync, archive, delete, and restart operations. Both are essential because there is no JavaScript equivalent for parsing reMarkable's v6 `.rm` format. |
 | **Dynamic feature check** (`new Function`) | Comes from the bundled `ssh2` dependency, which uses a tiny generated function only to test whether the JavaScript runtime supports BigInt exponentiation. The plugin itself does not evaluate user-provided or downloaded code. |
-| **Random local installation ID** | Scopes extraction state per Obsidian installation without reading the hostname, username, environment variables, or network interfaces. The random ID never leaves the local plugin profile. |
+| **Local browser-profile storage** | Stores one random installation ID in the local Obsidian browser profile so vault sync does not copy the same device identity to another computer. It does not read the hostname, username, environment variables, or network interfaces, and the ID never leaves the local profile. |
 | **Vault file enumeration** | Used by the "Send document to reMarkable" command to find PDFs/EPUBs in your vault. |
 
-The plugin **never** makes external network requests. All sync happens over your local network via Syncthing or SSH to your tablet. No data goes to reMarkable Cloud, no telemetry, no analytics, no third-party servers.
+Normal sync and extraction contact only your tablet and the Syncthing service on your own computer. During optional Syncthing setup, the tablet downloads Entware and Syncthing from their upstream repositories. No document data goes to reMarkable Cloud or any third party, and the plugin contains no telemetry or analytics.
 
 ---
 

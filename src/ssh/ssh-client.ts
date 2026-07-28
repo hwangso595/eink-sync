@@ -101,7 +101,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
     return new Promise<void>((resolve, reject) => {
       const client = new Client();
 
-      const timeoutId = setTimeout(() => {
+      const timeoutId = window.setTimeout(() => {
         client.destroy();
         reject(new BridgeError(
           ErrorCode.SSH_TIMEOUT,
@@ -113,7 +113,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
       }, this.config.timeoutMs + 1000);
 
       client.on('ready', () => {
-        clearTimeout(timeoutId);
+        window.clearTimeout(timeoutId);
         this.client = client;
         this.connected = true;
         logger.info(`SSH connected to ${this.config.host}`);
@@ -121,7 +121,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
       });
 
       client.on('error', (err: Error) => {
-        clearTimeout(timeoutId);
+        window.clearTimeout(timeoutId);
         this.connected = false;
         reject(this.mapSSHError(err));
       });
@@ -159,7 +159,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
     return new Promise<CommandResult>((resolve, reject) => {
       let stream: ClientChannel | null = null;
 
-      const timeoutId = setTimeout(() => {
+      const timeoutId = window.setTimeout(() => {
         if (stream) {
           stream.close();
         }
@@ -172,7 +172,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
 
       this.client!.exec(command, (err: Error | undefined, chan: ClientChannel) => {
         if (err) {
-          clearTimeout(timeoutId);
+          window.clearTimeout(timeoutId);
           reject(new BridgeError(
             ErrorCode.SSH_COMMAND_FAILED,
             `Failed to execute command: ${err.message}`,
@@ -195,7 +195,7 @@ export class ReMarkableSSHClient implements SSHExecutor {
         });
 
         chan.on('close', (code: number | null) => {
-          clearTimeout(timeoutId);
+          window.clearTimeout(timeoutId);
           const result: CommandResult = {
             stdout: stdout.trimEnd(),
             stderr: stderr.trimEnd(),
