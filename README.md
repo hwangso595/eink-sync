@@ -4,7 +4,7 @@ Sync reMarkable documents, notebooks, and highlights over SFTP or Syncthing. No 
 
 ## What it does
 
-1. **Syncs** your reMarkable's document files to your computer via Syncthing (local network only)
+1. **Syncs** your reMarkable's document files to your computer via direct SFTP or Syncthing
 2. **Extracts** text highlights from PDFs into Obsidian markdown notes with backlinks
 3. **Renders** pen stroke annotations as PNG images embedded in your notes
 4. **Manages** your tablet library from an Obsidian sidebar: browse, search, archive, and delete
@@ -29,7 +29,8 @@ Python runs only during sync or extraction. If it is unavailable, the plugin sti
 | **Python** | 3.8+ | Highlight extraction and page rendering (see above) |
 | **rmscene** | latest | Parses v6 .rm annotation files |
 | **PyMuPDF** | latest | Extracts text from PDF pages, renders page images |
-| **Syncthing** | any | Syncs files between tablet and computer (local network) |
+| **reMarkable SSH access** | enabled | Required for direct SFTP sync and tablet management |
+| **Syncthing** _(optional)_ | any | Provides continuous background sync as an alternative to SFTP |
 | **Tesseract** _(optional)_ | 5.x | Local handwriting OCR; only needed for **Search handwriting (OCR)** |
 
 ### Install Python dependencies
@@ -105,8 +106,8 @@ New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target 
 1. Enable the plugin in Obsidian settings
 2. A setup wizard opens automatically -- follow the steps to configure:
    - SSH connection to your tablet (USB or WiFi)
-   - Syncthing sync folder
-   - Output folder for highlight notes
+   - Direct SFTP or Syncthing as the sync method
+   - Sync and highlight output folders
 3. The plugin creates three folders in your vault:
 
 | Folder | Default | Purpose |
@@ -123,8 +124,8 @@ New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target 
 
 Click the reMarkable icon in the sidebar to open the library view, then click the refresh button (top-right). This:
 
-1. Asks Syncthing to check for new files from the tablet
-2. Waits for the sync to settle
+1. Downloads or checks for changed files using your configured sync method
+2. Waits for local files to settle
 3. Runs the Python extraction pipeline
 4. Updates your highlight notes
 
@@ -206,7 +207,7 @@ Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) 
 ```
 reMarkable tablet
     |
-    | Syncthing (local WiFi / USB)
+    | SFTP (direct transfer) or Syncthing (background sync)
     v
 Vault/reMarkable/Sync/          <-- raw xochitl files (UUIDs)
     |
@@ -234,7 +235,7 @@ When you change any folder path in settings, a **migration dialog** appears:
 - If you choose Move, all files (including subdirectories like drawings/) are relocated
 - If the sync folder changes, the extraction timestamp is automatically reset so all documents in the new folder are re-processed
 
-The file watcher and Syncthing configuration are updated automatically.
+The file watcher is updated automatically. In Syncthing mode, the shared folder configuration is updated too.
 
 ### Archive folder location
 
