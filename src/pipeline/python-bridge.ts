@@ -18,6 +18,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
+import { isRecord, parseJson, stringArray } from '../utils/json';
 import {
   HighlightExtractor,
   ReMarkableDocument,
@@ -65,6 +66,89 @@ export interface PythonHighlight {
   color: string | null;
   bounds: { x: number; y: number; width: number; height: number } | null;
   created_at: number | null;
+}
+
+function parseBounds(value: unknown): PythonHighlight['bounds'] | undefined {
+  if (value === null) return null;
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.x !== 'number' || typeof value.y !== 'number' ||
+    typeof value.width !== 'number' || typeof value.height !== 'number'
+  ) return undefined;
+  return { x: value.x, y: value.y, width: value.width, height: value.height };
+}
+
+function parsePythonHighlight(value: unknown): PythonHighlight | null {
+  if (!isRecord(value)) return null;
+  const bounds = parseBounds(value.bounds);
+  if (
+    typeof value.text !== 'string' || typeof value.page_number !== 'number' ||
+    !(typeof value.color === 'string' || value.color === null) || bounds === undefined ||
+    !(typeof value.created_at === 'number' || value.created_at === null)
+  ) return null;
+  return {
+    text: value.text,
+    page_number: value.page_number,
+    color: value.color,
+    bounds,
+    created_at: value.created_at,
+  };
+}
+
+function parsePageTags(value: unknown): Record<string, string[]> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return undefined;
+  const result: Record<string, string[]> = {};
+  for (const [page, tags] of Object.entries(value)) {
+    if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string')) return undefined;
+    result[page] = tags;
+  }
+  return result;
+}
+
+function parsePythonDocument(value: unknown): PythonDocumentResult | null {
+  if (!isRecord(value) || !Array.isArray(value.highlights)) return null;
+  const highlights = value.highlights.map(parsePythonHighlight);
+  const pageTags = parsePageTags(value.page_tags);
+  if (
+    highlights.some((highlight) => highlight === null) ||
+    typeof value.uuid !== 'string' || typeof value.visible_name !== 'string' ||
+    typeof value.folder_path !== 'string' || typeof value.doc_type !== 'string' ||
+    typeof value.last_modified !== 'number' || typeof value.page_count !== 'number' ||
+    typeof value.has_pdf !== 'boolean' ||
+    !(typeof value.error === 'string' || value.error === null) ||
+    (value.page_tags !== undefined && pageTags === undefined)
+  ) return null;
+  return {
+    uuid: value.uuid,
+    visible_name: value.visible_name,
+    folder_path: value.folder_path,
+    doc_type: value.doc_type,
+    last_modified: value.last_modified,
+    page_count: value.page_count,
+    has_pdf: value.has_pdf,
+    highlights: highlights.filter((highlight): highlight is PythonHighlight => highlight !== null),
+    warnings: stringArray(value.warnings),
+    error: value.error,
+    tags: value.tags === undefined ? undefined : stringArray(value.tags),
+    page_tags: pageTags,
+  };
+}
+
+function parsePythonOutput(raw: string): PythonExtractionOutput {
+  const value = parseJson(raw);
+  if (!isRecord(value) || typeof value.success !== 'boolean' || !Array.isArray(value.documents)) {
+    throw new Error('Invalid output structure');
+  }
+  const documents = value.documents.map(parsePythonDocument);
+  if (documents.some((document) => document === null)) {
+    throw new Error('Invalid document in extraction output');
+  }
+  return {
+    success: value.success,
+    documents: documents.filter((document): document is PythonDocumentResult => document !== null),
+    errors: stringArray(value.errors),
+  };
 }
 
 /** Options for invoking the Python extraction process. */
@@ -308,18 +392,7 @@ export async function runPythonExtraction(
 
       // Parse JSON output
       try {
-        const output: PythonExtractionOutput = JSON.parse(stdout);
-        if (
-          !output ||
-          typeof output.success !== 'boolean' ||
-          !Array.isArray(output.documents)
-        ) {
-          throw new Error('Invalid output structure');
-        }
-        // `errors` is optional in older outputs; normalize so callers can rely on it.
-        if (!Array.isArray(output.errors)) {
-          output.errors = [];
-        }
+        const output = parsePythonOutput(stdout);
         resolve(output);
       } catch (parseError) {
         reject(new BridgeError(
@@ -356,7 +429,9 @@ function pythonResultToExtractionResult(
     uuid: pyDoc.uuid,
     visibleName: pyDoc.visible_name,
     parentUuid: '',
-    type: (pyDoc.doc_type as 'pdf' | 'epub' | 'notebook') || 'pdf',
+    type: pyDoc.doc_type === 'epub' || pyDoc.doc_type === 'notebook'
+      ? pyDoc.doc_type
+      : 'pdf',
     lastModified: pyDoc.last_modified,
     pageCount: pyDoc.page_count,
     pageUuids: [],

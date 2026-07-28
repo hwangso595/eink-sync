@@ -66,7 +66,7 @@ describe('host-key-store', () => {
     initHostKeyStore(storePath);
     verifyHostKey('host', 'fp1');
 
-    // Reload from disk with a fresh handler — the pin should survive.
+    // Reload from disk with a fresh handler; the pin should survive.
     const handler = jest.fn();
     initHostKeyStore(storePath, handler);
     verifyHostKey('host', 'fp1');

@@ -137,7 +137,7 @@ export interface ConnectionTestResult {
  * Like {@link testConnection} but preserves the specific failure reason
  * (timeout vs. auth vs. connection-refused vs. unreachable) instead of
  * collapsing everything to a bare boolean. The SSH layer already produces a
- * precise, actionable BridgeError — this surfaces it so callers can show the
+ * precise, actionable BridgeError; this surfaces it so callers can show the
  * user something better than "Failed".
  */
 export async function testConnectionDetailed(

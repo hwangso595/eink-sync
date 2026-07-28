@@ -16,7 +16,7 @@ import type { ConnectionTestResult } from '../ssh/connection-manager';
 /**
  * After this many consecutive unreachable auto-sync cycles, surface a single
  * Notice. We don't notify on every cycle (that would spam every interval), and
- * we don't notify on the first miss (the tablet sleeps constantly — a single
+ * we don't notify on the first miss (the tablet sleeps constantly; a single
  * miss is normal). Sustained failure is what the user needs to know about.
  */
 const UNREACHABLE_NOTICE_THRESHOLD = 3;
@@ -65,7 +65,8 @@ export class SyncCoordinator {
 
     logger.info(`Auto-sync timer started: every ${this.plugin.settings.autoSyncIntervalMinutes} minutes`);
 
-    const handle = window.setInterval(async () => {
+    const handle = window.setInterval(() => {
+      void (async () => {
       if (this.autoSyncInProgress) {
         logger.debug('Auto-sync: previous run still in progress, skipping');
         return;
@@ -138,6 +139,7 @@ export class SyncCoordinator {
       } finally {
         this.autoSyncInProgress = false;
       }
+      })();
     }, intervalMs);
     this.autoSyncTimerHandle = handle;
     this.plugin.registerInterval(handle);

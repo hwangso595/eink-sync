@@ -1,5 +1,5 @@
 /**
- * Tests for notes-preservation.ts — typed user notes must survive every
+ * Tests for notes-preservation.ts; typed user notes must survive every
  * regeneration of the managed section, including the exact failure modes
  * that destroyed real notes: a fresh render with zero (or fewer) notes
  * slots, shifted highlight order, and re-rendered image filenames.

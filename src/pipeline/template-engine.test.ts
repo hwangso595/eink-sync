@@ -354,7 +354,7 @@ describe('TemplateMarkdownRenderer - OCR in note templates', () => {
 
     const out = renderer.render(result, undefined, pageDrawings, pageOcr);
 
-    // Exactly one callout — for page 1; page 2 has none.
+    // Exactly one callout; for page 1; page 2 has none.
     expect((out.match(/Handwriting \(OCR\)/g) ?? []).length).toBe(1);
   });
 });

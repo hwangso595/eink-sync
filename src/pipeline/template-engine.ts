@@ -170,7 +170,7 @@ export function renderTemplate(
 function processEachBlocks(template: string, context: TemplateContext): string {
   let output = template;
 
-  // Process {{#each pages}} ... {{/each_pages}} — uses distinct closing tag to avoid nesting issues
+  // Process {{#each pages}} ... {{/each_pages}}; uses distinct closing tag to avoid nesting issues
   const pagesRegex = /\{\{#each\s+pages\}\}([\s\S]*?)\{\{\/each_pages\}\}/g;
   output = output.replace(pagesRegex, (_match, pageBody: string) => {
     const pages = context._pages;
@@ -220,7 +220,7 @@ function processEachBlocks(template: string, context: TemplateContext): string {
     }).join('\n');
   });
 
-  // Process {{#each highlights}} (flat, non-page-grouped) — backwards compatible
+  // Process {{#each highlights}} (flat, non-page-grouped); backwards compatible
   const eachRegex = /\{\{#each\s+highlights\}\}([\s\S]*?)\{\{\/each\}\}/g;
   output = output.replace(eachRegex, (_match, body: string) => {
     if (context.highlights.length === 0) {
@@ -291,9 +291,9 @@ function substituteVariables(template: string, context: TemplateContext): string
   output = output.replace(/\{\{source_type\}\}/g, context.source_type ?? 'pdf');
   output = output.replace(/\{\{uuid\}\}/g, context.uuid);
   output = output.replace(/\{\{highlight_count\}\}/g, String(context.highlight_count));
-  // {{source}} — sync source label (for multi-source setups)
+  // {{source}}; sync source label (for multi-source setups)
   output = output.replace(/\{\{source\}\}/g, context.source ?? '');
-  // {{annotations}} — page drawings rendered as image embeds
+  // {{annotations}}; page drawings rendered as image embeds
   output = output.replace(/\{\{annotations\}\}/g, context.annotations ?? '');
 
   // Tags as YAML list (for frontmatter)
@@ -514,14 +514,14 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     const fresh = this.render(result, sourcePdfName, pageDrawings, pageOcr);
 
     if (!start || !end) {
-      // No markers — use fresh render
+      // No markers; use fresh render
       return fresh;
     }
 
     // Get the new section from the fresh render (always uses current markers).
     // Typed user notes are NOT handled here: the pipeline re-attaches them on
     // every write path via preserveTypedNotes() (notes-preservation.ts), which
-    // matches by anchor and never drops content — the old positional re-insert
+    // matches by anchor and never drops content; the old positional re-insert
     // here silently destroyed notes whenever the fresh render had fewer slots.
     const newStartIdx = fresh.indexOf(HIGHLIGHTS_SECTION_START);
     const newEndIdx = fresh.indexOf(HIGHLIGHTS_SECTION_END);

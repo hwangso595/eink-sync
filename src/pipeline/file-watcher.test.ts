@@ -24,7 +24,11 @@ import { XochitlFileWatcher, FileWatcherEvent } from './file-watcher';
 
 /** Create a temporary directory for testing. */
 function createTempDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'xochitl-watcher-test-'));
+  // WSL may inherit a Windows-mounted TMP directory where recursive fs.watch
+  // events are not delivered to Linux. Keep the test fixture on native /tmp;
+  // production vault paths are unaffected.
+  const tempRoot = process.platform === 'linux' ? '/tmp' : os.tmpdir();
+  return fs.mkdtempSync(path.join(tempRoot, 'xochitl-watcher-test-'));
 }
 
 /** Clean up a temporary directory. */

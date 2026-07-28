@@ -96,7 +96,7 @@ export class SyncStatusModal extends Modal {
       text: summary.connectionHealthy ? 'Setup complete' : 'Not configured',
     });
 
-    // If the last sync/connection attempt failed, show why — otherwise a
+    // If the last sync/connection attempt failed, show why; otherwise a
     // silent timeout looks identical to "everything is fine, no new docs".
     const lastErr = this.plugin.getLastSyncError();
     if (lastErr) {
@@ -185,7 +185,7 @@ export class SyncStatusModal extends Modal {
             await this.plugin.runExtraction();
             btn.setButtonText('Done');
             // Refresh the modal content
-            setTimeout(() => this.onOpen(), 1500);
+            window.setTimeout(() => this.onOpen(), 1500);
           } catch {
             btn.setButtonText('Failed');
           }
@@ -197,7 +197,7 @@ export class SyncStatusModal extends Modal {
       .setDesc('Browse all synced documents in the sidebar.')
       .addButton((btn) => {
         btn.setButtonText('Open').onClick(() => {
-          this.plugin.activateLibraryView();
+          void this.plugin.activateLibraryView();
           this.close();
         });
       });

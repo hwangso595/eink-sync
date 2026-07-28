@@ -96,14 +96,14 @@ export class StatusBarManager {
     }
 
     // When something is wrong, put the specific reason in the tooltip instead
-    // of a generic "click for details" — a stale-IP timeout should be legible
+    // of a generic "click for details"; a stale-IP timeout should be legible
     // on hover, not buried.
     let tooltip = 'Click for sync details';
     if (state === 'error' || state === 'disconnected') {
       const lastErr = this.plugin.getLastSyncError();
       if (lastErr) {
         const firstLine = lastErr.message.split('\n')[0];
-        tooltip = `Sync issue: ${firstLine} — click for details`;
+        tooltip = `Sync issue: ${firstLine}; click for details`;
       }
     }
     this.statusBarEl.setAttribute('aria-label', tooltip);

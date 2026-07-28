@@ -98,6 +98,7 @@ import { resolvePath, ensureFolders, formatRelativeTime, hashString, getVaultBas
 import { SyncCoordinator } from './sync-coordinator';
 import { DeviceStateManager } from './device-state-manager';
 import { StatusBarManager } from './status-bar-manager';
+import { isRecord, numberRecord, stringArray } from '../utils/json';
 
 // Vault isolation
 import {
@@ -118,6 +119,28 @@ const ARCHIVE_CHECK_COOLDOWN_MS = 30 * 60 * 1000;
 /** Custom icon SVG for the ribbon. Tablet with text lines (100x100 viewBox for Obsidian). */
 const REMARKABLE_ICON_SVG = `<g transform="translate(10,2) scale(3.5)"><rect x="1" y="0" width="20" height="26" rx="2" ry="2" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="1" y1="21" x2="21" y2="21" stroke="currentColor" stroke-width="1"/><circle cx="11" cy="23.5" r="1" fill="currentColor"/><line x1="5" y1="5" x2="17" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="9" x2="15" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="13" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="17" x2="11" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></g>`;
 
+function parseSyncSource(value: unknown): SyncSource | null {
+  if (!isRecord(value)) return null;
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : generateSourceId(),
+    label: typeof value.label === 'string' ? value.label : 'reMarkable',
+    syncFolder: typeof value.syncFolder === 'string' ? value.syncFolder : '',
+    syncthingFolderId: typeof value.syncthingFolderId === 'string'
+      ? value.syncthingFolderId
+      : '',
+    lastExtractionTimestamp: typeof value.lastExtractionTimestamp === 'number'
+      ? value.lastExtractionTimestamp
+      : null,
+    lastExtractionTimestamps: numberRecord(value.lastExtractionTimestamps),
+    syncFolderPathHash: typeof value.syncFolderPathHash === 'string'
+      ? value.syncFolderPathHash
+      : null,
+    highlightsSubfolder: typeof value.highlightsSubfolder === 'string'
+      ? value.highlightsSubfolder
+      : null,
+  };
+}
+
 export default class ReMarkableBridgePlugin extends Plugin {
   settings: ReMarkableBridgeSettings = DEFAULT_SETTINGS;
   /** Coordinates auto-sync timer and SFTP sync runs. */
@@ -130,7 +153,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     () => this.app,
     () => this.settings,
     () => this._pluginData.syncSources,
-    () => this.periodicArchiveCheck(),
+    () => { void this.periodicArchiveCheck(); },
   );
   /** File watchers for automatic extraction (one per sync source). */
   private fileWatchers: XochitlFileWatcher[] = [];
@@ -238,7 +261,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       if (!this.settings.setupComplete) {
         this.openSetupWizard();
       } else {
-        this.activateLibraryView();
+        void this.activateLibraryView();
       }
     });
 
@@ -276,7 +299,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     logger.info('E-Ink Sync plugin loaded');
   }
 
-  async onunload(): Promise<void> {
+  onunload(): void {
     logger.info('Unloading E-Ink Sync plugin');
 
     // Best-effort cleanup of claim files
@@ -295,7 +318,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
       window.clearTimeout(this.xochitlRestartHandle);
       this.xochitlRestartHandle = null;
     }
-    this.app.workspace.detachLeavesOfType(LIBRARY_VIEW_TYPE);
   }
 
   // -------------------------------------------------------------------
@@ -303,10 +325,11 @@ export default class ReMarkableBridgePlugin extends Plugin {
   // -------------------------------------------------------------------
 
   async loadSettings(): Promise<void> {
-    const data = await this.loadData();
+    const loadedData: unknown = await this.loadData();
+    const data = isRecord(loadedData) ? loadedData : {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
     // Ensure nested objects are properly merged
-    if (data?.extraction) {
+    if (isRecord(data.extraction)) {
       this.settings.extraction = Object.assign(
         {},
         DEFAULT_SETTINGS.extraction,
@@ -330,14 +353,22 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // Clean up legacy drawingsFolder if present in saved data
     delete (this.settings as unknown as Record<string, unknown>).drawingsFolder;
     // Load non-settings plugin data (legacy fields, kept for backward compat)
-    this._pluginData.lastExtractionTimestamp = data?.lastExtractionTimestamp ?? null;
-    this._pluginData.syncFolderPathHash = data?.syncFolderPathHash ?? null;
+    this._pluginData.lastExtractionTimestamp = typeof data.lastExtractionTimestamp === 'number'
+      ? data.lastExtractionTimestamp
+      : null;
+    this._pluginData.syncFolderPathHash = typeof data.syncFolderPathHash === 'string'
+      ? data.syncFolderPathHash
+      : null;
 
     // Multi-source migration: if syncSources is missing/empty but the old
     // single-source fields exist, wrap them into a default source entry.
-    const rawSources = data?.syncSources;
+    const rawSources = Array.isArray(data.syncSources)
+      ? data.syncSources
+        .map((source) => parseSyncSource(source))
+        .filter((source): source is SyncSource => source !== null)
+      : [];
     if (Array.isArray(rawSources) && rawSources.length > 0) {
-      // Already migrated — load sources, but migrate per-source timestamps
+      // Already migrated; load sources, but migrate per-source timestamps
       // from old lastExtractionTimestamp (number) to lastExtractionTimestamps (Record)
       for (const source of rawSources) {
         if (!source.lastExtractionTimestamps || typeof source.lastExtractionTimestamps !== 'object') {
@@ -378,9 +409,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
 
     // Load dismissed collisions (legacy, for migration)
-    this._pluginData.dismissedCollisions = Array.isArray(data?.dismissedCollisions)
-      ? data.dismissedCollisions
-      : [];
+    this._pluginData.dismissedCollisions = stringArray(data.dismissedCollisions);
 
     // --- Device state: load from per-device file ---
     this.deviceStateManager.state = this.loadDeviceState();
@@ -438,7 +467,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async saveSettings(): Promise<void> {
     // Merge settings + plugin data for persistence.
     // Device-specific state (timestamps, path hashes, dismissed collisions)
-    // is stored in device-state-<hostname>.json, NOT here.
+    // is stored in a random-ID device state file, NOT here.
     await this.saveData({
       ...this.settings,
       lastExtractionTimestamp: this._pluginData.lastExtractionTimestamp,
@@ -552,7 +581,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async activateLibraryView(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE);
     if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]);
+      await this.app.workspace.revealLeaf(existing[0]);
       const view = existing[0].view;
       if (view instanceof ReMarkableLibraryView) {
         await view.refreshLibrary();
@@ -566,7 +595,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         type: LIBRARY_VIEW_TYPE,
         active: true,
       });
-      this.app.workspace.revealLeaf(leaf);
+      await this.app.workspace.revealLeaf(leaf);
     }
   }
 
@@ -648,13 +677,13 @@ export default class ReMarkableBridgePlugin extends Plugin {
   /**
    * Whether the active sync mode can push local changes back to the tablet.
    *
-   * SFTP is pull-only: "Send to reMarkable", and per-document archive / delete /
-   * unarchive cannot affect the tablet in SFTP mode. Only Syncthing propagates
-   * local changes bidirectionally. UI surfaces branch on this so they never
-   * claim a tablet-side effect they can't deliver.
+   * SFTP is pull-only: "Send to reMarkable" and unarchive cannot affect the
+   * tablet in SFTP mode. Only Syncthing propagates ordinary local changes
+   * bidirectionally. UI surfaces branch on this so they never claim a
+   * tablet-side effect they can't deliver.
    *
-   * (This is distinct from the SSH-based bulk "Archive old documents" command,
-   * which genuinely deletes from the tablet over SSH and works in either mode.)
+   * Per-document archive/delete and the bulk "Archive old documents" command
+   * explicitly delete from the tablet over SSH, so they also work in SFTP mode.
    */
   isPushCapable(): boolean {
     return (this.settings.syncMethod ?? 'sftp') === 'syncthing';
@@ -674,7 +703,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
       window.clearTimeout(this.xochitlRestartHandle);
     }
 
-    const handle = window.setTimeout(async () => {
+    const handle = window.setTimeout(() => {
+      void (async () => {
       this.xochitlRestartHandle = null;
 
       // Skip if a restart is already in progress
@@ -695,6 +725,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       } finally {
         this.xochitlRestartInProgress = false;
       }
+      })();
     }, 5000);
     this.xochitlRestartHandle = handle;
     this.registerInterval(handle);
@@ -997,7 +1028,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         const msg = err instanceof BridgeError
           ? err.toUserMessage()
           : err instanceof Error ? err.message : String(err);
-        new Notice(`E-Ink Sync: extraction aborted — ${msg}`, 15_000);
+        new Notice(`E-Ink Sync: extraction aborted; ${msg}`, 15_000);
         throw err;
       }
     }
@@ -1060,10 +1091,10 @@ export default class ReMarkableBridgePlugin extends Plugin {
 
         // For empty sync folder on a specific source, log but continue to next source
         if (err instanceof BridgeError && err.code === ErrorCode.SYNC_FOLDER_EMPTY) {
-          logger.warn(`Source "${source.label}": empty sync folder — ${msg}`);
+          logger.warn(`Source "${source.label}": empty sync folder; ${msg}`);
           aggregateResult.errors.push(`Source "${source.label}": ${msg}`);
           if (targetSources.length === 1) {
-            // Only source — propagate the error
+            // Only source; propagate the error
             this.updateStatusBar('error');
             const suggestion = err.suggestion ?? '';
             new Notice(`E-Ink Sync: ${err.message}\n${suggestion}`, 15000);
@@ -1170,7 +1201,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
       storedPathHash !== currentPathHash
     ) {
       logger.warn(
-        `Source "${source.label}": path hash mismatch — ` +
+        `Source "${source.label}": path hash mismatch; ` +
         `stored="${storedPathHash}", current="${currentPathHash}". ` +
         `Running full extraction.`,
       );
@@ -1473,8 +1504,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
 
     // Show picker
-    new DocumentPickerModal(this.app, docFiles, async (file) => {
-      await this.pushDocumentToSyncFolder(file);
+    new DocumentPickerModal(this.app, docFiles, (file) => {
+      void this.pushDocumentToSyncFolder(file);
     }).open();
   }
 
@@ -1551,7 +1582,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
       // Best-effort: wait for Syncthing to push the file, then try to restart xochitl.
       // If SSH is unavailable, Syncthing will still deliver the file and the tablet
       // will see it after the next xochitl restart or reboot.
-      const pdfHandle = window.setTimeout(async () => {
+      const pdfHandle = window.setTimeout(() => {
+        void (async () => {
         this.pdfSyncTimeoutHandle = null;
         try {
           await this.withSSH(async (ssh) => {
@@ -1567,6 +1599,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           // SSH unavailable -- Syncthing will still deliver the file
           new Notice(`E-Ink Sync: "${visibleName}" will appear on the tablet after sync completes and the tablet restarts.`);
         }
+        })();
       }, 15000);
       this.pdfSyncTimeoutHandle = pdfHandle;
       this.registerInterval(pdfHandle);

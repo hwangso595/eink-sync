@@ -43,7 +43,7 @@ const RM2_MAX_RAM_MB = 1200;
  * Reads /etc/version which contains the raw version string.
  */
 export async function detectFirmwareVersion(ssh: SSHExecutor): Promise<FirmwareVersion> {
-  // Try update.conf first — contains REMARKABLE_RELEASE_VERSION=X.Y.Z.B
+  // Try update.conf first; contains REMARKABLE_RELEASE_VERSION=X.Y.Z.B
   const confResult = await ssh.execute(
     `grep REMARKABLE_RELEASE_VERSION ${UPDATE_CONF_PATH} 2>/dev/null | cut -d= -f2`
   );

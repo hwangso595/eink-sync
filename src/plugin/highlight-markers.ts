@@ -25,7 +25,7 @@ export const HIGHLIGHTS_SECTION_END =
  *
  * Notes written by older versions of the plugin still contain these.
  * Read paths must accept either marker so existing vaults migrate
- * transparently on the next write — at which point the section is
+ * transparently on the next write; at which point the section is
  * re-emitted using the current markers above.
  */
 export const LEGACY_HIGHLIGHTS_SECTION_START =

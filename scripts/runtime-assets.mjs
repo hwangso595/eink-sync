@@ -10,12 +10,12 @@
  * are deliberately excluded so they never ship in a plugin install.
  *
  * Used by:
- *   - esbuild.config.mjs   — embeds these into main.js so Obsidian's
+ *   - esbuild.config.mjs  ; embeds these into main.js so Obsidian's
  *                            community auto-updater (which only fetches
  *                            manifest.json/main.js/styles.css) still delivers
  *                            them; the plugin materializes them to disk on load.
- *   - scripts/install-plugin.mjs — curated dev install (no test files).
- *   - scripts/release.mjs        — preflight assertion that all are present.
+ *   - scripts/install-plugin.mjs; curated dev install (no test files).
+ *   - scripts/release.mjs       ; preflight assertion that all are present.
  */
 
 import * as path from 'path';

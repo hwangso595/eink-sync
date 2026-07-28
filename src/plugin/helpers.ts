@@ -8,8 +8,9 @@
  * (except ensureFolders and migrateFiles which perform local filesystem ops).
  */
 
-import type { App, TFolder, TFile, TAbstractFile } from 'obsidian';
+import { requestUrl, TFolder, type App, type TAbstractFile } from 'obsidian';
 import { logger } from '../utils/logger';
+import { isRecord } from '../utils/json';
 
 /**
  * Check if a filename is a Syncthing conflict/temp file that should be ignored.
@@ -92,28 +93,35 @@ export async function updateSyncthingFolderPath(
 
   try {
     // GET current folder config
-    const getResp = await fetch(`${syncthingUrl}/rest/config/folders/${folderId}`, {
+    const getResp = await requestUrl({
+      url: `${syncthingUrl}/rest/config/folders/${folderId}`,
       headers: { 'X-API-Key': apiKey },
+      throw: false,
     });
 
-    if (!getResp.ok) {
+    if (getResp.status < 200 || getResp.status >= 300) {
       return { success: false, error: `Syncthing API error: ${getResp.status}` };
     }
 
-    const config = await getResp.json();
+    const config: unknown = getResp.json;
+    if (!isRecord(config)) {
+      return { success: false, error: 'Syncthing returned an invalid folder configuration.' };
+    }
     config.path = newPath;
 
     // PUT updated config
-    const putResp = await fetch(`${syncthingUrl}/rest/config/folders/${folderId}`, {
+    const putResp = await requestUrl({
+      url: `${syncthingUrl}/rest/config/folders/${folderId}`,
       method: 'PUT',
       headers: {
         'X-API-Key': apiKey,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(config),
+      throw: false,
     });
 
-    if (!putResp.ok) {
+    if (putResp.status < 200 || putResp.status >= 300) {
       return { success: false, error: `Syncthing API error: ${putResp.status}` };
     }
 
@@ -202,7 +210,9 @@ export function sanitizeFilename(visibleName: string): string {
     // Strip file extensions
     .replace(/\.(pdf|epub)$/i, '')
     // Remove invalid filename characters
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+    .split('')
+    .filter((character) => character.charCodeAt(0) > 31 && !'<>:"/\\|?*'.includes(character))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -231,8 +241,8 @@ export function countFolderContents(app: App, folderPath: string): FolderFileCou
   if (!folder || !('children' in folder)) return result;
 
   const walk = (node: TAbstractFile): void => {
-    if ('children' in node) {
-      const tfolder = node as TFolder;
+    if (node instanceof TFolder) {
+      const tfolder = node;
       // Do not count the root folder itself
       if (tfolder.path !== folderPath) {
         result.folderCount++;
@@ -280,7 +290,7 @@ export async function migrateFiles(
   const result: MigrationResult = { success: true, filesMoved: 0, foldersMoved: 0 };
 
   const source = app.vault.getAbstractFileByPath(oldFolder);
-  if (!source || !('children' in source)) {
+  if (!(source instanceof TFolder)) {
     result.success = false;
     result.error = `Source folder "${oldFolder}" does not exist or is not a folder.`;
     return result;
@@ -289,7 +299,7 @@ export async function migrateFiles(
   // Ensure destination exists
   await ensureFolders(app, newFolder);
 
-  const srcFolder = source as TFolder;
+  const srcFolder = source;
   const errors: string[] = [];
 
   // Collect all direct children first (snapshot), because moving them
@@ -301,7 +311,7 @@ export async function migrateFiles(
     const newPath = `${newFolder}/${relativePath}`;
     try {
       // For subdirectories, ensure the parent in the destination exists
-      if ('children' in child) {
+      if (child instanceof TFolder) {
         await ensureFolders(app, newPath);
         // Recursively move contents of this subfolder
         const subResult = await migrateFiles(app, child.path, newPath);
@@ -312,7 +322,7 @@ export async function migrateFiles(
         }
         // Remove the now-empty source subfolder
         try {
-          await app.vault.delete(child, true);
+          await app.fileManager.trashFile(child);
           result.foldersMoved++;
         } catch {
           // Folder may not be empty if some files failed to move
@@ -321,8 +331,8 @@ export async function migrateFiles(
         // Check if destination file already exists
         const existing = app.vault.getAbstractFileByPath(newPath);
         if (existing) {
-          logger.warn(`Migration: skipping "${newPath}" — file already exists at destination`);
-          errors.push(`Skipped "${relativePath}" — already exists at destination`);
+          logger.warn(`Migration: skipping "${newPath}"; file already exists at destination`);
+          errors.push(`Skipped "${relativePath}"; already exists at destination`);
           continue;
         }
         await app.fileManager.renameFile(child, newPath);

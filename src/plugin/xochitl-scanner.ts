@@ -6,14 +6,15 @@
  * Both the review data service and highlight inbox generator use this
  * to avoid duplicating the filesystem scanning logic.
  *
- * Privacy: Pure local filesystem operations. Zero network calls.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
 import type { ExtractedHighlight } from '../pipeline/types';
 import { resolveOutputBaseNames, scanExistingNoteBaseNames } from '../pipeline/markdown-renderer';
 import { parseHighlightsFromNote } from './review-data';
+import { isRecord, parseJson } from '../utils/json';
 
 // -------------------------------------------------------------------
 // Shared types for xochitl metadata
@@ -31,6 +32,24 @@ export interface MetadataJson {
 /** Raw content JSON shape from .content files. */
 export interface ContentJson {
   fileType?: string;
+}
+
+function parseMetadataJson(raw: string): MetadataJson | null {
+  const value = parseJson(raw);
+  if (!isRecord(value)) return null;
+  return {
+    visibleName: typeof value.visibleName === 'string' ? value.visibleName : undefined,
+    parent: typeof value.parent === 'string' ? value.parent : undefined,
+    type: typeof value.type === 'string' ? value.type : undefined,
+    lastModified: typeof value.lastModified === 'string' ? value.lastModified : undefined,
+    deleted: typeof value.deleted === 'boolean' ? value.deleted : undefined,
+  };
+}
+
+function parseContentJson(raw: string): ContentJson | null {
+  const value = parseJson(raw);
+  if (!isRecord(value)) return null;
+  return { fileType: typeof value.fileType === 'string' ? value.fileType : undefined };
 }
 
 // -------------------------------------------------------------------
@@ -51,12 +70,10 @@ export interface ScannerFileSystem {
 
 /** Default filesystem implementation using Node's fs module. */
 export function createNodeFileSystem(): ScannerFileSystem {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const fs = require('fs') as typeof import('fs');
   return {
     existsSync: (p: string) => fs.existsSync(p),
     readFileSync: (p: string, encoding: 'utf-8') => fs.readFileSync(p, encoding),
-    readdirSync: (p: string) => fs.readdirSync(p) as unknown as string[],
+    readdirSync: (p: string) => fs.readdirSync(p),
   };
 }
 
@@ -123,7 +140,8 @@ export function scanDocumentsWithHighlights(
   for (const entry of entries) {
     if (!entry.endsWith('.metadata')) continue;
     try {
-      const m: MetadataJson = JSON.parse(fs.readFileSync(path.join(xochitlPath, entry), 'utf-8'));
+      const m = parseMetadataJson(fs.readFileSync(path.join(xochitlPath, entry), 'utf-8'));
+      if (!m) continue;
       if (m.deleted || m.type === 'CollectionType') continue;
       scanDocs.push({ uuid: path.basename(entry, '.metadata'), visibleName: m.visibleName ?? 'Untitled' });
     } catch {
@@ -138,7 +156,9 @@ export function scanDocumentsWithHighlights(
     const metaPath = path.join(xochitlPath, entry);
     let meta: MetadataJson;
     try {
-      meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      const parsedMeta = parseMetadataJson(fs.readFileSync(metaPath, 'utf-8'));
+      if (!parsedMeta) continue;
+      meta = parsedMeta;
     } catch {
       continue;
     }
@@ -153,10 +173,8 @@ export function scanDocumentsWithHighlights(
     const contentPath = path.join(xochitlPath, `${uuid}.content`);
     if (fs.existsSync(contentPath)) {
       try {
-        const content: ContentJson = JSON.parse(
-          fs.readFileSync(contentPath, 'utf-8'),
-        );
-        if (content.fileType && content.fileType.toLowerCase() !== 'pdf') {
+        const content = parseContentJson(fs.readFileSync(contentPath, 'utf-8'));
+        if (content?.fileType && content.fileType.toLowerCase() !== 'pdf') {
           continue;
         }
       } catch {

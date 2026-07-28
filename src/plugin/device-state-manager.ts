@@ -2,7 +2,7 @@
  * DeviceStateManager -- per-device state persistence.
  *
  * Extracted from plugin.ts. Manages reading/writing the device-specific
- * state file (device-state-<hostname>.json) that stores extraction
+ * state file (device-state-<random-local-id>.json) that stores extraction
  * timestamps, path hashes, and dismissed collision keys.
  *
  * This state is intentionally stored outside Obsidian's data.json to
@@ -20,6 +20,7 @@ import {
   type DeviceState,
 } from './settings';
 import { logger } from '../utils/logger';
+import { isRecord, numberRecord, parseJson, stringArray, stringRecord } from '../utils/json';
 
 export class DeviceStateManager {
   private _deviceState: DeviceState = { ...DEFAULT_DEVICE_STATE };
@@ -28,8 +29,8 @@ export class DeviceStateManager {
 
   /** Get the file path for the current device's state file. */
   getFilePath(): string {
-    const hostname = getDeviceKey();
-    return `${this.getPluginDir()}/device-state-${hostname}.json`;
+    const deviceKey = getDeviceKey();
+    return `${this.getPluginDir()}/device-state-${deviceKey}.json`;
   }
 
   /**
@@ -41,11 +42,12 @@ export class DeviceStateManager {
     try {
       if (fs.existsSync(filePath)) {
         const raw = fs.readFileSync(filePath, 'utf-8');
-        const parsed = JSON.parse(raw);
+        const parsed = parseJson(raw);
+        if (!isRecord(parsed)) throw new Error('Device state must be a JSON object');
         this._deviceState = {
-          sourceTimestamps: parsed.sourceTimestamps ?? {},
-          sourcePathHashes: parsed.sourcePathHashes ?? {},
-          dismissedCollisions: Array.isArray(parsed.dismissedCollisions) ? parsed.dismissedCollisions : [],
+          sourceTimestamps: numberRecord(parsed.sourceTimestamps),
+          sourcePathHashes: stringRecord(parsed.sourcePathHashes),
+          dismissedCollisions: stringArray(parsed.dismissedCollisions),
         };
         return this._deviceState;
       }
@@ -59,7 +61,7 @@ export class DeviceStateManager {
 
   /**
    * Save device state to the per-device JSON file.
-   * Only writes to device-state-<hostname>.json, never to data.json.
+   * Only writes to the random-ID device state file, never to data.json.
    */
   async save(): Promise<void> {
     const filePath = this.getFilePath();
@@ -131,7 +133,7 @@ export class DeviceStateManager {
       logger.info('Extraction timestamps reset for all sources');
     }
     // Persist immediately
-    this.save();
+    void this.save();
   }
 
   /** Add a dismissed collision key. */

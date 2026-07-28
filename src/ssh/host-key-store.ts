@@ -3,7 +3,7 @@
  *
  * The plugin authenticates to the tablet with the root *password*. Without host
  * key verification, ssh2 accepts whatever key any host at the configured
- * address presents — so a machine impersonating the tablet on the LAN could
+ * address presents; so a machine impersonating the tablet on the LAN could
  * capture that password. This module pins the tablet's host key on first
  * connect and detects later changes.
  *
@@ -20,6 +20,7 @@
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import { logger } from '../utils/logger';
+import { parseJson, stringRecord } from '../utils/json';
 
 /** Callback invoked when a host's key changes from the pinned value. */
 export type HostKeyMismatchHandler = (
@@ -49,8 +50,8 @@ export function initHostKeyStore(filePath: string, onMismatch?: HostKeyMismatchH
   fingerprints = {};
   try {
     if (fs.existsSync(filePath)) {
-      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      fingerprints = parsed && typeof parsed === 'object' ? parsed : {};
+      const parsed = parseJson(fs.readFileSync(filePath, 'utf-8'));
+      fingerprints = stringRecord(parsed);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

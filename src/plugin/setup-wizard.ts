@@ -12,11 +12,11 @@
  * Uses Obsidian's native Modal, Setting, and DOM APIs. No custom styling beyond
  * what is needed for the step layout.
  *
- * Privacy: The wizard only communicates with the user's tablet over SSH.
- * No analytics, telemetry, or external network calls.
  */
 
 import { App, Modal, Setting, Notice } from 'obsidian';
+import * as fs from 'fs';
+import * as path from 'path';
 import type ReMarkableBridgePlugin from './plugin';
 import type { DeviceInfo } from '../types/device';
 import type { ConnectionResult } from '../ssh/connection-manager';
@@ -177,7 +177,7 @@ export class SetupWizardModal extends Modal {
 
     const settings = this.plugin.settings;
 
-    // Default to USB for initial setup — WiFi IP auto-detected after connection
+    // Default to USB for initial setup; WiFi IP auto-detected after connection
     if (!settings.tabletIp) {
       settings.tabletIp = '10.11.99.1';
       settings.connectionMethod = 'usb';
@@ -262,7 +262,7 @@ export class SetupWizardModal extends Modal {
                       new Notice(`Tablet WiFi IP detected: ${wifiIp}. Switching to WiFi mode.`);
                     }
                   } catch {
-                    // WiFi detection failed — tablet may not be on WiFi, that's fine
+                    // WiFi detection failed; tablet may not be on WiFi, that's fine
                   }
                 }
 
@@ -557,8 +557,6 @@ export class SetupWizardModal extends Modal {
 
             try {
               const syncFolder = this.plugin.settings.syncFolder || 'reMarkable/Sync';
-              const fs = require('fs');
-              const path = require('path');
               const basePath = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.() ?? '';
               const fullPath = basePath ? path.join(basePath, syncFolder) : syncFolder;
 
@@ -568,7 +566,7 @@ export class SetupWizardModal extends Modal {
                 state.message = `Folder "${fullPath}" does not exist. Make sure Syncthing has synced at least once.`;
               } else {
                 const files = fs.readdirSync(fullPath);
-                const metaFiles = files.filter((f: string) => f.endsWith('.metadata'));
+                const metaFiles = files.filter((file) => file.endsWith('.metadata'));
 
                 if (metaFiles.length > 0) {
                   state.verified = true;

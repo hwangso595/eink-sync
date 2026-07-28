@@ -2,6 +2,7 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
+  setupFiles: ['<rootDir>/src/__mocks__/setup.ts'],
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
   moduleNameMapper: {
@@ -9,6 +10,7 @@ module.exports = {
     // The real contents come from the esbuild `extraction-assets` plugin at
     // build time; under Jest we substitute a small fixture.
     '^virtual:extraction-assets$': '<rootDir>/src/__mocks__/virtual-extraction-assets.ts',
+    '^obsidian$': '<rootDir>/src/__mocks__/obsidian.ts',
   },
   collectCoverageFrom: [
     'src/**/*.ts',

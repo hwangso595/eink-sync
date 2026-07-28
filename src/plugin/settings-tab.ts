@@ -20,24 +20,24 @@ import {
   type FolderSettingKey,
 } from './folder-migration-modal';
 import { collisionKey } from './vault-isolation';
-import { isValidIpv4, sharesLocalSubnet, localIpv4Interfaces } from './net-utils';
+import { isValidIpv4 } from './net-utils';
 import { stopServices, removeServices } from '../sync/service-manager';
 import type { SyncProvider } from '../sync/sync-provider';
 
 const SAVE_DEBOUNCE_MS = 500;
 
 export class ReMarkableBridgeSettingTab extends PluginSettingTab {
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private saveTimer: number | null = null;
 
   constructor(app: App, private plugin: ReMarkableBridgePlugin) {
     super(app, plugin);
   }
 
   private debouncedSave(): void {
-    if (this.saveTimer) clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(async () => {
+    if (this.saveTimer) window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null;
-      await this.plugin.saveSettings();
+      void this.plugin.saveSettings();
     }, SAVE_DEBOUNCE_MS);
   }
 
@@ -109,9 +109,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
       // Dismiss button
       const dismissBtn = banner.createEl('button', { text: 'Dismiss', cls: 'remarkable-dismiss-btn' });
-      dismissBtn.addEventListener('click', async () => {
-        await this.plugin.dismissCollision(key);
-        this.display();
+      dismissBtn.addEventListener('click', () => {
+        void (async () => {
+          await this.plugin.dismissCollision(key);
+          this.display();
+        })();
       });
     }
 
@@ -133,7 +135,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   }
 
   private renderMainSection(containerEl: HTMLElement): void {
-    // Per Obsidian style guidance, the top-level heading is omitted — the
+    // Per Obsidian style guidance, the top-level heading is omitted; the
     // plugin name is already shown in the settings tab title.
     const isSyncthing = (this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing';
     const isSftp = !isSyncthing;
@@ -163,15 +165,14 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           }),
       );
 
-    // 2. Tablet IP — only shown when WiFi selected (USB is always 10.11.99.1)
+    // 2. Tablet IP; only shown when WiFi selected (USB is always 10.11.99.1)
     if (isWifi) {
       const ipWarnEl = containerEl.createDiv({
         cls: 'setting-item-description remarkable-field-warning',
       });
       ipWarnEl.hide();
 
-      // Validate format and flag a likely network-switch (saved IP not on this
-      // computer's subnet) — the #1 cause of silent sync failure.
+      // Validate syntax without enumerating host network interfaces.
       const refreshIpWarnings = (value: string): void => {
         const ip = value.trim();
         if (ip.length === 0) {
@@ -180,15 +181,6 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         }
         if (!isValidIpv4(ip)) {
           ipWarnEl.setText(`"${ip}" is not a valid IPv4 address (expected e.g. 192.168.1.42).`);
-          ipWarnEl.show();
-          return;
-        }
-        if (!sharesLocalSubnet(ip)) {
-          const locals = localIpv4Interfaces().map((i) => i.address).join(', ') || 'unknown';
-          ipWarnEl.setText(
-            `Heads up: ${ip} isn't on this computer's network (this machine: ${locals}). ` +
-            `If you switched Wi-Fi, the tablet likely has a new IP — use "Detect via USB" below.`,
-          );
           ipWarnEl.show();
           return;
         }
@@ -226,7 +218,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                 this.display();
               } catch (err) {
                 const msg = err instanceof Error ? err.message : String(err);
-                new Notice(`E-Ink Sync: USB detection failed — ${msg}`, 8000);
+                new Notice(`E-Ink Sync: USB detection failed; ${msg}`, 8000);
               }
             }),
         );
@@ -236,7 +228,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       refreshIpWarnings(this.plugin.settings.tabletIp);
     }
 
-    // 3. Root password — always shown (needed for both modes)
+    // 3. Root password; always shown (needed for both modes)
     new Setting(containerEl)
       .setName('Root password')
       .setDesc('Tablet > Settings > Help > About > Copyrights and Licenses')
@@ -252,7 +244,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         text.inputEl.autocomplete = 'off';
       });
 
-    // 4. Sync method (SFTP/Syncthing) — with switching logic
+    // 4. Sync method (SFTP/Syncthing); with switching logic
     new Setting(containerEl)
       .setName('Sync method')
       .setDesc('SFTP downloads files directly over SSH (simpler setup). Syncthing uses continuous background sync.')
@@ -268,7 +260,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             if (newMethod === oldMethod) return;
 
             if (newMethod === 'sftp' && oldMethod === 'syncthing') {
-              // Switching to SFTP — use the old Syncthing provider to clean up
+              // Switching to SFTP; use the old Syncthing provider to clean up
               const oldProvider = this.plugin.getSyncProvider();
 
               const wantsRemove = confirm(
@@ -281,7 +273,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                   new Notice('E-Ink Sync: Syncthing removed from tablet.');
                 } catch {
                   new Notice(
-                    'E-Ink Sync: Could not reach tablet to remove Syncthing — you can remove it later.',
+                    'E-Ink Sync: Could not reach tablet to remove Syncthing; you can remove it later.',
                   );
                 }
               } else {
@@ -290,7 +282,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                   await oldProvider.pause();
                   new Notice('E-Ink Sync: Syncthing folder paused on this computer.');
                 } catch {
-                  // Syncthing not running on host or API unreachable — that's fine
+                  // Syncthing not running on host or API unreachable; that's fine
                 }
               }
 
@@ -300,7 +292,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
               this.display();
             } else if (newMethod === 'syncthing' && oldMethod === 'sftp') {
-              // Switching to Syncthing — build a Syncthing provider to resume
+              // Switching to Syncthing; build a Syncthing provider to resume
               this.plugin.settings.syncMethod = 'syncthing';
               const newProvider = this.plugin.getSyncProvider();
 
@@ -309,7 +301,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                 await newProvider.resume();
                 new Notice('E-Ink Sync: Syncthing folder resumed.');
               } catch {
-                // Syncthing not running — wizard will handle setup
+                // Syncthing not running; wizard will handle setup
               }
 
               // Check if Syncthing is already set up on the tablet
@@ -322,7 +314,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               }
 
               if (tabletHasSyncthing && syncthingApiKey) {
-                // Syncthing already set up on both sides — just switch
+                // Syncthing already set up on both sides; just switch
                 this.plugin.settings.setupComplete = true;
                 new Notice('E-Ink Sync: Switched to Syncthing mode.');
               } else {
@@ -337,7 +329,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           }),
       );
 
-    // 5. Syncthing API key — only when Syncthing mode
+    // 5. Syncthing API key; only when Syncthing mode
     if (isSyncthing) {
       new Setting(containerEl)
         .setName('Syncthing API key')
@@ -360,7 +352,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       }
     }
 
-    // 6. Auto-sync toggle + interval — only when SFTP + WiFi
+    // 6. Auto-sync toggle + interval; only when SFTP + WiFi
     if (isSftp && isWifi) {
       new Setting(containerEl)
         .setName('Auto-sync from tablet')
@@ -377,11 +369,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         );
 
       // Make it obvious that with auto-sync off, new tablet docs won't appear
-      // on their own — the silent "nothing happens" state we want to avoid.
+      // on their own; the silent "nothing happens" state we want to avoid.
       if (!this.plugin.settings.autoSyncEnabled) {
         const hint = containerEl.createDiv({ cls: 'setting-item-description remarkable-field-warning' });
         hint.setText(
-          'Auto-sync is off — new tablet documents won\'t appear until you sync manually ' +
+          'Auto-sync is off; new tablet documents won\'t appear until you sync manually ' +
           '(ribbon icon or the "Sync now" command).',
         );
       }
@@ -601,14 +593,16 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .setCta()
           .onClick(() => {
             const existingFolders = this.plugin.getSyncSources().map((s) => s.syncFolder);
-            new AddSourceModal(this.app, existingFolders, this.plugin.settings.syncMethod ?? 'sftp', async (newSource) => {
-              const updatedSources = [...this.plugin.getSyncSources(), newSource];
-              await this.plugin.updateSyncSources(updatedSources);
-              await ensureFolders(this.plugin.app, newSource.syncFolder);
-              this.plugin.restartFileWatcher();
-              // Re-run vault isolation checks after adding a new source
-              this.plugin.runVaultIsolationChecks();
-              this.display();
+            new AddSourceModal(this.app, existingFolders, this.plugin.settings.syncMethod ?? 'sftp', (newSource) => {
+              void (async () => {
+                const updatedSources = [...this.plugin.getSyncSources(), newSource];
+                await this.plugin.updateSyncSources(updatedSources);
+                await ensureFolders(this.plugin.app, newSource.syncFolder);
+                this.plugin.restartFileWatcher();
+                // Re-run vault isolation checks after adding a new source
+                this.plugin.runVaultIsolationChecks();
+                this.display();
+              })();
             }).open();
           }),
       );
@@ -643,7 +637,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           }),
       );
 
-    // Syncthing folder ID — only shown when using Syncthing
+    // Syncthing folder ID; only shown when using Syncthing
     if ((this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing') {
       new Setting(sourceEl)
         .setName('Syncthing folder ID')
@@ -750,10 +744,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
     const modal = new FolderMigrationModal(
       this.app,
-      'syncFolder' as FolderSettingKey,
+      'syncFolder',
       oldPath,
       newPath,
-      async (choice) => {
+      (choice) => {
+        void (async () => {
         if (choice === 'cancel') {
           inputEl.value = oldPath;
           return;
@@ -798,6 +793,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         // Re-run vault isolation checks after folder change
         this.plugin.runVaultIsolationChecks();
         this.display();
+        })();
       },
     );
 
@@ -864,7 +860,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // ----- Folders -----
     new Setting(containerEl).setName('Folders').setHeading();
 
-    // Validation — check all source sync folders against highlights/archive
+    // Validation; check all source sync folders against highlights/archive
     // Shown BEFORE folder inputs so warnings are visible immediately
     const { highlightsFolder, archiveFolder } = this.plugin.settings;
     const sourceFolders = this.plugin.getSyncSources().map((s) => s.syncFolder).filter(Boolean);
@@ -949,7 +945,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       key,
       oldPath,
       newPath,
-      async (choice) => {
+      (choice) => {
+        void (async () => {
         if (choice === 'cancel') {
           inputEl.value = oldPath;
           return;
@@ -965,6 +962,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         // Re-run vault isolation checks after folder change
         this.plugin.runVaultIsolationChecks();
         this.display();
+        })();
       },
     );
 
@@ -1001,7 +999,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               this.plugin.settings.sshPort = port;
               this.debouncedSave();
             } else {
-              // Don't silently discard invalid input — tell the user why it
+              // Don't silently discard invalid input; tell the user why it
               // isn't taking effect.
               portWarnEl.setText(`"${value}" is not a valid port (1–65535). Keeping ${this.plugin.settings.sshPort}.`);
               portWarnEl.show();
@@ -1237,7 +1235,7 @@ class AddSourceModal extends Modal {
           }),
       );
 
-    // Syncthing folder ID — only shown when using Syncthing
+    // Syncthing folder ID; only shown when using Syncthing
     if (this.syncMethod === 'syncthing') {
       new Setting(contentEl)
         .setName('Syncthing folder ID')
