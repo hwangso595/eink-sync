@@ -129,7 +129,8 @@ export class StatusBarManager {
     } else if (!settings.showStatusBar && this.statusBarEl) {
       this.statusBarEl.remove();
       this.statusBarEl = null;
-      this.stopChecks();
+      // The timer also drives background storage management. Hiding a UI
+      // element must not disable automatic archiving.
     }
   }
 

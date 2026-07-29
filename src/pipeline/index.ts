@@ -34,10 +34,15 @@ export {
   PythonHighlightExtractor,
 } from './python-bridge';
 export {
+  detectPythonExecutable,
+  detectSystemPythons,
   ensureManagedPython,
   getManagedEnvDir,
   getVenvPython,
+  MANAGED_PYTHON_VERSION,
+  MIN_PYTHON_VERSION,
   REQUIRED_PACKAGES,
+  REQUIRED_PACKAGE_VERSIONS,
   OCR_PACKAGES,
 } from './python-env';
 export type {

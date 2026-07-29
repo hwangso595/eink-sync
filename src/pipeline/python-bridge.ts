@@ -11,7 +11,7 @@
  * rewriting them in TypeScript, we call them as a subprocess.
  *
  * The Python script location is resolved relative to the plugin directory.
- * Users must have Python 3.8+ with rmscene and PyMuPDF installed.
+ * Users need Python 3.10+ or uv; managed setup installs the pinned packages.
  */
 
 import { spawn } from 'child_process';
@@ -19,6 +19,7 @@ import * as path from 'path';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
 import { isRecord, parseJson, stringArray } from '../utils/json';
+import { detectPythonExecutable } from './python-env';
 import {
   HighlightExtractor,
   ReMarkableDocument,
@@ -194,54 +195,7 @@ export function resolveScriptPath(pluginDir: string): string {
  * Returns the first executable that responds to --version.
  */
 export async function detectPythonPath(): Promise<string> {
-  const candidates = ['python3', 'python'];
-
-  for (const candidate of candidates) {
-    const available = await testPythonExecutable(candidate);
-    if (available) {
-      logger.debug(`Using Python executable: ${candidate}`);
-      return candidate;
-    }
-  }
-
-  throw new BridgeError(
-    ErrorCode.PYTHON_NOT_FOUND,
-    'Python 3 is not installed or not in PATH.',
-    'Install Python 3.8+ from https://www.python.org/ and ensure it is in your PATH.',
-  );
-}
-
-/**
- * Test whether a Python executable is available and meets version requirements.
- */
-async function testPythonExecutable(executable: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    try {
-      const proc = spawn(executable, ['--version'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5000,
-      });
-
-      let output = '';
-      proc.stdout.on('data', (data: Buffer) => {
-        output += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        if (code === 0 && output.includes('Python 3')) {
-          resolve(true);
-        } else {
-          resolve(false);
-        }
-      });
-
-      proc.on('error', () => {
-        resolve(false);
-      });
-    } catch {
-      resolve(false);
-    }
-  });
+  return detectPythonExecutable();
 }
 
 /**

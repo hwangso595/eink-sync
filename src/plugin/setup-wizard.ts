@@ -20,6 +20,7 @@ import * as path from 'path';
 import type ReMarkableBridgePlugin from './plugin';
 import type { DeviceInfo } from '../types/device';
 import type { ConnectionResult } from '../ssh/connection-manager';
+import { BridgeError } from '../types/errors';
 
 /**
  * The wizard steps. When syncMethod is 'sftp', steps 3 (Entware Install)
@@ -254,15 +255,22 @@ export class SetupWizardModal extends Modal {
                     statusEl.setText('Detecting WiFi IP address...');
                     const wifiIp = await this.plugin.detectTabletWifiIp();
                     if (wifiIp) {
-                      state.message += ` | WiFi IP: ${wifiIp}`;
                       state.data.wifiIp = wifiIp;
-                      // Auto-configure for WiFi sync
-                      settings.tabletIp = wifiIp;
-                      settings.connectionMethod = 'wifi';
-                      new Notice(`Tablet WiFi IP detected: ${wifiIp}. Switching to WiFi mode.`);
+                      statusEl.setText(`Testing WiFi connection to ${wifiIp}...`);
+                      const wifiResult = await this.plugin.testWifiConnection(wifiIp);
+                      if (wifiResult.ok) {
+                        state.message += ` | WiFi ready: ${wifiIp}`;
+                        settings.wifiTabletIp = wifiIp;
+                        settings.tabletIp = wifiIp;
+                        settings.connectionMethod = 'wifi';
+                        new Notice(`Tablet WiFi verified at ${wifiIp}. WiFi is now the default connection.`);
+                      } else {
+                        state.message += ' | WiFi detected but unreachable; staying on USB';
+                      }
                     }
                   } catch {
-                    // WiFi detection failed; tablet may not be on WiFi, that's fine
+                    // WiFi detection is optional. A working USB setup remains valid.
+                    state.message += ' | WiFi unavailable; staying on USB';
                   }
                 }
 
@@ -578,7 +586,9 @@ export class SetupWizardModal extends Modal {
               }
             } catch (err) {
               state.verified = false;
-              state.message = err instanceof Error ? err.message : 'Verification failed.';
+              state.message = err instanceof BridgeError
+                ? err.toUserMessage()
+                : err instanceof Error ? err.message : 'Verification failed.';
             }
 
             statusEl.addClass(state.verified ? 'is-success' : 'is-error');
@@ -715,7 +725,21 @@ export class SetupWizardModal extends Modal {
                 }
               }
 
-              // Mark setup as complete
+              // A new installation is not ready until the extraction runtime is
+              // usable. This installs the pinned packages into the managed env on
+              // first run and reports a clear prerequisite error when Python is absent.
+              statusEl.setText('Preparing highlight extraction...');
+              const python = await this.plugin.preparePythonEnvironment((message) => {
+                statusEl.setText(message);
+              });
+              statusEl.setText(
+                python.created
+                  ? 'Python environment installed and verified.'
+                  : 'Python environment verified.',
+              );
+
+              // Mark setup as complete only after connection, sync provider, and
+              // extraction dependencies have all passed.
               this.plugin.settings.setupComplete = true;
               await this.plugin.saveSettings();
 
@@ -728,7 +752,9 @@ export class SetupWizardModal extends Modal {
               new Notice('E-Ink Sync setup complete!');
             } catch (err) {
               state.verified = false;
-              state.message = err instanceof Error ? err.message : 'Verification failed.';
+              state.message = err instanceof BridgeError
+                ? err.toUserMessage()
+                : err instanceof Error ? err.message : 'Verification failed.';
             }
 
             button.setDisabled(false);

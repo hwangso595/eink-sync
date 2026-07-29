@@ -1,5 +1,6 @@
-rmscene>=0.5.0
-PyMuPDF>=1.23.0
+# Exact versions are validated by the release test suite and python-env.ts.
+rmscene==0.8.0
+PyMuPDF==1.28.0
 
 # Optional: OCR support for handwritten notes
 # Uncomment the following lines to enable OCR:

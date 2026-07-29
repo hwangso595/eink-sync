@@ -1,13 +1,9 @@
 /**
  * Obsidian settings tab for the E-Ink Sync plugin.
  *
- * Simplified into two sections:
- *   1. Main -- the essential settings most users need
- *   2. Advanced (collapsed) -- power-user settings, folder paths, archive
- *
- * Folder paths (sync, output) are set during wizard setup and hidden
- * by default. They're accessible under Advanced for users who need to
- * change them, but changing the sync folder requires reconfiguring Syncthing.
+ * Organized in workflow order: connection, sync, sources, extraction,
+ * folders, actions, and advanced controls. Dependent settings are shown only
+ * when relevant, while risky or implementation controls stay under Advanced.
  */
 
 import * as path from 'path';
@@ -27,6 +23,7 @@ const SAVE_DEBOUNCE_MS = 500;
 
 export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   private saveTimer: number | null = null;
+  private advancedOpen = false;
 
   constructor(app: App, private plugin: ReMarkableBridgePlugin) {
     super(app, plugin);
@@ -47,16 +44,17 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // ===== Collision / Outside-vault Warnings =====
     this.renderWarningBanners(containerEl);
 
-    // ===== Main Settings =====
+    // Connection and transfer behavior
     this.renderMainSection(containerEl);
 
-    // ===== Sync Sources =====
+    // Sources come before extraction because they define what gets processed.
     this.renderSyncSourcesSection(containerEl);
 
-    // ===== Actions =====
+    this.renderExtractionSection(containerEl);
+
+    this.renderFoldersSection(containerEl);
     this.renderActionsSection(containerEl);
 
-    // ===== Advanced (collapsed) =====
     this.renderAdvancedSection(containerEl);
   }
 
@@ -134,11 +132,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   }
 
   private renderMainSection(containerEl: HTMLElement): void {
-    // Per Obsidian style guidance, the top-level heading is omitted; the
-    // plugin name is already shown in the settings tab title.
     const isSyncthing = (this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing';
     const isSftp = !isSyncthing;
     const isWifi = this.plugin.settings.connectionMethod === 'wifi';
+
+    new Setting(containerEl).setName('Connection').setHeading();
 
     // 1. Connection method (USB/WiFi)
     new Setting(containerEl)
@@ -153,12 +151,18 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .addOption('wifi', 'WiFi')
           .setValue(this.plugin.settings.connectionMethod)
           .onChange(async (value) => {
-            this.plugin.settings.connectionMethod = value as 'usb' | 'wifi';
             if (value === 'usb') {
+              const currentIp = this.plugin.settings.tabletIp.trim();
+              if (currentIp !== '10.11.99.1' && isValidIpv4(currentIp)) {
+                this.plugin.settings.wifiTabletIp = currentIp;
+              }
               this.plugin.settings.tabletIp = '10.11.99.1';
               this.plugin.settings.autoSyncEnabled = false;
               this.plugin.toggleAutoSyncTimer();
+            } else {
+              this.plugin.settings.tabletIp = this.plugin.settings.wifiTabletIp.trim();
             }
+            this.plugin.settings.connectionMethod = value as 'usb' | 'wifi';
             await this.plugin.saveSettings();
             this.display();
           }),
@@ -175,7 +179,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       const refreshIpWarnings = (value: string): void => {
         const ip = value.trim();
         if (ip.length === 0) {
-          ipWarnEl.hide();
+          ipWarnEl.setText('Enter the tablet WiFi address, or use the USB detection button.');
+          ipWarnEl.show();
           return;
         }
         if (!isValidIpv4(ip)) {
@@ -194,7 +199,9 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             .setPlaceholder('10.11.99.1')
             .setValue(this.plugin.settings.tabletIp)
             .onChange((value) => {
-              this.plugin.settings.tabletIp = value.trim();
+              const ip = value.trim();
+              this.plugin.settings.tabletIp = ip;
+              this.plugin.settings.wifiTabletIp = ip;
               refreshIpWarnings(value);
               this.debouncedSave();
             }),
@@ -211,6 +218,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                   new Notice('E-Ink Sync: tablet not on Wi-Fi (no wlan0 IP found).', 6000);
                   return;
                 }
+                this.plugin.settings.wifiTabletIp = detected;
                 this.plugin.settings.tabletIp = detected;
                 await this.plugin.saveSettings();
                 new Notice(`E-Ink Sync: found tablet at ${detected}. Updated.`, 6000);
@@ -242,6 +250,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         text.inputEl.type = 'password';
         text.inputEl.autocomplete = 'off';
       });
+
+    new Setting(containerEl).setName('Sync').setHeading();
 
     // 4. Sync method (SFTP/Syncthing); with switching logic
     new Setting(containerEl)
@@ -412,8 +422,13 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             this.plugin.toggleFileWatcher();
           }),
       );
+  }
 
-    // 8. PDF link format
+  private renderExtractionSection(containerEl: HTMLElement): void {
+    const isSyncthing = (this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing';
+
+    new Setting(containerEl).setName('Extraction and notes').setHeading();
+
     new Setting(containerEl)
       .setName('PDF link format')
       .setDesc('How highlight notes link back to PDF pages')
@@ -451,23 +466,6 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.includeEpub)
           .onChange(async (value) => {
             this.plugin.settings.includeEpub = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName('Managed Python environment')
-      .setDesc(
-        'Let the plugin create and maintain its own Python environment (via uv or venv) ' +
-        'with the required packages, instead of trusting whatever Python is on PATH. ' +
-        'Extraction aborts with an error instead of writing empty notes when no usable ' +
-        'environment exists.',
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.managedPythonEnv)
-          .onChange(async (value) => {
-            this.plugin.settings.managedPythonEnv = value;
             await this.plugin.saveSettings();
           }),
       );
@@ -534,27 +532,30 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.extraction.ocrEnabled = value;
             await this.plugin.saveSettings();
+            this.display();
           }),
       );
 
-    // 16. OCR language
-    new Setting(containerEl)
-      .setName('OCR language')
-      .setDesc('Tesseract language code(s), e.g. "eng" or "eng+deu". Requires the matching language pack to be installed.')
-      .addText((text) =>
-        text
-          .setPlaceholder('eng')
-          .setValue(this.plugin.settings.extraction.ocrLanguage)
-          .onChange(async (value) => {
-            this.plugin.settings.extraction.ocrLanguage = value.trim() || 'eng';
-            await this.plugin.saveSettings();
-          }),
-      );
+    if (this.plugin.settings.extraction.ocrEnabled) {
+      new Setting(containerEl)
+        .setName('OCR language')
+        .setDesc('Tesseract language code(s), for example "eng" or "eng+deu". Requires the matching language pack.')
+        .addText((text) =>
+          text
+            .setPlaceholder('eng')
+            .setValue(this.plugin.settings.extraction.ocrLanguage)
+            .onChange(async (value) => {
+              this.plugin.settings.extraction.ocrLanguage = value.trim() || 'eng';
+              await this.plugin.saveSettings();
+            }),
+        );
+    }
 
-    // 17. Render page templates
     new Setting(containerEl)
-      .setName('Render page templates')
-      .setDesc('Draw the reMarkable page template (ruled lines, grid, planner) behind notebook strokes. The template art is fetched from the tablet over SFTP during sync; until then, pages render on plain white.')
+      .setName('Render notebook backgrounds')
+      .setDesc(isSyncthing
+        ? 'Draw ruled, grid, and planner backgrounds when cached template art is available.'
+        : 'Draw ruled, grid, and planner backgrounds. Template art is downloaded during SFTP sync.')
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.extraction.renderTemplates)
@@ -808,7 +809,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName('Actions').setHeading();
+    new Setting(containerEl).setName('Quick actions').setHeading();
 
     new Setting(containerEl)
       .setName('Test connection')
@@ -863,9 +864,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .setButtonText('Open Wizard')
           .onClick(() => this.plugin.openSetupWizard()),
       );
+  }
 
+  private renderFoldersSection(containerEl: HTMLElement): void {
     // ----- Folders -----
-    new Setting(containerEl).setName('Folders').setHeading();
+    new Setting(containerEl).setName('Folders and templates').setHeading();
 
     // Validation; check all source sync folders against highlights/archive
     // Shown BEFORE folder inputs so warnings are visible immediately
@@ -920,7 +923,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // ----- Template -----
     new Setting(containerEl)
       .setName('Template file')
-      .setDesc('Path to template for highlight notes. Edit this file to customize the output format.')
+      .setDesc('Vault path for the highlight-note template. A default template is created when needed.')
       .addText((text) =>
         text
           .setPlaceholder('reMarkable/template.md')
@@ -930,6 +933,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             if (!trimmed) return;
             this.plugin.settings.templatePath = trimmed;
             await this.plugin.saveSettings();
+            await this.plugin.ensureDefaultTemplate();
           }),
       );
   }
@@ -978,7 +982,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
   private renderAdvancedSection(containerEl: HTMLElement): void {
     const details = containerEl.createEl('details');
-    details.createEl('summary', { text: 'Advanced Settings', cls: 'remarkable-advanced-toggle' });
+    details.open = this.advancedOpen;
+    details.addEventListener('toggle', () => {
+      this.advancedOpen = details.open;
+    });
+    details.createEl('summary', { text: 'Advanced', cls: 'remarkable-advanced-toggle' });
 
     const advancedEl = details.createDiv({ cls: 'remarkable-advanced-content' });
 
@@ -1045,23 +1053,22 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               this.debouncedSave();
             }),
         );
-
-      new Setting(advancedEl)
-        .setName('Syncthing folder ID')
-        .setDesc('The folder ID shared with your tablet (usually "remarkable-xochitl")')
-        .addText((text) =>
-          text
-            .setPlaceholder('remarkable-xochitl')
-            .setValue(this.plugin.settings.syncthingFolderId)
-            .onChange((value) => {
-              this.plugin.settings.syncthingFolderId = value.trim();
-              this.debouncedSave();
-            }),
-        );
     }
 
     // ----- Extraction -----
     new Setting(advancedEl).setName('Extraction').setHeading();
+
+    new Setting(advancedEl)
+      .setName('Managed Python environment')
+      .setDesc('Recommended. The plugin maintains the Python packages used for extraction.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.managedPythonEnv)
+          .onChange(async (value) => {
+            this.plugin.settings.managedPythonEnv = value;
+            await this.plugin.saveSettings();
+          }),
+      );
 
     new Setting(advancedEl)
       .setName('Tags (optional)')
@@ -1112,36 +1119,39 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.archiveEnabled = value;
             await this.plugin.saveSettings();
+            this.display();
           }),
       );
 
-    new Setting(advancedEl)
-      .setName('Archive threshold')
-      .setDesc('Archive when /home usage exceeds this %')
-      .addSlider((slider) =>
-        slider
-          .setLimits(50, 95, 5)
-          .setValue(this.plugin.settings.archiveThresholdPercent)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.archiveThresholdPercent = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+    if (this.plugin.settings.archiveEnabled) {
+      new Setting(advancedEl)
+        .setName('Archive threshold')
+        .setDesc('Archive when tablet storage usage exceeds this percentage.')
+        .addSlider((slider) =>
+          slider
+            .setLimits(50, 95, 5)
+            .setValue(this.plugin.settings.archiveThresholdPercent)
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.archiveThresholdPercent = value;
+              await this.plugin.saveSettings();
+            }),
+        );
 
-    new Setting(advancedEl)
-      .setName('Minimum age (days)')
-      .setDesc('Only archive documents not opened in this many days')
-      .addSlider((slider) =>
-        slider
-          .setLimits(1, 90, 1)
-          .setValue(this.plugin.settings.archiveMinAgeDays)
-          .setDynamicTooltip()
-          .onChange(async (value) => {
-            this.plugin.settings.archiveMinAgeDays = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+      new Setting(advancedEl)
+        .setName('Minimum age (days)')
+        .setDesc('Only archive documents that have not been opened or changed for this long.')
+        .addSlider((slider) =>
+          slider
+            .setLimits(1, 90, 1)
+            .setValue(this.plugin.settings.archiveMinAgeDays)
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.archiveMinAgeDays = value;
+              await this.plugin.saveSettings();
+            }),
+        );
+    }
 
     new Setting(advancedEl)
       .setName('Archive now')
@@ -1175,6 +1185,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.showStatusBar = value;
             await this.plugin.saveSettings();
+            this.plugin.updateStatusBarVisibility();
           }),
       );
 
@@ -1187,6 +1198,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.debugLogging = value;
             await this.plugin.saveSettings();
+            this.plugin.applyLogLevel();
           }),
       );
   }

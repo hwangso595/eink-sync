@@ -85,7 +85,11 @@ describe('ensureManagedPython', () => {
 
     expect(result).toEqual({ pythonPath: venvPython, managed: true, created: false });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({ cmd: venvPython, args: ['-c', 'import rmscene, fitz'] });
+    expect(calls[0].cmd).toBe(venvPython);
+    expect(calls[0].args[0]).toBe('-c');
+    expect(calls[0].args[1]).toContain('import rmscene, fitz');
+    expect(calls[0].args[1]).toContain('version("rmscene") == "0.8.0"');
+    expect(calls[0].args[1]).toContain('version("PyMuPDF") == "1.28.0"');
   });
 
   it('creates the env with uv when available', async () => {
@@ -104,7 +108,7 @@ describe('ensureManagedPython', () => {
 
     expect(result).toEqual({ pythonPath: venvPython, managed: true, created: true });
     const uvCalls = calls.filter((c) => c.cmd === 'uv').map((c) => c.args);
-    expect(uvCalls).toContainEqual(['venv', envDir]);
+    expect(uvCalls).toContainEqual(['venv', '--python', '3.13', envDir]);
     expect(uvCalls).toContainEqual(['pip', 'install', '--python', venvPython, ...REQUIRED_PACKAGES]);
   });
 
@@ -112,10 +116,10 @@ describe('ensureManagedPython', () => {
     const venvPython = getVenvPython(envDir);
     const { runner, calls } = makeRunner((cmd, args) => {
       if (cmd === 'uv') return fail;
-      if (cmd === 'python3' && args[0] === '--version') {
-        return { code: 0, stdout: 'Python 3.12.1', stderr: '' };
+      if (cmd === 'python3' && args[0] === '-c' && args[1].includes('sys.version_info')) {
+        return { code: 0, stdout: '/fake/python3\n', stderr: '' };
       }
-      if (cmd === 'python3' && args[0] === '-m' && args[1] === 'venv') {
+      if (cmd === '/fake/python3' && args[0] === '-m' && args[1] === 'venv') {
         materializeVenvPython(envDir);
         return ok;
       }
@@ -156,16 +160,16 @@ describe('ensureManagedPython', () => {
 
   it('falls back to a system Python that has the deps when provisioning fails', async () => {
     const { runner } = makeRunner((cmd, args) => {
-      if (cmd === 'python3' && args[0] === '--version') {
-        return { code: 0, stdout: 'Python 3.11.0', stderr: '' };
+      if (cmd === 'python3' && args[0] === '-c' && args[1].includes('sys.version_info')) {
+        return { code: 0, stdout: '/fake/python3\n', stderr: '' };
       }
-      if (cmd === 'python3' && args[0] === '-c') return ok; // deps present
+      if (cmd === '/fake/python3' && args[0] === '-c') return ok; // deps present
       return fail; // uv missing, venv creation fails
     });
 
     const result = await ensureManagedPython({ envDir, runner });
 
-    expect(result).toEqual({ pythonPath: 'python3', managed: false, created: false });
+    expect(result).toEqual({ pythonPath: '/fake/python3', managed: false, created: false });
   });
 
   it('throws PYTHON_DEPS_MISSING when nothing is usable', async () => {
@@ -237,13 +241,13 @@ describe('ensureManagedPython', () => {
     // system-Python fallback probes run again.
     const secondCallCmds = calls.slice(callsAfterFirst).map((c) => c.cmd);
     expect(secondCallCmds).not.toContain('uv');
-    expect(secondCallCmds).toEqual(['python3', 'python']);
+    expect(secondCallCmds).toEqual(expect.arrayContaining(['python3', 'python']));
   });
 
   it('installs OCR extras best-effort without failing the run', async () => {
     const venvPython = materializeVenvPython(envDir);
     const { runner, calls } = makeRunner((cmd, args) => {
-      if (cmd === venvPython && args[1] === 'import rmscene, fitz') return ok;
+      if (cmd === venvPython && args[1]?.includes('import rmscene, fitz')) return ok;
       if (cmd === venvPython && args[1] === 'import pytesseract, PIL') return fail;
       if (cmd === 'uv' && args[0] === '--version') return ok;
       if (cmd === 'uv' && args[0] === 'pip') return fail; // OCR install fails

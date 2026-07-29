@@ -63,7 +63,12 @@ import {
   runExtractionPipeline,
   type PipelineRunResult,
 } from '../pipeline/extraction-pipeline';
-import { ensureManagedPython } from '../pipeline/python-env';
+import {
+  detectPythonExecutable,
+  ensureManagedPython,
+  type ManagedPythonResult,
+} from '../pipeline/python-env';
+import { checkPythonDependencies } from '../pipeline/python-bridge';
 import type { PipelineConfig } from '../pipeline/types';
 
 // SFTP sync engine
@@ -341,6 +346,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
     if (!this.settings.archiveFolder) {
       this.settings.archiveFolder = DEFAULT_SETTINGS.archiveFolder;
     }
+    // Older versions stored only one tablet IP and replaced it with the USB
+    // address when USB mode was selected. Preserve a non-USB address so users
+    // can switch between USB and WiFi without entering it again.
+    if (!this.settings.wifiTabletIp && this.settings.tabletIp !== '10.11.99.1') {
+      this.settings.wifiTabletIp = this.settings.tabletIp;
+    }
     // drawingsFolder is now derived from highlightsFolder (no longer a setting)
     // Clean up legacy drawingsFolder if present in saved data
     delete (this.settings as unknown as Record<string, unknown>).drawingsFolder;
@@ -567,6 +578,36 @@ export default class ReMarkableBridgePlugin extends Plugin {
   openSetupWizard(): void {
     const wizard = new SetupWizardModal(this.app, this);
     wizard.open();
+  }
+
+  /**
+   * Prepare and validate the Python runtime used by extraction.
+   *
+   * The setup wizard calls this before declaring a new installation ready, and
+   * extraction calls it again as a cheap health check. Managed mode installs
+   * the pinned packages automatically; unmanaged mode must already provide them.
+   */
+  async preparePythonEnvironment(
+    onProgress?: (message: string) => void,
+  ): Promise<ManagedPythonResult> {
+    if (this.settings.managedPythonEnv) {
+      return ensureManagedPython({
+        ocrExtras: this.settings.extraction.ocrEnabled,
+        onProgress,
+      });
+    }
+
+    onProgress?.('Checking system Python and extraction packages...');
+    const pythonPath = await detectPythonExecutable();
+    const dependencies = await checkPythonDependencies(pythonPath);
+    if (!dependencies.installed) {
+      throw new BridgeError(
+        ErrorCode.PYTHON_DEPS_MISSING,
+        'System Python is missing: ' + dependencies.missing.join(', ') + '.',
+        'Enable Managed Python environment, or install the missing packages and retry.',
+      );
+    }
+    return { pythonPath, managed: false, created: false };
   }
 
   /** Activate (or reveal) the library sidebar view. */
@@ -876,6 +917,14 @@ export default class ReMarkableBridgePlugin extends Plugin {
    *   stale (e.g. after a network change), we connect over USB (10.11.99.1) to
    *   ask the tablet what its current WiFi IP actually is.
    */
+  async testWifiConnection(host: string): Promise<ConnectionTestResult> {
+    return testConnectionDetailed({
+      ...this.buildSSHConfig(),
+      host,
+      method: 'wifi',
+    });
+  }
+
   async detectTabletWifiIp(overrideHost?: string): Promise<string | null> {
     const config = this.buildSSHConfig();
     const ssh = new ReMarkableSSHClient(
@@ -1114,25 +1163,22 @@ export default class ReMarkableBridgePlugin extends Plugin {
     // Resolve the Python interpreter once for all sources. A hard failure here
     // aborts the run: proceeding without the deps would overwrite existing
     // notes with empty "no highlights found" content.
-    let pythonPath: string | undefined;
-    if (this.settings.managedPythonEnv) {
-      try {
-        const env = await ensureManagedPython({
-          ocrExtras: this.settings.extraction.ocrEnabled,
-          onProgress: (message) => new Notice(message),
-        });
-        pythonPath = env.pythonPath;
-        if (env.created) {
-          new Notice('E-Ink Sync: Python environment ready.');
-        }
-      } catch (err) {
-        this.updateStatusBar('error');
-        const msg = err instanceof BridgeError
-          ? err.toUserMessage()
-          : err instanceof Error ? err.message : String(err);
-        new Notice(`E-Ink Sync: extraction aborted; ${msg}`, 15_000);
-        throw err;
+    let pythonPath: string;
+    try {
+      const env = await this.preparePythonEnvironment(
+        (message) => new Notice(message),
+      );
+      pythonPath = env.pythonPath;
+      if (env.created) {
+        new Notice('E-Ink Sync: Python environment ready.');
       }
+    } catch (err) {
+      this.updateStatusBar('error');
+      const msg = err instanceof BridgeError
+        ? err.toUserMessage()
+        : err instanceof Error ? err.message : String(err);
+      new Notice(`E-Ink Sync: extraction aborted; ${msg}`, 15_000);
+      throw err;
     }
 
     this.updateStatusBar('extracting');
@@ -1729,7 +1775,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * Create the default highlight template file in the vault if it doesn't exist.
    * The template path is configurable via settings.templatePath.
    */
-  private async ensureDefaultTemplate(): Promise<void> {
+  async ensureDefaultTemplate(): Promise<void> {
     const templatePath = this.settings.templatePath;
     if (!templatePath) return;
 
@@ -1837,6 +1883,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
           localSyncDir,
+          allowSftpSkippedFiles: (this.settings.syncMethod ?? 'sftp') === 'sftp',
         }, () => this.scheduleXochitlRestart());
       });
 

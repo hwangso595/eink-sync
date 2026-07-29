@@ -37,6 +37,11 @@ export interface ArchiveOptions {
    * "delete forever".
    */
   localSyncDir: string;
+  /**
+   * SFTP intentionally excludes regenerable xochitl files that extraction
+   * never uses. Do not require those files when validating an SFTP backup.
+   */
+  allowSftpSkippedFiles?: boolean;
 }
 
 /**
@@ -186,7 +191,13 @@ export async function archiveOldDocuments(
   options: ArchiveOptions,
   onNeedsXochitlRestart?: () => void,
 ): Promise<number> {
-  const { thresholdPercent, minAgeDays, force, localSyncDir } = options;
+  const {
+    thresholdPercent,
+    minAgeDays,
+    force,
+    localSyncDir,
+    allowSftpSkippedFiles = false,
+  } = options;
   const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
 
   if (!localSyncDir) {
@@ -281,7 +292,12 @@ export async function archiveOldDocuments(
 
     // Authoritative check: the tablet's own files must all be backed up locally
     // (e.g. a PDF's annotations), or deleting would lose un-synced content.
-    if (!(await tabletFilesBackedUpLocally(ssh, localSyncDir, doc.uuid))) {
+    if (!(await tabletFilesBackedUpLocally(
+      ssh,
+      localSyncDir,
+      doc.uuid,
+      { allowSftpSkippedFiles },
+    ))) {
       logger.warn(
         `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
         `locally (e.g. annotations). Sync it fully before archiving.`,

@@ -17,7 +17,7 @@ Works with reMarkable 1 (512MB RAM) and reMarkable 2. Supports firmware 3.0+ (v6
 
 reMarkable firmware 3.x stores annotations in v6 `.rm` files. E-Ink Sync uses [`rmscene`](https://github.com/ricklupton/rmscene) to parse those files and [`PyMuPDF`](https://pymupdf.readthedocs.io/) to match highlight coordinates with PDF text. Both are Python libraries, so extraction runs in a local Python process.
 
-Python runs only during sync or extraction. If it is unavailable, the plugin still loads and the setup wizard explains what is missing.
+Python runs only during setup, sync, or extraction. The setup wizard creates a private environment and installs the tested package versions automatically. If Python is unavailable, setup stops with an actionable installation message instead of completing with broken extraction.
 
 ---
 
@@ -26,17 +26,21 @@ Python runs only during sync or extraction. If it is unavailable, the plugin sti
 | Requirement | Version | Why |
 |-------------|---------|-----|
 | **Obsidian** | 1.7.2+ | Plugin host |
-| **Python** | 3.8+ | Highlight extraction and page rendering (see above) |
-| **rmscene** | latest | Parses v6 .rm annotation files |
-| **PyMuPDF** | latest | Extracts text from PDF pages, renders page images |
+| **Python** | 3.10+ | Host runtime for highlight extraction and page rendering |
+| **rmscene** | managed automatically | Parses v6 .rm annotation files |
+| **PyMuPDF** | managed automatically | Extracts text from PDF pages and renders page images |
 | **reMarkable SSH access** | enabled | Required for direct SFTP sync and tablet management |
 | **Syncthing** _(optional)_ | any | Provides continuous background sync as an alternative to SFTP |
 | **Tesseract** _(optional)_ | 5.x | Local handwriting OCR; only needed for **Search handwriting (OCR)** |
 
-### Install Python dependencies
+### Automatic Python setup
+
+Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/), or install [uv](https://docs.astral.sh/uv/). When uv is available, it can provision the tested Python version itself. During the final wizard step, E-Ink Sync creates a private environment outside your vault, installs the tested rmscene and PyMuPDF versions, and verifies both imports before setup can finish. An internet connection is required for this one-time package installation.
+
+If you disable **Managed Python environment**, install the packages yourself:
 
 ```bash
-pip install rmscene PyMuPDF
+pip install rmscene==0.8.0 PyMuPDF==1.28.0
 ```
 
 ### Optional: handwriting OCR
@@ -51,7 +55,7 @@ Then install the Tesseract binary: `winget install UB-Mannheim.TesseractOCR` (Wi
 
 ### Windows users: disable Python Store aliases
 
-Windows ships with `python.exe` and `python3.exe` aliases that open the Microsoft Store instead of running Python. **The plugin will silently fail to extract highlights if these are active.**
+Windows ships with `python.exe` and `python3.exe` aliases that may open the Microsoft Store instead of running Python. The plugin also checks the Windows `py` launcher and standard Python installation directories, but disabling the Store aliases prevents confusing manual-command behavior.
 
 Fix: **Settings > Apps > Advanced app settings > App execution aliases** -- turn off `python.exe` and `python3.exe`.
 
@@ -115,9 +119,11 @@ New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target 
 
 1. Enable the plugin in Obsidian settings
 2. A setup wizard opens automatically -- follow the steps to configure:
-   - SSH connection to your tablet (USB or WiFi)
+   - Initial SSH connection over USB
+   - Verified WiFi promotion for everyday use when the tablet is reachable on WiFi
    - Direct SFTP or Syncthing as the sync method
    - Sync and highlight output folders
+   - Automatic Python environment installation and verification
 3. The plugin creates three folders in your vault:
 
 | Folder | Default | Purpose |
@@ -145,7 +151,7 @@ You can also use the command palette: **E-Ink Sync: Extract highlights**.
 
 Use the document actions in the library view to remove documents from the tablet:
 
-- **Archive from tablet** keeps the complete document in your configured Archive folder and removes it from the reMarkable. With SFTP, E-Ink Sync downloads and verifies the latest document files before deleting the tablet copy. With Syncthing, moving the files into Archive propagates the deletion to the tablet.
+- **Archive from tablet** keeps the existing complete local document collection, highlight notes, and drawings in your configured Archive folder, then removes the tablet copy. The operation requires a usable local collection but does not wait for a redundant fresh backup.
 - **Delete permanently** removes the document and all of its sidecar files from the reMarkable, Sync folders, and Archive folder. You can permanently delete an already archived document.
 
 Archive must be outside every Sync folder so archived files are not copied back to the tablet.
