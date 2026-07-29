@@ -185,9 +185,9 @@ class IntegrationWithFakePdfTest(unittest.TestCase):
         self.assertIn("argmax", highlights[0].text)
         self.assertIn("PUCT", highlights[0].text)
         self.assertNotIn("ignored", highlights[0].text)
-        # Bounds stored in RM coords (matches GlyphRange-derived bounds)
-        self.assertEqual(highlights[0].bounds["x"], -734)
-        self.assertEqual(highlights[0].bounds["y"], 517)
+        # Bounds are normalized to PDF coordinates for reading-order logic.
+        self.assertAlmostEqual(highlights[0].bounds["x"], 65.0, places=1)
+        self.assertAlmostEqual(highlights[0].bounds["y"], 161.8, places=1)
 
     def test_stroke_with_no_overlapping_text_warns(self):
         # Stroke in blank space → no text, warning generated, no highlight added

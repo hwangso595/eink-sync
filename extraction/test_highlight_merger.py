@@ -155,6 +155,58 @@ class IntegrationTest(unittest.TestCase):
         self.assertNotIn(" | M | ", " | " + joined + " | ")
 
 
+class TwoColumnReadingOrderTest(unittest.TestCase):
+    """A detected gutter must prevent row-by-row column interleaving."""
+
+    def test_left_column_finishes_before_right_column(self):
+        highlights = [
+            H("right top", x=350, y=100, w=120),
+            H("left bottom", x=50, y=300, w=120),
+            H("right bottom", x=350, y=320, w=120),
+            H("left top", x=50, y=120, w=120),
+        ]
+
+        merged = merge_fragmented_highlights(highlights, {1: 306.0})
+
+        self.assertEqual(
+            [h.text for h in merged],
+            ["left top", "left bottom", "right top", "right bottom"],
+        )
+
+    def test_fragments_merge_within_left_column_before_right_column(self):
+        highlights = [
+            H("right side", x=350, y=110, w=100),
+            H("left first line", x=50, y=100, w=220),
+            H("left wrapped line", x=50, y=118, w=180),
+        ]
+
+        merged = merge_fragmented_highlights(highlights, {1: 306.0})
+
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0].text, "left first line left wrapped line")
+        self.assertEqual(merged[1].text, "right side")
+
+    def test_without_detected_gutter_preserves_row_order(self):
+        highlights = [
+            H("right top", x=350, y=100, w=100),
+            H("left bottom", x=50, y=300, w=100),
+        ]
+
+        merged = merge_fragmented_highlights(highlights)
+
+        self.assertEqual([h.text for h in merged], ["right top", "left bottom"])
+
+    def test_same_text_on_opposite_columns_is_not_deduplicated(self):
+        highlights = [
+            H("term", x=260, y=100, w=30),
+            H("the term is defined again", x=330, y=100, w=180),
+        ]
+
+        merged = merge_fragmented_highlights(highlights, {1: 306.0})
+
+        self.assertEqual(len(merged), 2)
+
+
 class EdgeCaseTest(unittest.TestCase):
     def test_empty_input_returns_empty(self):
         self.assertEqual(merge_fragmented_highlights([]), [])

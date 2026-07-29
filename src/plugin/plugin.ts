@@ -68,6 +68,10 @@ import type { PipelineConfig } from '../pipeline/types';
 
 // SFTP sync engine
 import { SftpSyncEngine, type SftpProgressCallback, type SftpSyncResult } from '../sync/sftp-sync';
+import {
+  TabletDocumentAdapter,
+  type TabletDocumentProgressCallback,
+} from '../sync/tablet-document-adapter';
 
 // Sync providers (unified abstraction over SFTP and Syncthing)
 import type { SyncProvider } from '../sync/sync-provider';
@@ -80,6 +84,7 @@ import { discoverDocumentsWithStatus } from '../pipeline/document-discovery';
 
 // Archive manager
 import { archiveOldDocuments as runArchive } from './archive-manager';
+import { deleteLocalDocumentCopies } from './document-deletion';
 
 // Template engine
 import { DEFAULT_TEMPLATE } from '../pipeline/template-engine';
@@ -153,12 +158,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
   );
   /** File watchers for automatic extraction (one per sync source). */
   private fileWatchers: XochitlFileWatcher[] = [];
-  /** Handle for the deferred xochitl-restart timeout in pushPdfToSyncFolder. */
-  private pdfSyncTimeoutHandle: number | null = null;
   /** Handle for the debounced xochitl restart. */
   private xochitlRestartHandle: number | null = null;
   /** Whether a xochitl restart is currently in progress. */
   private xochitlRestartInProgress = false;
+  /** Outbound collections whose progress must take precedence over background work. */
+  private activeOutboundDocuments = new Set<string>();
   /** Timestamp of the last periodic archive check, used for 30-minute cooldown. */
   private lastArchiveCheckTimestamp = 0;
   /**
@@ -300,11 +305,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
     this.stopFileWatcher();
     this.syncCoordinator.stop();
     this.statusBarManager.stopChecks();
-    // Clear any pending PDF sync timeout
-    if (this.pdfSyncTimeoutHandle !== null) {
-      window.clearTimeout(this.pdfSyncTimeoutHandle);
-      this.pdfSyncTimeoutHandle = null;
-    }
     // Clear any pending xochitl restart
     if (this.xochitlRestartHandle !== null) {
       window.clearTimeout(this.xochitlRestartHandle);
@@ -591,6 +591,19 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }
   }
 
+  /** Refresh every currently open library view from the local sync folders. */
+  async refreshOpenLibraryViews(): Promise<void> {
+    this.invalidateLibraryCache();
+    const leaves = this.app.workspace.getLeavesOfType(LIBRARY_VIEW_TYPE);
+    await Promise.all(
+      leaves.map(async (leaf) => {
+        if (leaf.view instanceof ReMarkableLibraryView) {
+          await leaf.view.refreshLibrary();
+        }
+      }),
+    );
+  }
+
   /** Build an SSHConfig from current settings. */
   buildSSHConfig(): SSHConfig {
     return {
@@ -667,18 +680,98 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
-   * Whether the active sync mode can push local changes back to the tablet.
+   * Get the shared document-mutation adapter.
    *
-   * SFTP is pull-only: "Send to reMarkable" and unarchive cannot affect the
-   * tablet in SFTP mode. Only Syncthing propagates ordinary local changes
-   * bidirectionally. UI surfaces branch on this so they never claim a
-   * tablet-side effect they can't deliver.
-   *
-   * Per-document archive/delete and the bulk "Archive old documents" command
-   * explicitly delete from the tablet over SSH, so they also work in SFTP mode.
+   * The configured sync provider controls how files are pulled. Tablet
+   * mutations always use this adapter so their behavior does not change when
+   * the user switches between SFTP and Syncthing.
    */
-  isPushCapable(): boolean {
-    return (this.settings.syncMethod ?? 'sftp') === 'syncthing';
+  getTabletDocumentAdapter(): TabletDocumentAdapter {
+    return new TabletDocumentAdapter(
+      {
+        host: this.settings.tabletIp,
+        port: this.settings.sshPort,
+        username: 'root',
+        password: this.settings.rootPassword,
+        timeoutMs: this.settings.sshTimeoutMs,
+      },
+      <T>(fn: (ssh: SSHExecutor) => Promise<T>) => this.withSSH(fn),
+      () => this.refreshTabletLibraryNow(),
+    );
+  }
+
+  /** Suppress watcher events and generic status updates for one outbound UUID. */
+  beginOutboundDocumentOperation(uuid: string): void {
+    this.activeOutboundDocuments.add(uuid);
+    for (const watcher of this.fileWatchers) {
+      watcher.ignoreDocument(uuid);
+    }
+  }
+
+  /** Resume annotation watching shortly after an outbound operation settles. */
+  finishOutboundDocumentOperation(uuid: string): void {
+    if (!this.activeOutboundDocuments.delete(uuid)) return;
+
+    const resumeHandle = window.setTimeout(() => {
+      for (const watcher of this.fileWatchers) {
+        watcher.watchDocument(uuid);
+      }
+    }, 1000);
+    this.registerInterval(resumeHandle);
+  }
+
+  /** Create the shared status-bar and persistent-notice upload reporter. */
+  createTabletUploadProgress(visibleName: string): {
+    notice: Notice;
+    onProgress: TabletDocumentProgressCallback;
+  } {
+    const notice = new Notice(
+      `E-Ink Sync: Preparing "${visibleName}" for upload...`,
+      0,
+    );
+    this.updateStatusBar('syncing', 'preparing upload');
+
+    const onProgress: TabletDocumentProgressCallback = (
+      phase,
+      detail,
+      _current,
+      _total,
+      percent,
+    ) => {
+      switch (phase) {
+        case 'connecting':
+          this.updateStatusBar('syncing', 'connecting');
+          notice.setMessage(`E-Ink Sync: Connecting to send "${visibleName}"...`);
+          break;
+        case 'uploading':
+          this.updateStatusBar(
+            'syncing',
+            percent !== undefined ? `uploading ${percent}%` : 'uploading',
+          );
+          notice.setMessage(
+            percent !== undefined
+              ? `E-Ink Sync: Uploading "${visibleName}" (${percent}%)...`
+              : `E-Ink Sync: Uploading "${visibleName}"...`,
+          );
+          break;
+        case 'refreshing':
+          this.updateStatusBar('syncing', 'refreshing tablet');
+          notice.setMessage(
+            `E-Ink Sync: "${visibleName}" uploaded. Refreshing tablet...`,
+          );
+          break;
+        case 'complete':
+          this.updateStatusBar('syncing', 'updating library');
+          notice.setMessage(
+            `E-Ink Sync: Updating the local library for "${visibleName}"...`,
+          );
+          break;
+        default:
+          this.updateStatusBar('syncing', detail);
+      }
+    };
+
+    return { notice, onProgress };
   }
 
   /**
@@ -698,29 +791,46 @@ export default class ReMarkableBridgePlugin extends Plugin {
     const handle = window.setTimeout(() => {
       void (async () => {
       this.xochitlRestartHandle = null;
-
-      // Skip if a restart is already in progress
-      if (this.xochitlRestartInProgress) {
-        logger.info('xochitl restart already in progress, skipping');
-        return;
-      }
-
-      this.xochitlRestartInProgress = true;
-      try {
-        await this.withSSH(async (ssh) => {
-          logger.info('Restarting xochitl on tablet');
-          await ssh.execute('systemctl restart xochitl');
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn(`Failed to restart xochitl: ${msg}`);
-      } finally {
-        this.xochitlRestartInProgress = false;
-      }
+      await this.restartXochitl();
       })();
     }, 5000);
     this.xochitlRestartHandle = handle;
     this.registerInterval(handle);
+  }
+
+  /** Restart the tablet document UI now and report whether it completed. */
+  async refreshTabletLibraryNow(): Promise<boolean> {
+    if (this.xochitlRestartHandle !== null) {
+      window.clearTimeout(this.xochitlRestartHandle);
+      this.xochitlRestartHandle = null;
+    }
+    return await this.restartXochitl();
+  }
+
+  private async restartXochitl(): Promise<boolean> {
+    // A restart already in flight will also reload the document list.
+    if (this.xochitlRestartInProgress) {
+      logger.info('xochitl restart already in progress');
+      return true;
+    }
+
+    this.xochitlRestartInProgress = true;
+    try {
+      await this.withSSH(async (ssh) => {
+        logger.info('Restarting xochitl on tablet');
+        const result = await ssh.execute('systemctl restart xochitl');
+        if (result.exitCode !== 0) {
+          throw new Error(result.stderr.trim() || `systemctl exited with ${result.exitCode}`);
+        }
+      });
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to restart xochitl: ${msg}`);
+      return false;
+    } finally {
+      this.xochitlRestartInProgress = false;
+    }
   }
 
   /** Quick connection test. Returns true if SSH works. */
@@ -1457,25 +1567,14 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   // -------------------------------------------------------------------
-  // Send PDF to reMarkable
+  // Send documents to reMarkable
   // -------------------------------------------------------------------
 
   /** Supported file types for sending to reMarkable. */
   private static readonly SENDABLE_EXTENSIONS = ['pdf', 'epub'];
 
-  /** Let user pick a document from the vault and send it to reMarkable via sync folder. */
+  /** Let the user pick a vault document and send it with the configured transport. */
   async sendDocumentToRemarkable(): Promise<void> {
-    // SFTP is download-only. Writing files into the local sync folder does
-    // nothing on the tablet, so refuse rather than pretend the send worked.
-    if (!this.isPushCapable()) {
-      new Notice(
-        'E-Ink Sync: Sending documents to the tablet requires Syncthing sync mode. ' +
-        'SFTP is download-only. Switch to Syncthing in settings to enable this.',
-        10000,
-      );
-      return;
-    }
-
     const sources = this._pluginData.syncSources;
     if (sources.length === 0 || !sources[0].syncFolder) {
       new Notice('E-Ink Sync: No sync source configured. Run setup wizard first.');
@@ -1498,13 +1597,15 @@ export default class ReMarkableBridgePlugin extends Plugin {
     }).open();
   }
 
-  /** Create xochitl-compatible files for a document and place in sync folder. */
+  /** Create xochitl-compatible files and deliver them via Syncthing or SFTP. */
   private async pushDocumentToSyncFolder(file: TFile): Promise<void> {
-
-    const syncDir = resolvePath(this.app, this.settings.syncFolder);
+    const source = this._pluginData.syncSources[0];
+    const syncDir = resolvePath(this.app, source?.syncFolder ?? this.settings.syncFolder);
+    fs.mkdirSync(syncDir, { recursive: true });
 
     // Generate UUID for the document
     const uuid = crypto.randomUUID();
+    this.beginOutboundDocumentOperation(uuid);
 
     const visibleName = file.basename;
     const fileType = file.extension.toLowerCase(); // 'pdf' or 'epub'
@@ -1546,55 +1647,58 @@ export default class ReMarkableBridgePlugin extends Plugin {
       zoomMode: 'bestFit',
     };
 
+    const uploadProgress = this.createTabletUploadProgress(visibleName);
     try {
-      // Write metadata
-      fs.writeFileSync(
-        path.join(syncDir, `${uuid}.metadata`),
-        JSON.stringify(metadata, null, 4)
-      );
+      // Read the source before creating any local xochitl artifacts so a vault
+      // read failure cannot leave a partial document in the sync folder.
+      const docData = await this.app.vault.readBinary(file);
 
-      // Write content
+      // Commit metadata last. Both Syncthing and the direct SFTP uploader use
+      // metadata as the final signal that the document collection is ready.
       fs.writeFileSync(
         path.join(syncDir, `${uuid}.content`),
         JSON.stringify(content, null, 4)
       );
 
       // Copy the document file (reMarkable uses .pdf extension even for EPUBs it converts)
-      const docData = await this.app.vault.readBinary(file);
       fs.writeFileSync(
         path.join(syncDir, `${uuid}.${fileType}`),
         Buffer.from(docData)
       );
 
-      new Notice(`E-Ink Sync: "${visibleName}" queued. Syncing to tablet...`);
+      fs.writeFileSync(
+        path.join(syncDir, `${uuid}.metadata`),
+        JSON.stringify(metadata, null, 4)
+      );
 
-      // Best-effort: wait for Syncthing to push the file, then try to restart xochitl.
-      // If SSH is unavailable, Syncthing will still deliver the file and the tablet
-      // will see it after the next xochitl restart or reboot.
-      const pdfHandle = window.setTimeout(() => {
-        void (async () => {
-        this.pdfSyncTimeoutHandle = null;
-        try {
-          await this.withSSH(async (ssh) => {
-            const check = await ssh.execute(`test -f /home/root/.local/share/remarkable/xochitl/${uuid}.${fileType} && echo yes || echo no`);
-            if (check.stdout.trim() === 'yes') {
-              this.scheduleXochitlRestart();
-              new Notice(`E-Ink Sync: "${visibleName}" is now on your tablet.`);
-            } else {
-              new Notice(`E-Ink Sync: "${visibleName}" is syncing. It will appear on the tablet shortly.`);
-            }
-          });
-        } catch {
-          // SSH unavailable -- Syncthing will still deliver the file
-          new Notice(`E-Ink Sync: "${visibleName}" will appear on the tablet after sync completes and the tablet restarts.`);
-        }
-        })();
-      }, 15000);
-      this.pdfSyncTimeoutHandle = pdfHandle;
-      this.registerInterval(pdfHandle);
+      const result = await this.getTabletDocumentAdapter().sendDocument(
+        uuid,
+        syncDir,
+        uploadProgress.onProgress,
+      );
+      await this.refreshOpenLibraryViews();
+      this.clearSyncError();
+      this.finishOutboundDocumentOperation(uuid);
+      this.updateStatusBar('connected');
+      uploadProgress.notice.hide();
+      new Notice(
+        result.tabletLibraryRefreshed
+          ? `E-Ink Sync: "${visibleName}" sent. Tablet and library refreshed.`
+          : `E-Ink Sync: "${visibleName}" sent and library refreshed. ` +
+            'The tablet UI could not be restarted automatically.',
+      );
     } catch (err) {
+      // Do not leave a phantom local document after any failed send.
+      deleteLocalDocumentCopies(uuid, [syncDir]);
+      await this.refreshOpenLibraryViews();
       const msg = err instanceof Error ? err.message : String(err);
-      new Notice(`E-Ink Sync: Failed to send PDF. ${msg}`);
+      this.recordSyncError(err);
+      this.finishOutboundDocumentOperation(uuid);
+      this.updateStatusBar('error');
+      uploadProgress.notice.hide();
+      new Notice(`E-Ink Sync: Failed to send document. ${msg}`);
+    } finally {
+      this.finishOutboundDocumentOperation(uuid);
     }
   }
 
@@ -1605,8 +1709,10 @@ export default class ReMarkableBridgePlugin extends Plugin {
   /** Update the status bar text based on current state. Delegates to StatusBarManager. */
   updateStatusBar(
     state: 'idle' | 'connected' | 'syncing' | 'extracting' | 'error' | 'disconnected',
+    detail?: string,
   ): void {
-    this.statusBarManager.update(state);
+    if (this.activeOutboundDocuments.size > 0 && !detail) return;
+    this.statusBarManager.update(state, detail);
   }
 
   /** Invalidate the cached document count (called after extraction or refresh). */

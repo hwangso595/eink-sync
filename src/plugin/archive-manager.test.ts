@@ -6,7 +6,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hasLocalBackup, tabletFilesBackedUpLocally } from './archive-manager';
+import {
+  hasLocalBackup,
+  markLocalBackupForRefresh,
+  tabletFilesBackedUpLocally,
+} from './archive-manager';
 import type { SSHExecutor } from '../ssh/ssh-client';
 
 function tmpDir(): string {
@@ -89,6 +93,29 @@ describe('hasLocalBackup', () => {
 
   it('refuses when nothing is synced for the uuid', () => {
     expect(hasLocalBackup(tmpDir(), uuid)).toBe(false);
+  });
+});
+
+describe('markLocalBackupForRefresh', () => {
+  const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+
+  it('makes existing sidecars stale without changing their contents', () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`, 'metadata');
+    write(dir, `${uuid}.content`, 'content');
+
+    markLocalBackupForRefresh(dir, uuid);
+
+    expect(fs.readFileSync(path.join(dir, `${uuid}.metadata`), 'utf-8')).toBe('metadata');
+    expect(fs.readFileSync(path.join(dir, `${uuid}.content`), 'utf-8')).toBe('content');
+    expect(fs.statSync(path.join(dir, `${uuid}.metadata`)).mtimeMs).toBeLessThan(1000);
+    expect(fs.statSync(path.join(dir, `${uuid}.content`)).mtimeMs).toBeLessThan(1000);
+  });
+
+  it('does not create missing sidecars', () => {
+    const dir = tmpDir();
+    markLocalBackupForRefresh(dir, uuid);
+    expect(fs.readdirSync(dir)).toEqual([]);
   });
 });
 

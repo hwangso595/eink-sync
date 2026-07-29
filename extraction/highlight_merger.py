@@ -19,6 +19,10 @@ This module post-processes the extractor output to:
 Inputs use the ExtractedHighlight dataclass from highlight_extractor.py with
 `bounds = {x, y, width, height}` in PDF coordinates (not reMarkable px).
 
+Pages with a detected central gutter are processed column-first. This keeps a
+two-column article or scanned two-page spread in reading order: all highlights
+on the left are emitted before highlights on the right.
+
 Highlights without bounds are passed through untouched (we have nothing to
 merge on).
 """
@@ -111,7 +115,23 @@ def _group_key(h) -> tuple:
     return (h.page_number, h.color)
 
 
-def _merge_group(group: list) -> list:
+def _column_index(bounds: dict, gutter_x: Optional[float]) -> int:
+    """Return the visual column containing the centre of a highlight."""
+    if gutter_x is None:
+        return 0
+    center_x = bounds["x"] + bounds["width"] / 2.0
+    return 0 if center_x < gutter_x else 1
+
+
+def _reading_order_key(h, gutter_x: Optional[float]) -> tuple:
+    """Sort top-to-bottom normally, or left-column-first when a gutter exists."""
+    b = h.bounds
+    if gutter_x is None:
+        return (b["y"], b["x"])
+    return (_column_index(b, gutter_x), b["y"], b["x"])
+
+
+def _merge_group(group: list, gutter_x: Optional[float] = None) -> list:
     """
     Merge a single (page, color) group sorted top-to-bottom, left-to-right.
 
@@ -123,7 +143,7 @@ def _merge_group(group: list) -> list:
     if len(group) <= 1:
         return list(group)
 
-    items = sorted(group, key=lambda h: (h.bounds["y"], h.bounds["x"]))
+    items = sorted(group, key=lambda h: _reading_order_key(h, gutter_x))
     merged: list = []
     # Running group state
     run_fragments: list = []
@@ -170,7 +190,10 @@ def _merge_group(group: list) -> list:
     return merged
 
 
-def _dedupe_substrings(highlights: list) -> list:
+def _dedupe_substrings(
+    highlights: list,
+    page_gutters: Optional[dict[int, float]] = None,
+) -> list:
     """
     Drop highlights whose text is a substring of a SPATIALLY ADJACENT highlight
     (within SUBSTRING_DEDUPE_MAX_DISTANCE PDF pt). Spatial adjacency prevents
@@ -181,6 +204,7 @@ def _dedupe_substrings(highlights: list) -> list:
     if len(highlights) < 2:
         return list(highlights)
 
+    gutters = page_gutters or {}
     drop = set()
     for i, h in enumerate(highlights):
         if i in drop:
@@ -193,6 +217,13 @@ def _dedupe_substrings(highlights: list) -> list:
             if other.bounds is None:
                 continue
             if other.page_number != h.page_number:
+                continue
+            gutter_x = gutters.get(h.page_number)
+            if (
+                gutter_x is not None
+                and _column_index(h.bounds, gutter_x)
+                != _column_index(other.bounds, gutter_x)
+            ):
                 continue
             if len(h.text) >= len(other.text):
                 continue  # only drop the shorter
@@ -217,12 +248,17 @@ def _box_gap(a: dict, b: dict) -> float:
     return dx + dy
 
 
-def merge_fragmented_highlights(highlights: list) -> list:
+def merge_fragmented_highlights(
+    highlights: list,
+    page_gutters: Optional[dict[int, float]] = None,
+) -> list:
     """
     Merge spatially-adjacent fragments and drop substring duplicates.
 
-    Returns a new list; the input is not mutated. Highlights without bounds
-    are kept verbatim and emitted in their original order before merged ones.
+    Returns a new list; the input is not mutated. ``page_gutters`` maps a
+    1-indexed page number to the x coordinate of a detected vertical gutter.
+    Highlights without bounds are kept verbatim and emitted in their original
+    order before merged ones.
     """
     if not highlights:
         return []
@@ -233,7 +269,8 @@ def merge_fragmented_highlights(highlights: list) -> list:
     # Dedupe substring tail fragments BEFORE merging. Otherwise a tail like
     # "M" sitting one line below "MCTS may be viewed..." gets merged in
     # via the line-wrap heuristic, defeating the point.
-    deduped = _dedupe_substrings(bounded)
+    gutters = page_gutters or {}
+    deduped = _dedupe_substrings(bounded, gutters)
 
     # Group by (page, color), merge each group, then flatten.
     groups: dict[tuple, list] = {}
@@ -242,9 +279,16 @@ def merge_fragmented_highlights(highlights: list) -> list:
 
     merged_all: list = []
     for key in sorted(groups.keys()):
-        merged_all.extend(_merge_group(groups[key]))
+        page_number = key[0]
+        merged_all.extend(_merge_group(groups[key], gutters.get(page_number)))
 
-    # Final ordering: by page, then top-to-bottom (natural reading order).
-    merged_all.sort(key=lambda h: (h.page_number, h.bounds["y"], h.bounds["x"]))
+    # Final ordering: by page, then natural reading order. A detected gutter
+    # changes this from global row order to left-column then right-column.
+    merged_all.sort(
+        key=lambda h: (
+            h.page_number,
+            *_reading_order_key(h, gutters.get(h.page_number)),
+        )
+    )
 
     return boundless + merged_all

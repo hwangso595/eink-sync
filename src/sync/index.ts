@@ -42,6 +42,8 @@ export { stopServices, removeServices } from './service-manager';
 export type { SyncProvider, SyncResult, SyncProgressCallback } from './sync-provider';
 export { SftpProvider } from './sftp-provider';
 export { SyncthingProvider } from './syncthing-provider';
+export { TabletDocumentAdapter } from './tablet-document-adapter';
+export type { TabletDocumentResult } from './tablet-document-adapter';
 
 // SFTP sync engine
 export { SftpSyncEngine } from './sftp-sync';

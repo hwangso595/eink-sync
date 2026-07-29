@@ -166,7 +166,7 @@ describe('SftpSyncEngine', () => {
         {
           path: '/xochitl/abc.metadata',
           filename: 'abc.metadata',
-          size: 100,
+          size: 2,
           mtime: 1700000000,
           isDirectory: false,
         },
@@ -174,6 +174,26 @@ describe('SftpSyncEngine', () => {
 
       const toDownload = engine.compareFiles(remoteFiles);
       expect(toDownload).toHaveLength(0);
+    });
+
+    it('should download metadata with a size mismatch even in the same mtime tick', () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const metaPath = path.join(tempDir, 'abc.metadata');
+      fs.writeFileSync(metaPath, '{}');
+      fs.utimesSync(metaPath, new Date(1700000000000), new Date(1700000000000));
+
+      const remoteFiles: RemoteFileInfo[] = [
+        {
+          path: '/xochitl/abc.metadata',
+          filename: 'abc.metadata',
+          size: 100,
+          mtime: 1700000000,
+          isDirectory: false,
+        },
+      ];
+
+      expect(engine.compareFiles(remoteFiles)).toHaveLength(1);
     });
 
     it('should include new annotation directories', () => {

@@ -31,21 +31,29 @@ export class StatusBarManager {
 
   /** Create and show the status bar element. */
   init(): void {
-    const settings = this.getSettings();
-    if (!settings.showStatusBar) return;
+    if (!this.ensureStatusBarElement()) return;
+    this.update('idle');
+  }
+
+  /** Create the item on demand and recover if Obsidian detached its element. */
+  private ensureStatusBarElement(): boolean {
+    if (this.statusBarEl && !this.statusBarEl.isConnected) {
+      this.statusBarEl = null;
+    }
+    if (this.statusBarEl) return true;
+    if (!this.getSettings().showStatusBar) return false;
 
     this.statusBarEl = this.plugin.addStatusBarItem();
     this.statusBarEl.addClass('remarkable-status-bar');
-    this.update('idle');
-
     this.statusBarEl.addEventListener('click', () => {
       new SyncStatusModal(this.getApp(), this.plugin).open();
     });
+    return true;
   }
 
-  /** Update the status bar text based on current state. */
-  update(state: StatusState): void {
-    if (!this.statusBarEl) return;
+  /** Update the status bar state and optional active-operation detail. */
+  update(state: StatusState, detail?: string): void {
+    if (!this.ensureStatusBarElement() || !this.statusBarEl) return;
     this.statusBarEl.empty();
 
     const icons: Record<string, string> = {
@@ -73,7 +81,7 @@ export class StatusBarManager {
 
     this.statusBarEl.createSpan({
       cls: 'remarkable-statusbar-label',
-      text: ` ${shortLabels[state]}`,
+      text: ` ${detail ? `rM ${detail}` : shortLabels[state]}`,
     });
 
     if (state !== 'error' && state !== 'disconnected') {
@@ -98,7 +106,7 @@ export class StatusBarManager {
     // When something is wrong, put the specific reason in the tooltip instead
     // of a generic "click for details"; a stale-IP timeout should be legible
     // on hover, not buried.
-    let tooltip = 'Click for sync details';
+    let tooltip = detail ?? 'Click for sync details';
     if (state === 'error' || state === 'disconnected') {
       const lastErr = this.plugin.getLastSyncError();
       if (lastErr) {
@@ -113,12 +121,8 @@ export class StatusBarManager {
   updateVisibility(): void {
     const settings = this.getSettings();
     if (settings.showStatusBar && !this.statusBarEl) {
-      this.statusBarEl = this.plugin.addStatusBarItem();
-      this.statusBarEl.addClass('remarkable-status-bar');
+      this.ensureStatusBarElement();
       this.update('idle');
-      this.statusBarEl.addEventListener('click', () => {
-        new SyncStatusModal(this.getApp(), this.plugin).open();
-      });
       if (settings.setupComplete) {
         this.startChecks();
       }

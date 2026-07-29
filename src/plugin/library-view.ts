@@ -35,10 +35,11 @@ import { isValidUuid } from './uuid-validation';
 import type { SyncProgressCallback } from '../sync/sync-provider';
 import {
   archiveLocalDocumentCopies,
-  deleteDocumentFromTablet,
+  deleteGeneratedDocumentArtifacts,
   deleteLocalDocumentCopies,
 } from './document-deletion';
-import { hasLocalBackup, tabletFilesBackedUpLocally } from './archive-manager';
+import { getDrawingsFolder } from './settings';
+import { hasLocalBackup } from './archive-manager';
 import { confirmAction } from './confirmation-modal';
 
 /** View type identifier for Obsidian's view registry. */
@@ -932,10 +933,7 @@ export class ReMarkableLibraryView extends ItemView {
     }
   }
 
-  /**
-   * Unarchive: move from Archive back to Sync folder.
-   * Syncthing will sync it back to the tablet.
-   */
+  /** Restore an archived collection locally and send it back to the tablet. */
   private async unarchiveDocument(doc: LibraryDocument): Promise<void> {
     if (!isValidUuid(doc.uuid)) {
       new Notice(`Cannot unarchive: invalid document UUID.`);
@@ -956,23 +954,50 @@ export class ReMarkableLibraryView extends ItemView {
         return;
       }
 
-      for (const entry of entries) {
-        fs.renameSync(path.join(archiveDir, entry), path.join(syncDir, entry));
+      this.plugin.beginOutboundDocumentOperation(doc.uuid);
+      const uploadProgress = this.plugin.createTabletUploadProgress(doc.name);
+      let result;
+      try {
+        result = await this.plugin.getTabletDocumentAdapter().restoreDocument(
+          doc.uuid,
+          syncDir,
+          () => {
+            for (const entry of entries) {
+              fs.renameSync(path.join(archiveDir, entry), path.join(syncDir, entry));
+            }
+          },
+          () => {
+            archiveLocalDocumentCopies(doc.uuid, syncDir, archiveDir);
+          },
+          uploadProgress.onProgress,
+        );
+        await this.refreshLibrary();
+        this.plugin.clearSyncError();
+        this.plugin.finishOutboundDocumentOperation(doc.uuid);
+        this.plugin.updateStatusBar('connected');
+        uploadProgress.notice.hide();
+      } catch (err) {
+        this.plugin.recordSyncError(err);
+        this.plugin.finishOutboundDocumentOperation(doc.uuid);
+        this.plugin.updateStatusBar('error');
+        uploadProgress.notice.hide();
+        throw err;
+      } finally {
+        this.plugin.finishOutboundDocumentOperation(doc.uuid);
       }
 
       new Notice(
-        this.plugin.isPushCapable()
-          ? `"${doc.name}" sent back to reMarkable. Syncthing will sync it.`
-          : `"${doc.name}" restored to your vault. (SFTP is download-only; the tablet is unchanged.)`,
+        result.tabletLibraryRefreshed
+          ? `"${doc.name}" restored to your vault and tablet.`
+          : `"${doc.name}" restored, but the tablet UI could not be restarted automatically.`,
       );
-      await this.refreshLibrary();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       new Notice(`Unarchive failed: ${msg}`);
     }
   }
 
-  /** Archive locally in Obsidian and remove the document from the tablet. */
+  /** Archive locally and remove the tablet copy through the shared adapter. */
   private async archiveDocument(doc: LibraryDocument): Promise<void> {
     if (!isValidUuid(doc.uuid)) {
       new Notice(`Cannot archive: invalid document UUID.`);
@@ -985,21 +1010,9 @@ export class ReMarkableLibraryView extends ItemView {
     }
 
     try {
-      const canPush = this.plugin.isPushCapable();
-
-      // SFTP must pull the latest tablet state before the safety checks below.
-      // Archiving promises to retain the document, so a partial sync is a hard
-      // stop rather than permission to delete the tablet copy.
-      if (!canPush) {
-        new Notice(`Syncing the latest copy of "${doc.name}" before archiving...`);
-        const syncResult = await this.plugin.getSyncProvider(doc.sourceId).sync();
-        if (!syncResult.success || syncResult.errors.length > 0) {
-          const detail = syncResult.errors[0] ? ` ${syncResult.errors[0]}` : '';
-          throw new Error(`Latest tablet files could not be backed up.${detail}`);
-        }
-      }
-
-      // Locate the freshly synced local document.
+      // Archive the collection already present in the vault. This intentionally
+      // does not start a fresh sync: Archive has the same tablet-side behavior
+      // as Delete, but moves the existing local copy instead of removing it.
       let syncDir = '';
       for (const source of this.plugin.getSyncSources()) {
         if (!source.syncFolder) continue;
@@ -1019,34 +1032,25 @@ export class ReMarkableLibraryView extends ItemView {
         return;
       }
 
-      if (!canPush) {
-        if (!hasLocalBackup(syncDir, doc.uuid)) {
-          throw new Error('The local backup is incomplete; the tablet copy was not deleted.');
-        }
-        await this.plugin.withSSH(async (ssh) => {
-          if (!(await tabletFilesBackedUpLocally(
-            ssh,
-            syncDir,
-            doc.uuid,
-            { allowSftpSkippedFiles: true },
-          ))) {
-            throw new Error(
-              'The tablet has files that are not fully backed up; its copy was not deleted.',
-            );
-          }
-          await deleteDocumentFromTablet(ssh, doc.uuid);
-        });
-        this.plugin.scheduleXochitlRestart();
+      if (!hasLocalBackup(syncDir, doc.uuid)) {
+        throw new Error('The local backup is incomplete; the tablet copy was not deleted.');
       }
 
       const archiveDir = resolvePath(this.plugin.app, this.plugin.settings.archiveFolder);
-      const moved = archiveLocalDocumentCopies(doc.uuid, syncDir, archiveDir);
-      if (moved === 0) throw new Error('No local document files were available to archive.');
+      const archiveLocal = (): void => {
+        const moved = archiveLocalDocumentCopies(doc.uuid, syncDir, archiveDir);
+        if (moved === 0) throw new Error('No local document files were available to archive.');
+      };
+      new Notice(`Archiving "${doc.name}" in your vault and removing it from the tablet...`);
+      const result = await this.plugin.getTabletDocumentAdapter().archiveDocument(
+        doc.uuid,
+        archiveLocal,
+      );
 
       new Notice(
-        canPush
-          ? `"${doc.name}" archived in Obsidian. Syncthing will remove it from the tablet.`
-          : `"${doc.name}" archived in Obsidian and removed from the tablet.`,
+        result.tabletLibraryRefreshed
+          ? `"${doc.name}" archived in your vault and removed from the tablet.`
+          : `"${doc.name}" archived and removed, but the tablet UI could not be restarted automatically.`,
       );
       await this.refreshLibrary();
     } catch (err) {
@@ -1062,30 +1066,18 @@ export class ReMarkableLibraryView extends ItemView {
       return;
     }
 
-    const canPush = this.plugin.isPushCapable();
     const confirmed = await confirmAction(this.app, {
       title: 'Delete document?',
       message:
         `Permanently delete "${doc.name}"?\n\n` +
-        'This removes it from your vault and the tablet. This cannot be undone.',
+        'This removes the document, its highlight note, and its rendered drawings ' +
+        'from your vault and tablet. This cannot be undone.',
       confirmText: 'Delete permanently',
       dangerous: true,
     });
     if (!confirmed) return;
 
     try {
-      // Syncthing propagates the local deletion and remains usable while the
-      // tablet is offline. SFTP is pull-only, so explicitly delete over SSH
-      // first and verify success before touching the local backup.
-      if (!canPush) {
-        new Notice(`Deleting "${doc.name}" from the tablet...`);
-        await this.plugin.withSSH((ssh) => deleteDocumentFromTablet(ssh, doc.uuid));
-        // The remote deletion is already committed at this point. Restart even
-        // if a later local filesystem operation fails, so xochitl drops the
-        // deleted document from its in-memory library.
-        this.plugin.scheduleXochitlRestart();
-      }
-
       // Delete from every local sync source and from Archive. Ignore blank
       // folder settings so they can never resolve to the vault root.
       const localDirectories = this.plugin.getSyncSources()
@@ -1094,12 +1086,38 @@ export class ReMarkableLibraryView extends ItemView {
       if (this.plugin.settings.archiveFolder) {
         localDirectories.push(resolvePath(this.plugin.app, this.plugin.settings.archiveFolder));
       }
-      deleteLocalDocumentCopies(doc.uuid, localDirectories);
+      const highlightsRoot = resolvePath(
+        this.plugin.app,
+        this.plugin.settings.highlightsFolder,
+      );
+      const noteDirectories = [highlightsRoot];
+      for (const source of this.plugin.getSyncSources()) {
+        if (!source.highlightsSubfolder) continue;
+        noteDirectories.push(resolvePath(
+          this.plugin.app,
+          `${this.plugin.settings.highlightsFolder}/${source.highlightsSubfolder}`,
+        ));
+      }
+      new Notice(`Deleting "${doc.name}" from your vault and tablet...`);
+      const result = await this.plugin.getTabletDocumentAdapter().deleteDocument(
+        doc.uuid,
+        () => {
+          deleteLocalDocumentCopies(doc.uuid, localDirectories);
+          // Archive does not call this path, so archived notes and drawings
+          // remain available in the vault.
+          deleteGeneratedDocumentArtifacts(
+            doc.uuid,
+            doc.noteBaseName,
+            noteDirectories,
+            resolvePath(this.plugin.app, getDrawingsFolder(this.plugin.settings)),
+          );
+        },
+      );
 
       new Notice(
-        canPush
-          ? `"${doc.name}" deleted. Syncthing will remove it from the tablet.`
-          : `"${doc.name}" deleted from your vault and tablet.`,
+        result.tabletLibraryRefreshed
+          ? `"${doc.name}" deleted from your vault and tablet.`
+          : `"${doc.name}" deleted, but the tablet UI could not be restarted automatically.`,
       );
       await this.refreshLibrary();
     } catch (err) {

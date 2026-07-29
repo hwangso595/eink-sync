@@ -81,6 +81,8 @@ export class XochitlFileWatcher {
   private running = false;
   private pendingChanges = 0;
   private lastExtractionTrigger: number | null = null;
+  /** Outbound document collections that must not trigger extraction yet. */
+  private ignoredDocumentUuids = new Set<string>();
 
   constructor(config: FileWatcherConfig) {
     this.config = {
@@ -192,11 +194,32 @@ export class XochitlFileWatcher {
     return this.lastExtractionTrigger;
   }
 
+  /** Temporarily ignore filesystem events belonging to one document UUID. */
+  ignoreDocument(uuid: string): void {
+    this.ignoredDocumentUuids.add(uuid.toLowerCase());
+  }
+
+  /** Resume watching a document after its outbound operation has settled. */
+  watchDocument(uuid: string): void {
+    this.ignoredDocumentUuids.delete(uuid.toLowerCase());
+  }
+
   /**
    * Handle a raw filesystem event from fs.watch.
    */
   private handleFsEvent(_eventType: string, filename: string): void {
     if (!filename) return;
+
+    const normalizedFilename = filename.replace(/\\/g, '/').toLowerCase();
+    const ignored = [...this.ignoredDocumentUuids].some(
+      (uuid) => normalizedFilename === uuid
+        || normalizedFilename.startsWith(`${uuid}.`)
+        || normalizedFilename.startsWith(`${uuid}/`),
+    );
+    if (ignored) {
+      logger.debug(`Ignoring outbound document change: ${filename}`);
+      return;
+    }
 
     // Ignore Syncthing temporary and conflict files
     if (filename.includes('sync-conflict') || filename.includes('.syncthing.') || filename.endsWith('.tmp')) {

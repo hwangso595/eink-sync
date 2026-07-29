@@ -85,6 +85,34 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
 }
 
 /**
+ * Force the next SFTP sync to refresh a document's mutable sidecars and its
+ * annotation directory. Archive uses this after a verification mismatch,
+ * which can happen when xochitl rewrites a file between the initial download
+ * and the byte-for-byte safety check.
+ *
+ * Only mtimes are changed. Existing backup contents remain intact if the
+ * retry cannot connect.
+ */
+export function markLocalBackupForRefresh(localSyncDir: string, uuid: string): void {
+  if (!isValidUuid(uuid)) {
+    throw new Error('Refusing to refresh a local backup with an invalid UUID.');
+  }
+
+  const epoch = new Date(0);
+  for (const extension of ['.metadata', '.content']) {
+    const filePath = path.join(localSyncDir, `${uuid}${extension}`);
+    try {
+      if (fs.statSync(filePath).isFile()) {
+        fs.utimesSync(filePath, epoch, epoch);
+      }
+    } catch {
+      // Missing sidecars remain a hard failure in hasLocalBackup(). Do not
+      // create placeholders that could make an incomplete backup look valid.
+    }
+  }
+}
+
+/**
  * Authoritative pre-delete check: every non-empty tablet file for the UUID must
  * exist non-empty locally. Catches cases hasLocalBackup can't see locally, e.g.
  * a PDF synced but its handwritten annotations ({uuid}/*.rm) not. Refuses on any
