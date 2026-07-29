@@ -47,6 +47,14 @@ from highlight_merger import merge_fragmented_highlights
 from stroke_renderer import HIGHLIGHTER_PEN_TYPES
 
 
+# A page is treated as two-column only when both sides contain substantial
+# text and relatively little text crosses the centre. Using the PDF's text
+# blocks makes this opt-in for real columns/spreads and avoids splitting normal
+# single-column pages merely because two short highlights are far apart.
+MIN_COLUMN_TEXT_CHARS = 50
+MAX_CROSS_GUTTER_RATIO = 0.30
+
+
 @dataclass
 class ExtractedHighlight:
     """A single highlight extracted from a PDF annotation layer."""
@@ -257,7 +265,7 @@ def _extract_text_by_rectangle(
     words = page.get_text("words")
 
     # Collect words that overlap with any highlight rectangle
-    overlapping_words: list[tuple[float, float, float, str]] = []
+    overlapping_words: list[tuple[float, float, float, float, str]] = []
 
     for word_data in words:
         wx0, wy0, wx1, wy1 = word_data[0], word_data[1], word_data[2], word_data[3]
@@ -270,18 +278,79 @@ def _extract_text_by_rectangle(
             intersection = word_rect & hr
             if not intersection.is_empty:
                 # Use word's position for sorting (y first for line, then x)
-                overlapping_words.append((wy0, wx0, wx1, word_text))
+                overlapping_words.append((wx0, wy0, wx1, wy1, word_text))
                 break  # Don't add the same word twice
 
     if not overlapping_words:
         return ""
 
-    # Sort by reading order: top to bottom, then left to right
-    overlapping_words.sort(key=lambda w: (w[0], w[1]))
+    gutter_x = _detect_page_gutter(page)
+    if gutter_x is None:
+        # Normal page: top to bottom, then left to right.
+        overlapping_words.sort(key=lambda w: (w[1], w[0]))
+    else:
+        # Two columns or a two-page spread: finish the left side first.
+        overlapping_words.sort(
+            key=lambda w: (
+                0 if (w[0] + w[2]) / 2.0 < gutter_x else 1,
+                w[1],
+                w[0],
+            )
+        )
 
     # Join words with spaces
-    text = " ".join(w[3] for w in overlapping_words)
+    text = " ".join(w[4] for w in overlapping_words)
     return text.strip()
+
+
+def _detect_page_gutter(page: object) -> Optional[float]:
+    """Detect a two-column layout using text blocks around the page centre.
+
+    PyMuPDF groups lines from the same paragraph into blocks. On a normal page,
+    most body blocks cross the midpoint. On a two-column page or scanned spread,
+    substantial blocks stay wholly on both sides of the midpoint. Full-width
+    titles and footers are tolerated up to ``MAX_CROSS_GUTTER_RATIO``.
+    """
+    try:
+        page_width = float(page.rect.width)
+        blocks = page.get_text("blocks")
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if page_width <= 0:
+        return None
+
+    gutter_x = page_width / 2.0
+    left_chars = 0
+    right_chars = 0
+    crossing_chars = 0
+
+    for block in blocks:
+        if len(block) < 5:
+            continue
+        try:
+            x0, x1 = float(block[0]), float(block[2])
+        except (TypeError, ValueError):
+            continue
+        text = str(block[4]).strip()
+        weight = len(text)
+        if not weight:
+            continue
+        if x1 <= gutter_x:
+            left_chars += weight
+        elif x0 >= gutter_x:
+            right_chars += weight
+        else:
+            crossing_chars += weight
+
+    total_chars = left_chars + right_chars + crossing_chars
+    if total_chars == 0:
+        return None
+    if left_chars < MIN_COLUMN_TEXT_CHARS or right_chars < MIN_COLUMN_TEXT_CHARS:
+        return None
+    if crossing_chars / total_chars > MAX_CROSS_GUTTER_RATIO:
+        return None
+    return gutter_x
 
 
 def _get_bounds_from_rects(rects: list[dict]) -> Optional[dict]:
@@ -323,15 +392,36 @@ def _process_v6_page(
         warnings.append(f"Page {page_index + 1}: {e}")
         return
 
+    if page_index < 0:
+        warnings.append(f"Page {page_index + 1}: page index out of range in PDF")
+        return
+
+    try:
+        page = pdf_doc[page_index]
+    except (IndexError, TypeError):
+        warnings.append(f"Page {page_index + 1}: page index out of range in PDF")
+        return
+    pdf_w, pdf_h = page.rect.width, page.rect.height
+
     for gr in glyph_ranges:
+        # rmscene rectangles use centre-origin logical reMarkable coordinates.
+        # Normalize them to PDF coordinates before text matching, ordering, and
+        # merging so detected PDF gutters use the same coordinate space.
+        pdf_rects = [
+            _v6_rm_rect_to_pdf_rect(
+                r["x"], r["y"], r["width"], r["height"], pdf_w, pdf_h
+            )
+            for r in gr.get("rects", [])
+        ]
+
         # Prefer text already stored in the GlyphRange (firmware 3.26+)
         text = gr.get("text", "")
-        if not text and gr.get("rects"):
+        if not text and pdf_rects:
             # Reliable fallback: rectangle-based text extraction.
             # Character offset fallback is UNRELIABLE for firmware < 3.26
             # (12-17 char deltas observed on real devices).
             text = _extract_text_by_rectangle(
-                pdf_doc, page_index, gr["rects"]
+                pdf_doc, page_index, pdf_rects
             )
 
         if not text:
@@ -341,7 +431,7 @@ def _process_v6_page(
             )
             continue
 
-        bounds = _get_bounds_from_rects(gr.get("rects", []))
+        bounds = _get_bounds_from_rects(pdf_rects)
 
         highlights.append(
             ExtractedHighlight(
@@ -491,15 +581,14 @@ def _process_highlighter_strokes(
             )
             continue
 
-        # Bounds are stored in RM coords to match GlyphRange-derived bounds,
-        # so the merger's per-page sort and gap heuristics treat both kinds
-        # of highlights consistently.
+        # Keep all extracted bounds in PDF coordinates so gutter detection and
+        # the merger operate in one consistent coordinate space.
         highlights.append(
             ExtractedHighlight(
                 text=text,
                 page_number=page_index + 1,
                 color=s["color"],
-                bounds={"x": x, "y": y, "width": w, "height": h},
+                bounds=dict(pdf_rect),
                 created_at=None,
             )
         )
@@ -537,6 +626,7 @@ def extract_highlights_for_document(
 
     highlights: list[ExtractedHighlight] = []
     warnings: list[str] = []
+    page_gutters: dict[int, float] = {}
 
     # Locate the source PDF
     pdf_path = os.path.join(xochitl_path, f"{doc_uuid}.pdf")
@@ -563,11 +653,16 @@ def extract_highlights_for_document(
             if not os.path.exists(rm_path):
                 continue  # No annotations on this page
 
+            if page_index < len(pdf_doc):
+                gutter_x = _detect_page_gutter(pdf_doc[page_index])
+                if gutter_x is not None:
+                    page_gutters[page_index + 1] = gutter_x
+
             _process_v6_page(rm_path, pdf_doc, page_index, highlights, warnings)
     finally:
         pdf_doc.close()
 
-    return merge_fragmented_highlights(highlights), warnings
+    return merge_fragmented_highlights(highlights, page_gutters), warnings
 
 
 def _detect_rm_format(rm_path: str) -> str:
@@ -635,6 +730,7 @@ def extract_highlights_for_document_auto(
 
     highlights: list[ExtractedHighlight] = []
     warnings: list[str] = []
+    page_gutters: dict[int, float] = {}
 
     pdf_path = os.path.join(xochitl_path, f"{doc_uuid}.pdf")
     if not os.path.exists(pdf_path):
@@ -659,6 +755,11 @@ def extract_highlights_for_document_auto(
                 continue
 
             fmt = _detect_rm_format(rm_path)
+
+            if page_index < len(pdf_doc):
+                gutter_x = _detect_page_gutter(pdf_doc[page_index])
+                if gutter_x is not None:
+                    page_gutters[page_index + 1] = gutter_x
 
             if fmt == "v6":
                 # Delegate to the shared v6 extraction helper
@@ -724,4 +825,4 @@ def extract_highlights_for_document_auto(
     finally:
         pdf_doc.close()
 
-    return merge_fragmented_highlights(highlights), warnings
+    return merge_fragmented_highlights(highlights, page_gutters), warnings

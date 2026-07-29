@@ -167,6 +167,34 @@ describe('XochitlFileWatcher', () => {
       }, 400);
     }, 5000);
 
+    it('ignores an outbound document until watching resumes', (done) => {
+      const watcher = new XochitlFileWatcher({
+        xochitlPath: tempDir,
+        debounceMs: 100,
+      });
+      const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+      let changes = 0;
+      watcher.on((event) => {
+        if (event === 'change-detected') changes++;
+      });
+      watcher.ignoreDocument(uuid);
+      watcher.start();
+
+      setTimeout(() => {
+        fs.writeFileSync(path.join(tempDir, `${uuid}.metadata`), 'outbound');
+      }, 50);
+      setTimeout(() => {
+        expect(changes).toBe(0);
+        watcher.watchDocument(uuid);
+        fs.writeFileSync(path.join(tempDir, `${uuid}.content`), 'tablet update');
+      }, 250);
+      setTimeout(() => {
+        watcher.stop();
+        expect(changes).toBeGreaterThan(0);
+        done();
+      }, 500);
+    }, 5000);
+
     it('fires extraction-due after debounce settles', (done) => {
       const watcher = new XochitlFileWatcher({
         xochitlPath: tempDir,

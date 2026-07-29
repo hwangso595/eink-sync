@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import {
   archiveLocalDocumentCopies,
+  deleteGeneratedDocumentArtifacts,
   deleteDocumentFromTablet,
   deleteLocalDocumentCopies,
 } from './document-deletion';
@@ -69,6 +70,97 @@ describe('deleteLocalDocumentCopies', () => {
   it('rejects an invalid UUID before touching local folders', () => {
     expect(() => deleteLocalDocumentCopies(`${UUID}*`, ['/tmp']))
       .toThrow('invalid UUID');
+  });
+});
+
+describe('deleteGeneratedDocumentArtifacts', () => {
+  const OTHER_UUID = '73d2d6c2-9b39-4f07-8cda-194440dbdfb7';
+
+  it('deletes the UUID-matched note, drawing variants, and render cache', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'generated-delete-test-'));
+    const highlightsDir = path.join(root, 'Highlights');
+    const drawingsDir = path.join(highlightsDir, 'drawings');
+    fs.mkdirSync(drawingsDir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(highlightsDir, 'Renamed note.md'),
+      `---\nremarkable_uuid: ${UUID}\n---\n`,
+    );
+    fs.writeFileSync(
+      path.join(highlightsDir, 'Other.md'),
+      `---\nremarkable_uuid: ${OTHER_UUID}\n---\n`,
+    );
+    for (const filename of [
+      'Renamed note_p1_abcd.png',
+      'Original name_p2.png',
+      'Original name_p3_beef.png.bak',
+      `.render-cache-${UUID}.json`,
+      'Other_p1_abcd.png',
+    ]) {
+      fs.writeFileSync(path.join(drawingsDir, filename), 'generated');
+    }
+
+    expect(deleteGeneratedDocumentArtifacts(
+      UUID,
+      'Original name',
+      [highlightsDir],
+      drawingsDir,
+    )).toBe(5);
+    expect(fs.readdirSync(highlightsDir).sort()).toEqual(['Other.md', 'drawings']);
+    expect(fs.readdirSync(drawingsDir)).toEqual(['Other_p1_abcd.png']);
+  });
+
+  it('finds a note in a source-specific highlights subfolder', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'generated-source-delete-test-'));
+    const highlightsDir = path.join(root, 'Highlights');
+    const sourceDir = path.join(highlightsDir, 'Tablet A');
+    const drawingsDir = path.join(highlightsDir, 'drawings');
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.mkdirSync(drawingsDir);
+    fs.writeFileSync(
+      path.join(sourceDir, 'Notebook.md'),
+      `---\nremarkable_uuid: ${UUID}\n---\n`,
+    );
+    fs.writeFileSync(path.join(drawingsDir, 'Notebook_p1_1234.png'), 'generated');
+
+    expect(deleteGeneratedDocumentArtifacts(
+      UUID,
+      'Notebook',
+      [highlightsDir, sourceDir],
+      drawingsDir,
+    )).toBe(2);
+    expect(fs.readdirSync(sourceDir)).toEqual([]);
+    expect(fs.readdirSync(drawingsDir)).toEqual([]);
+  });
+
+  it('preserves a same-named note and drawings owned by another document', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'generated-collision-delete-test-'));
+    const highlightsDir = path.join(root, 'Highlights');
+    const drawingsDir = path.join(highlightsDir, 'drawings');
+    fs.mkdirSync(drawingsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(highlightsDir, 'Shared name.md'),
+      `---\nremarkable_uuid: ${OTHER_UUID}\n---\n`,
+    );
+    fs.writeFileSync(path.join(drawingsDir, 'Shared name_p1_abcd.png'), 'other');
+
+    expect(deleteGeneratedDocumentArtifacts(
+      UUID,
+      'Shared name',
+      [highlightsDir],
+      drawingsDir,
+    )).toBe(0);
+    expect(fs.existsSync(path.join(highlightsDir, 'Shared name.md'))).toBe(true);
+    expect(fs.existsSync(path.join(drawingsDir, 'Shared name_p1_abcd.png'))).toBe(true);
+  });
+
+  it('rejects an invalid UUID before touching generated files', () => {
+    expect(() => deleteGeneratedDocumentArtifacts(
+      `${UUID}*`,
+      'Document',
+      ['/tmp'],
+      '/tmp',
+    )).toThrow('invalid UUID');
   });
 });
 

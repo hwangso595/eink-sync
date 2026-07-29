@@ -23,6 +23,7 @@ from highlight_extractor import (
     _color_id_to_name,
     _extract_text_from_pdf_page,
     _extract_text_by_rectangle,
+    _detect_page_gutter,
     _get_bounds_from_rects,
     _collect_glyph_ranges,
     _extract_highlights_from_rm_file,
@@ -704,6 +705,75 @@ class TestExtractTextByRectangle(unittest.TestCase):
         rects = [{"x": 10.0, "y": 10.0, "width": 50.0, "height": 14.0}]
         result = _extract_text_by_rectangle(mock_doc, 0, rects)
         self.assertEqual(result, "")
+
+    @patch("highlight_extractor.fitz")
+    def test_two_column_words_read_left_column_first(self, mock_fitz):
+        def make_rect(x0, y0, x1, y1):
+            r = MagicMock()
+            r.x0, r.y0, r.x1, r.y1 = x0, y0, x1, y1
+            r.is_empty = False
+
+            def intersect(self_rect, other):
+                result = MagicMock()
+                result.is_empty = (
+                    max(x0, other.x0) >= min(x1, other.x1)
+                    or max(y0, other.y0) >= min(y1, other.y1)
+                )
+                return result
+
+            r.__and__ = intersect
+            return r
+
+        mock_fitz.Rect = make_rect
+        mock_page = MagicMock()
+        mock_page.rect.width = 612.0
+
+        words = [
+            (350.0, 100.0, 390.0, 114.0, "right-top", 2, 0, 0),
+            (50.0, 120.0, 90.0, 134.0, "left-top", 0, 0, 0),
+            (350.0, 140.0, 400.0, 154.0, "right-bottom", 2, 1, 0),
+            (50.0, 160.0, 100.0, 174.0, "left-bottom", 0, 1, 0),
+        ]
+        blocks = [
+            (40.0, 80.0, 280.0, 700.0, "L" * 300, 0, 0),
+            (332.0, 80.0, 570.0, 700.0, "R" * 300, 1, 0),
+        ]
+        mock_page.get_text.side_effect = lambda kind: words if kind == "words" else blocks
+
+        mock_doc = MagicMock()
+        mock_doc.__len__ = MagicMock(return_value=1)
+        mock_doc.__getitem__ = MagicMock(return_value=mock_page)
+
+        result = _extract_text_by_rectangle(
+            mock_doc,
+            0,
+            [{"x": 0.0, "y": 0.0, "width": 612.0, "height": 792.0}],
+        )
+
+        self.assertEqual(result, "left-top left-bottom right-top right-bottom")
+
+
+class TestDetectPageGutter(unittest.TestCase):
+    def test_detects_balanced_two_column_page(self):
+        page = MagicMock()
+        page.rect.width = 612.0
+        page.get_text.return_value = [
+            (40.0, 80.0, 280.0, 700.0, "left " * 80, 0, 0),
+            (332.0, 80.0, 570.0, 700.0, "right " * 80, 1, 0),
+            (100.0, 30.0, 512.0, 60.0, "short title", 2, 0),
+        ]
+
+        self.assertEqual(_detect_page_gutter(page), 306.0)
+
+    def test_rejects_single_column_page(self):
+        page = MagicMock()
+        page.rect.width = 612.0
+        page.get_text.return_value = [
+            (60.0, 80.0, 552.0, 700.0, "single column body " * 80, 0, 0),
+            (50.0, 720.0, 180.0, 750.0, "footer", 1, 0),
+        ]
+
+        self.assertIsNone(_detect_page_gutter(page))
 
 
 class TestRectBasedFallbackInExtraction(unittest.TestCase):

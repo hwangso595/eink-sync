@@ -88,6 +88,125 @@ export function deleteLocalDocumentCopies(
   return removed;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function readNoteDocumentUuid(notePath: string): string | null {
+  try {
+    const fd = fs.openSync(notePath, 'r');
+    try {
+      const buffer = Buffer.alloc(4096);
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      const header = buffer.toString('utf-8', 0, bytes);
+      const match = header.match(/^remarkable_uuid:\s*([0-9a-fA-F-]{36})\s*$/m);
+      return match?.[1].toLowerCase() ?? null;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remove the highlight note, rendered pages, and render cache generated for a
+ * permanently deleted document. Archive does not use this cleanup because its
+ * purpose is to retain these vault artifacts after removing the tablet copy.
+ *
+ * Notes are matched by UUID frontmatter rather than by visible filename. The
+ * supplied base name is also checked so orphaned drawing files can be cleaned
+ * up when their note has already been removed.
+ *
+ * @returns The number of generated files removed.
+ */
+export function deleteGeneratedDocumentArtifacts(
+  uuid: string,
+  noteBaseName: string,
+  noteDirectories: string[],
+  drawingsDirectory: string,
+): number {
+  if (!isValidUuid(uuid)) {
+    throw new Error('Refusing to delete generated artifacts with an invalid UUID.');
+  }
+
+  const normalizedUuid = uuid.toLowerCase();
+  const baseNames = new Set<string>();
+  const safeNoteBaseName = noteBaseName
+    && path.basename(noteBaseName) === noteBaseName
+    && noteBaseName !== '.'
+    && noteBaseName !== '..'
+    ? noteBaseName
+    : null;
+  let suppliedNameBelongsToAnotherDocument = false;
+  let removed = 0;
+
+  for (const directory of new Set(noteDirectories.filter(Boolean))) {
+    let entries: string[];
+    try {
+      if (!fs.statSync(directory).isDirectory()) continue;
+      entries = fs.readdirSync(directory);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.endsWith('.md')) continue;
+
+      const baseName = entry.slice(0, -3);
+      const notePath = path.join(directory, entry);
+      const noteUuid = readNoteDocumentUuid(notePath);
+      if (safeNoteBaseName === baseName && noteUuid && noteUuid !== normalizedUuid) {
+        suppliedNameBelongsToAnotherDocument = true;
+      }
+      if (noteUuid !== normalizedUuid) continue;
+
+      baseNames.add(baseName);
+      try {
+        fs.rmSync(notePath, { force: true });
+        removed++;
+      } catch {
+        // A locked output must not prevent the document itself being deleted.
+      }
+    }
+  }
+
+  if (safeNoteBaseName && !suppliedNameBelongsToAnotherDocument) {
+    baseNames.add(safeNoteBaseName);
+  }
+
+  let drawingEntries: string[];
+  try {
+    if (!drawingsDirectory || !fs.statSync(drawingsDirectory).isDirectory()) {
+      return removed;
+    }
+    drawingEntries = fs.readdirSync(drawingsDirectory);
+  } catch {
+    return removed;
+  }
+
+  const drawingPatterns = [...baseNames].map(
+    (baseName) => new RegExp(
+      `^${escapeRegExp(baseName)}_p\\d+(?:_[0-9a-fA-F]{4})?\\.png(?:\\.bak)?$`,
+    ),
+  );
+  const cacheName = `.render-cache-${uuid}.json`;
+
+  for (const entry of drawingEntries) {
+    if (entry !== cacheName && !drawingPatterns.some((pattern) => pattern.test(entry))) {
+      continue;
+    }
+    try {
+      fs.rmSync(path.join(drawingsDirectory, entry), { force: true });
+      removed++;
+    } catch {
+      // Continue removing the remaining generated artifacts when one is locked.
+    }
+  }
+
+  return removed;
+}
+
 /**
  * Permanently remove a document and all of its UUID-prefixed sidecars from the
  * tablet, then verify that no matching entry remains.

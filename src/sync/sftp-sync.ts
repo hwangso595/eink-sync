@@ -27,7 +27,7 @@ import { Client, SFTPWrapper } from 'ssh2';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
-import { makeHostVerifier } from '../ssh/host-key-store';
+import { connectSftp } from './sftp-connection';
 import { XOCHITL_SYNC_PATH } from './types';
 
 // ---------------------------------------------------------------
@@ -172,62 +172,6 @@ function isUuidLike(name: string): boolean {
 // ---------------------------------------------------------------
 // SFTP helpers (promisified wrappers around ssh2 callbacks)
 // ---------------------------------------------------------------
-
-/** Connect to the tablet via SSH and open an SFTP session. */
-function connectSftp(options: SftpSyncOptions): Promise<{ conn: Client; sftp: SFTPWrapper }> {
-  return new Promise((resolve, reject) => {
-    const conn = new Client();
-
-    const timeoutId = window.setTimeout(() => {
-      conn.destroy();
-      reject(new Error(
-        `SFTP connection to ${options.host}:${options.port} timed out after ${options.timeoutMs}ms.`,
-      ));
-    }, options.timeoutMs + 1000);
-
-    conn.on('ready', () => {
-      window.clearTimeout(timeoutId);
-      conn.sftp((err, sftp) => {
-        if (err) {
-          conn.end();
-          reject(new Error(`Failed to open SFTP session: ${err.message}`));
-          return;
-        }
-        resolve({ conn, sftp });
-      });
-    });
-
-    conn.on('error', (err) => {
-      window.clearTimeout(timeoutId);
-      reject(new Error(`SSH connection failed: ${err.message}`));
-    });
-
-    conn.connect({
-      host: options.host,
-      port: options.port,
-      username: options.username,
-      password: options.password,
-      readyTimeout: options.timeoutMs,
-      // Pin the tablet's host key (TOFU); see ssh/host-key-store.
-      hostVerifier: makeHostVerifier(options.host),
-      // reMarkable uses dropbear SSH with limited algorithm support
-      algorithms: {
-        kex: [
-          'ecdh-sha2-nistp256',
-          'ecdh-sha2-nistp384',
-          'ecdh-sha2-nistp521',
-          'diffie-hellman-group14-sha256',
-          'diffie-hellman-group14-sha1',
-        ],
-        serverHostKey: [
-          'ssh-ed25519',
-          'ecdsa-sha2-nistp256',
-          'ssh-rsa',
-        ],
-      },
-    });
-  });
-}
 
 /** List files in a remote directory. */
 function sftpReaddir(sftp: SFTPWrapper, remotePath: string): Promise<RemoteFileInfo[]> {
@@ -561,10 +505,14 @@ export class SftpSyncEngine {
       }
     }
 
-    // Everything else (.metadata/.content): compare mtime
+    // Everything else (.metadata/.content): compare mtime and size. xochitl
+    // can rewrite a sidecar within the same one-second mtime tick, so checking
+    // only mtime can leave an older local file that later fails archive's
+    // byte-for-byte backup verification.
     try {
-      const localMtime = Math.floor(fs.statSync(localPath).mtimeMs / 1000);
-      return remote.mtime > localMtime;
+      const localStat = fs.statSync(localPath);
+      const localMtime = Math.floor(localStat.mtimeMs / 1000);
+      return remote.mtime > localMtime || remote.size !== localStat.size;
     } catch {
       return true;
     }
