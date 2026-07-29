@@ -346,6 +346,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
     if (!this.settings.archiveFolder) {
       this.settings.archiveFolder = DEFAULT_SETTINGS.archiveFolder;
     }
+    // Older versions stored only one tablet IP and replaced it with the USB
+    // address when USB mode was selected. Preserve a non-USB address so users
+    // can switch between USB and WiFi without entering it again.
+    if (!this.settings.wifiTabletIp && this.settings.tabletIp !== '10.11.99.1') {
+      this.settings.wifiTabletIp = this.settings.tabletIp;
+    }
     // drawingsFolder is now derived from highlightsFolder (no longer a setting)
     // Clean up legacy drawingsFolder if present in saved data
     delete (this.settings as unknown as Record<string, unknown>).drawingsFolder;
@@ -1769,7 +1775,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
    * Create the default highlight template file in the vault if it doesn't exist.
    * The template path is configurable via settings.templatePath.
    */
-  private async ensureDefaultTemplate(): Promise<void> {
+  async ensureDefaultTemplate(): Promise<void> {
     const templatePath = this.settings.templatePath;
     if (!templatePath) return;
 
@@ -1877,6 +1883,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
           localSyncDir,
+          allowSftpSkippedFiles: (this.settings.syncMethod ?? 'sftp') === 'sftp',
         }, () => this.scheduleXochitlRestart());
       });
 

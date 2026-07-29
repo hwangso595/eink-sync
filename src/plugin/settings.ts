@@ -203,6 +203,8 @@ export type SyncMethodSetting = 'sftp' | 'syncthing';
 /** Full plugin settings persisted to data.json. */
 export interface ReMarkableBridgeSettings {
   tabletIp: string;
+  /** Last verified/manual WiFi address, preserved while USB mode is active. */
+  wifiTabletIp: string;
   rootPassword: string;
   sshPort: number;
   connectionMethod: ConnectionMethod;
@@ -288,6 +290,7 @@ export function generateSourceId(): string {
 /** Sensible defaults. */
 export const DEFAULT_SETTINGS: ReMarkableBridgeSettings = {
   tabletIp: '10.11.99.1',
+  wifiTabletIp: '',
   rootPassword: '',
   sshPort: 22,
   connectionMethod: 'usb',

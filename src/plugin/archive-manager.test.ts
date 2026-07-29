@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  archiveOldDocuments,
   hasLocalBackup,
   markLocalBackupForRefresh,
   tabletFilesBackedUpLocally,
@@ -163,5 +164,67 @@ describe('tabletFilesBackedUpLocally', () => {
     )).toBe(true);
     expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.pagedata`));
     expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.highlights/*`));
+  });
+});
+
+describe('archiveOldDocuments sync-method verification', () => {
+  const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+
+  function archiveSsh(): SSHExecutor {
+    return {
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      ping: jest.fn(),
+      isConnected: jest.fn(),
+      execute: jest.fn().mockImplementation(async (command: string) => {
+        if (command.startsWith('df ')) {
+          return { stdout: '90\n', stderr: '', exitCode: 0 };
+        }
+        if (command.includes("-name '*.metadata'")) {
+          return {
+            stdout: `/home/root/.local/share/remarkable/xochitl/${uuid}.metadata\n`,
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        if (command.startsWith('cat ')) {
+          return {
+            stdout: JSON.stringify({ lastOpened: '1', lastModified: '1', createdTime: '1' }),
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        if (command.includes("stat -c '%s %n'")) {
+          const skippedFilesExcluded = command.includes(`./${uuid}.local`);
+          return {
+            stdout: skippedFilesExcluded
+              ? `7 ./${uuid}.pdf\n`
+              : `7 ./${uuid}.pdf\n5 ./${uuid}.local\n`,
+            stderr: '',
+            exitCode: 0,
+          };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }),
+    } as unknown as SSHExecutor;
+  }
+
+  it('archives an SFTP backup without requiring intentionally skipped files', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`);
+    write(dir, `${uuid}.content`);
+    write(dir, `${uuid}.pdf`, 'PDFDATA');
+    const ssh = archiveSsh();
+
+    const count = await archiveOldDocuments(ssh, {
+      thresholdPercent: 80,
+      minAgeDays: 1,
+      force: true,
+      localSyncDir: dir,
+      allowSftpSkippedFiles: true,
+    });
+
+    expect(count).toBe(1);
+    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.local`));
   });
 });

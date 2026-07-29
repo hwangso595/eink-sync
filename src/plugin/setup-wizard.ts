@@ -260,6 +260,7 @@ export class SetupWizardModal extends Modal {
                       const wifiResult = await this.plugin.testWifiConnection(wifiIp);
                       if (wifiResult.ok) {
                         state.message += ` | WiFi ready: ${wifiIp}`;
+                        settings.wifiTabletIp = wifiIp;
                         settings.tabletIp = wifiIp;
                         settings.connectionMethod = 'wifi';
                         new Notice(`Tablet WiFi verified at ${wifiIp}. WiFi is now the default connection.`);

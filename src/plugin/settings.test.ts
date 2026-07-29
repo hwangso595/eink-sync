@@ -46,6 +46,9 @@ function simulateLoadSettings(
   if (!settings.archiveFolder) {
     settings.archiveFolder = DEFAULT_SETTINGS.archiveFolder;
   }
+  if (!settings.wifiTabletIp && settings.tabletIp !== '10.11.99.1') {
+    settings.wifiTabletIp = settings.tabletIp;
+  }
   return settings;
 }
 
@@ -118,6 +121,19 @@ describe('Empty settings fallback', () => {
     expect(settings.extraction.ocrEnabled).toBe(false);
     expect(settings.extraction.ocrLanguage).toBe('eng');
     expect(settings.extraction.renderTemplates).toBe(true);
+  });
+
+  it('migrates an existing WiFi tablet IP into the preserved WiFi field', () => {
+    const settings = simulateLoadSettings({
+      tabletIp: '192.168.2.210',
+      connectionMethod: 'wifi',
+    });
+    expect(settings.wifiTabletIp).toBe('192.168.2.210');
+  });
+
+  it('does not treat the USB address as a remembered WiFi address', () => {
+    const settings = simulateLoadSettings({ tabletIp: '10.11.99.1' });
+    expect(settings.wifiTabletIp).toBe('');
   });
 });
 
