@@ -69,7 +69,7 @@ BASELINES = {
 }
 
 
-def test_page(name: str) -> dict:
+def score_page(name: str) -> dict:
     """Render a test page and score against reference."""
     rm_path = os.path.join(RM_DIR, f'{name}.rm')
     ref_path = os.path.join(REF_DIR, f'{name}.png')
@@ -111,7 +111,7 @@ def main():
 
     all_passed = True
     for name in sorted(test_cases):
-        result = test_page(name)
+        result = score_page(name)
 
         if 'error' in result:
             print(f"  SKIP {name}: {result['error']}")
@@ -133,7 +133,7 @@ def main():
         print("All tests PASSED")
         return 0
     else:
-        print("Some tests FAILED — renderer quality has regressed!")
+        print("Some tests FAILED: renderer quality has regressed!")
         return 1
 
 

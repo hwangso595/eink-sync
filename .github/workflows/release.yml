@@ -25,8 +25,19 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: |
+            extraction/requirements.txt
+            extraction/requirements-test.txt
+
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          python -m pip install -r extraction/requirements-test.txt
 
       - name: Verify release version
         run: |
@@ -37,15 +48,14 @@ jobs:
           npx tsc --noEmit
           npx eslint manifest.json src --quiet --format stylish
           npm test -- --runInBand
+          cd extraction
+          python -m pytest
 
       - name: Build release assets
         run: npm run build
 
-      - name: Verify release assets
-        run: |
-          test -s main.js
-          test -s manifest.json
-          test -s styles.css
+      - name: Verify release assets and clean install
+        run: npm run verify:release
 
       - name: Attest release assets
         uses: actions/attest@v4

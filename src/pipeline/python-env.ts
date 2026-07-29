@@ -28,15 +28,46 @@ import * as path from 'path';
 import { logger } from '../utils/logger';
 import { BridgeError, ErrorCode } from '../types/errors';
 
-/** Core runtime packages; import names checked by {@link CORE_IMPORT_CHECK}. */
-export const REQUIRED_PACKAGES = ['rmscene>=0.5.0', 'PyMuPDF>=1.23.0'];
+/**
+ * Runtime versions validated by the extraction test suite and shipped together.
+ * Exact pins make a first install reproducible instead of silently accepting a
+ * future package release with an incompatible .rm or PDF API.
+ */
+export const REQUIRED_PACKAGE_VERSIONS = {
+  rmscene: '0.8.0',
+  PyMuPDF: '1.28.0',
+} as const;
+
+/** Core runtime packages; versions are checked by {@link CORE_IMPORT_CHECK}. */
+export const REQUIRED_PACKAGES = [
+  `rmscene==${REQUIRED_PACKAGE_VERSIONS.rmscene}`,
+  `PyMuPDF==${REQUIRED_PACKAGE_VERSIONS.PyMuPDF}`,
+];
 
 /** Optional OCR packages (the Tesseract binary itself cannot be pip-installed). */
 export const OCR_PACKAGES = ['pytesseract>=0.3.10', 'Pillow>=10.0.0'];
 
-/** Import statement that must succeed for an environment to be usable. */
-const CORE_IMPORT_CHECK = 'import rmscene, fitz';
+/** Old Python releases no longer receive wheels from all runtime dependencies. */
+export const MIN_PYTHON_VERSION = { major: 3, minor: 10 } as const;
+
+/** uv provisions this tested interpreter when no suitable system Python exists. */
+export const MANAGED_PYTHON_VERSION = '3.13';
+
+/** Import and exact-version check that must succeed for an environment to be usable. */
+const CORE_IMPORT_CHECK = [
+  'import rmscene, fitz',
+  'from importlib.metadata import version',
+  `assert version("rmscene") == "${REQUIRED_PACKAGE_VERSIONS.rmscene}"`,
+  `assert version("PyMuPDF") == "${REQUIRED_PACKAGE_VERSIONS.PyMuPDF}"`,
+].join('; ');
 const OCR_IMPORT_CHECK = 'import pytesseract, PIL';
+
+/** Prints the resolved interpreter path only when the minimum version is met. */
+const PYTHON_EXECUTABLE_PROBE = [
+  'import sys',
+  `assert sys.version_info >= (${MIN_PYTHON_VERSION.major}, ${MIN_PYTHON_VERSION.minor})`,
+  'print(sys.executable)',
+].join('; ');
 
 const VERIFY_TIMEOUT_MS = 20_000;
 const CREATE_TIMEOUT_MS = 120_000;
@@ -141,15 +172,81 @@ async function detectUv(runner: CommandRunner): Promise<boolean> {
   return result.code === 0;
 }
 
-/** First PATH interpreter that answers `--version` with a Python 3, or null. */
-async function detectSystemPython(runner: CommandRunner): Promise<string | null> {
-  for (const candidate of ['python3', 'python']) {
-    const result = await runner(candidate, ['--version'], 5_000);
-    if (result.code === 0 && result.stdout.includes('Python 3')) {
-      return candidate;
+interface PythonCandidate {
+  command: string;
+  prefixArgs: string[];
+}
+
+/** Common GUI-app locations that may be absent from Obsidian's PATH. */
+function commonPythonPaths(): string[] {
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA
+      ?? path.join(os.homedir(), 'AppData', 'Local');
+    const root = path.join(localAppData, 'Programs', 'Python');
+    try {
+      return fs.readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && /^Python\d+$/i.test(entry.name))
+        .map((entry) => path.join(root, entry.name, 'python.exe'))
+        .filter((candidate) => fs.existsSync(candidate))
+        .sort()
+        .reverse();
+    } catch {
+      return [];
     }
   }
-  return null;
+  if (process.platform === 'darwin') {
+    return [
+      '/opt/homebrew/bin/python3',
+      '/usr/local/bin/python3',
+      '/Library/Frameworks/Python.framework/Versions/Current/bin/python3',
+      '/usr/bin/python3',
+    ].filter((candidate) => fs.existsSync(candidate));
+  }
+  return ['/usr/local/bin/python3', '/usr/bin/python3']
+    .filter((candidate) => fs.existsSync(candidate));
+}
+
+function systemPythonCandidates(): PythonCandidate[] {
+  const candidates: PythonCandidate[] = [];
+  if (process.platform === 'win32') {
+    // The Python launcher works even when python.exe is not on PATH.
+    candidates.push({ command: 'py', prefixArgs: ['-3'] });
+  }
+  for (const command of commonPythonPaths()) {
+    candidates.push({ command, prefixArgs: [] });
+  }
+  candidates.push(
+    { command: 'python3', prefixArgs: [] },
+    { command: 'python', prefixArgs: [] },
+  );
+  return candidates;
+}
+
+/** Resolve every usable Python 3.10+ interpreter, including the Windows launcher. */
+export async function detectSystemPythons(runner: CommandRunner): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const candidate of systemPythonCandidates()) {
+    const result = await runner(
+      candidate.command,
+      [...candidate.prefixArgs, '-c', PYTHON_EXECUTABLE_PROBE],
+      5_000,
+    );
+    if (result.code !== 0) continue;
+    const pythonPath = result.stdout.trim().split(/\r?\n/).at(-1)?.trim();
+    if (pythonPath && !resolved.includes(pythonPath)) resolved.push(pythonPath);
+  }
+  return resolved;
+}
+
+/** Resolve the preferred Python executable using the production command runner. */
+export async function detectPythonExecutable(): Promise<string> {
+  const [pythonPath] = await detectSystemPythons(spawnRunner);
+  if (pythonPath) return pythonPath;
+  throw new BridgeError(
+    ErrorCode.PYTHON_NOT_FOUND,
+    'Python 3.10 or newer was not found.',
+    'Install Python from https://www.python.org/downloads/ or install uv, then retry.',
+  );
 }
 
 /** Install packages into the venv via uv or pip. Returns stderr on failure. */
@@ -172,12 +269,16 @@ async function createVenv(
   envDir: string,
 ): Promise<string | null> {
   if (useUv) {
-    const result = await runner('uv', ['venv', envDir], CREATE_TIMEOUT_MS);
+    const result = await runner(
+      'uv',
+      ['venv', '--python', MANAGED_PYTHON_VERSION, envDir],
+      CREATE_TIMEOUT_MS,
+    );
     return result.code === 0 ? null : result.stderr.trim() || describeExit(result);
   }
-  const systemPython = await detectSystemPython(runner);
+  const [systemPython] = await detectSystemPythons(runner);
   if (!systemPython) {
-    return 'no Python 3 on PATH to create a venv with (and uv is not installed)';
+    return 'no Python 3.10+ installation was found (and uv is not installed)';
   }
   const result = await runner(systemPython, ['-m', 'venv', envDir], CREATE_TIMEOUT_MS);
   return result.code === 0 ? null : result.stderr.trim() || describeExit(result);
@@ -268,6 +369,7 @@ async function ensureManagedPythonInner(
     let repaired = false;
     if (fs.existsSync(venvPython)) {
       // Broken but present: try reinstalling packages before rebuilding.
+      progress('E-Ink Sync: repairing Python extraction packages...');
       const installError = await installPackages(runner, useUv, venvPython, REQUIRED_PACKAGES);
       if (!installError && await verifyImports(runner, venvPython)) {
         repaired = true;
@@ -285,15 +387,18 @@ async function ensureManagedPythonInner(
       } catch (err) {
         failures.push(`remove stale env: ${err instanceof Error ? err.message : String(err)}`);
       }
+      progress('E-Ink Sync: creating a private Python environment...');
       const createError = await createVenv(runner, useUv, envDir);
       if (createError) {
         failures.push(`create venv: ${createError}`);
       } else {
+        progress('E-Ink Sync: installing extraction packages (this can take a few minutes)...');
         const installError = await installPackages(runner, useUv, venvPython, REQUIRED_PACKAGES);
         if (installError) failures.push(`install packages: ${installError}`);
       }
     }
 
+    progress('E-Ink Sync: verifying the Python environment...');
     if (fs.existsSync(venvPython) && await verifyImports(runner, venvPython)) {
       if (options.ocrExtras) {
         await ensureOcrPackages(runner, useUv, venvPython);
@@ -308,13 +413,9 @@ async function ensureManagedPythonInner(
 
   // 3. Fall back to a system Python that already has the deps, so setups that
   //    worked before this feature keep working even if env creation fails
-  //    here. Every PATH candidate is tried, not just the first one that
-  //    answers --version.
-  let foundSystemPython = false;
-  for (const candidate of ['python3', 'python']) {
-    const version = await runner(candidate, ['--version'], 5_000);
-    if (version.code !== 0 || !version.stdout.includes('Python 3')) continue;
-    foundSystemPython = true;
+  //    here. Every discovered interpreter is tried, not just the first one.
+  const systemPythons = await detectSystemPythons(runner);
+  for (const candidate of systemPythons) {
     if (await verifyImports(runner, candidate)) {
       logger.warn(
         `Managed env unavailable (${failures.join('; ') || 'unknown failure'}); ` +
@@ -324,15 +425,15 @@ async function ensureManagedPythonInner(
     }
     failures.push(`system Python "${candidate}" is missing required packages`);
   }
-  if (!foundSystemPython) {
-    failures.push('no Python 3 found on PATH');
+  if (systemPythons.length === 0) {
+    failures.push('no Python 3.10+ installation found');
   }
 
   throw new BridgeError(
     ErrorCode.PYTHON_DEPS_MISSING,
     'No usable Python environment for extraction.',
     `Attempts: ${failures.join('; ')}. Install uv (https://docs.astral.sh/uv/) ` +
-    `or run "pip install ${REQUIRED_PACKAGES.join(' ')}" with a Python 3.10+ on PATH, ` +
-    `then retry.`,
+    `or install Python 3.10+ from https://www.python.org/downloads/, then retry. ` +
+    `The plugin will install ${REQUIRED_PACKAGES.join(' ')} into its private environment automatically.`,
   );
 }
