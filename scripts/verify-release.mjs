@@ -40,6 +40,7 @@ const allowedExternal = new Set([
   'electron',
   // ssh2 probes these optional accelerators inside try/catch and has JS fallbacks.
   'cpu-features',
+  '../build/Release/cpufeatures.node',
   './crypto/build/Release/sshcrypto.node',
 ]);
 const unresolved = new Set(
