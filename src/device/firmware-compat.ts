@@ -13,10 +13,10 @@ import { SSHExecutor } from '../ssh/ssh-client';
 import { FirmwareVersion } from '../types/device';
 import { logger } from '../utils/logger';
 import {
-  parseFirmwareVersion,
   getInstallationPath,
   type InstallationPath,
 } from './firmware';
+import { detectFirmwareVersion } from './detector';
 
 /** Paths where Entware should be installed (on /home, survives OTA). */
 const ENTWARE_HOME_PATH = '/home/root/.entware';
@@ -270,19 +270,17 @@ export async function runPostUpdateHealthCheck(
     recoverySteps: [],
   };
 
-  // Check firmware version
+  // Check firmware version -- /etc/version alone is a build timestamp on 3.x,
+  // so go through the same multi-source detection the setup wizard uses.
   try {
-    const versionResult = await ssh.execute('cat /etc/version');
-    if (versionResult.exitCode === 0 && versionResult.stdout.trim()) {
-      result.firmwareVersion = parseFirmwareVersion(versionResult.stdout.trim());
-      result.installPath = getInstallationPath(result.firmwareVersion);
+    result.firmwareVersion = await detectFirmwareVersion(ssh);
+    result.installPath = getInstallationPath(result.firmwareVersion);
 
-      result.checks.push({
-        name: 'Firmware version',
-        status: 'pass',
-        message: `Firmware ${result.firmwareVersion.raw} detected (${result.installPath} path)`,
-      });
-    }
+    result.checks.push({
+      name: 'Firmware version',
+      status: 'pass',
+      message: `Firmware ${result.firmwareVersion.raw} detected (${result.installPath} path)`,
+    });
   } catch (err) {
     result.checks.push({
       name: 'Firmware version',

@@ -23,6 +23,20 @@ describe('parseFirmwareVersion', () => {
     expect(v.major).toBe(3);
   });
 
+  it('accepts a three-component version and defaults build to 0', () => {
+    const v = parseFirmwareVersion('3.27.3');
+    expect(v.major).toBe(3);
+    expect(v.minor).toBe(27);
+    expect(v.patch).toBe(3);
+    expect(v.build).toBe(0);
+  });
+
+  // Issue #20: /etc/version holds a build timestamp on firmware 3.x.
+  it('rejects a build timestamp with a message naming the real sources', () => {
+    expect(() => parseFirmwareVersion('20260612085811')).toThrow(/build timestamp/);
+    expect(() => parseFirmwareVersion('20260612085811')).toThrow(BridgeError);
+  });
+
   it('throws BridgeError on invalid format', () => {
     expect(() => parseFirmwareVersion('3.26')).toThrow(BridgeError);
     expect(() => parseFirmwareVersion('not-a-version')).toThrow(BridgeError);

@@ -53,6 +53,41 @@ describe('detectFirmwareVersion', () => {
     await expect(detectFirmwareVersion(ssh)).rejects.toThrow(BridgeError);
   });
 
+  // Issue #20: /etc/version is a build timestamp on firmware 3.x, and Paper Pro
+  // has no update.conf -- so os-release must be consulted before giving up.
+  it('reads IMG_VERSION from /etc/os-release when update.conf is missing', async () => {
+    const ssh = createMockSSH({
+      'REMARKABLE_RELEASE_VERSION': { stdout: '', exitCode: 0 },
+      'IMG_VERSION': { stdout: '3.27.3.0\n', exitCode: 0 },
+      'cat /etc/version': { stdout: '20260612085811\n', exitCode: 0 },
+    });
+
+    const fw = await detectFirmwareVersion(ssh);
+    expect(fw.raw).toBe('3.27.3.0');
+    expect(fw.minor).toBe(27);
+  });
+
+  it('prefers update.conf over os-release', async () => {
+    const ssh = createMockSSH({
+      'REMARKABLE_RELEASE_VERSION': { stdout: '3.27.3.0\n', exitCode: 0 },
+      'IMG_VERSION': { stdout: '9.9.9.9\n', exitCode: 0 },
+    });
+
+    const fw = await detectFirmwareVersion(ssh);
+    expect(fw.raw).toBe('3.27.3.0');
+  });
+
+  it('rejects a build timestamp and names every source it tried', async () => {
+    const ssh = createMockSSH({
+      'REMARKABLE_RELEASE_VERSION': { stdout: '', exitCode: 0 },
+      'IMG_VERSION': { stdout: '', exitCode: 0 },
+      'cat /etc/version': { stdout: '20260612085811\n', exitCode: 0 },
+    });
+
+    await expect(detectFirmwareVersion(ssh)).rejects.toThrow(/20260612085811/);
+    await expect(detectFirmwareVersion(ssh)).rejects.toThrow(/os-release/);
+  });
+
   it('throws BridgeError when command fails', async () => {
     const ssh = createMockSSH({
       'cat /etc/version': { stdout: '', exitCode: 1 },

@@ -1,8 +1,8 @@
 /**
  * Firmware version parsing and compatibility checking.
  *
- * reMarkable firmware versions follow the pattern: major.minor.patch.build
- * e.g., "3.26.0.68"
+ * reMarkable firmware versions follow the pattern: major.minor.patch[.build]
+ * e.g., "3.26.0.68" or "3.27.3.0". Some builds report only three components.
  *
  * Compatibility routing (per spec):
  * - Firmware 2.6 to 3.3: Toltec path (package manager available)
@@ -13,8 +13,11 @@
 import { FirmwareVersion } from '../types/device';
 import { BridgeError, ErrorCode } from '../types/errors';
 
-/** Regex for reMarkable firmware version strings. */
-const FIRMWARE_REGEX = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/;
+/** Regex for reMarkable firmware version strings; the build component is optional. */
+const FIRMWARE_REGEX = /^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$/;
+
+/** /etc/version holds a build timestamp (e.g. "20260612085811") on firmware 3.x, not a version. */
+const BUILD_TIMESTAMP_REGEX = /^\d{8,}$/;
 
 /** Minimum supported firmware version. */
 const MIN_FIRMWARE = { major: 2, minor: 6 };
@@ -28,17 +31,26 @@ const V6_FORMAT_THRESHOLD = { major: 3, minor: 0 };
 /**
  * Parse a raw firmware version string into a structured object.
  *
- * @param raw - Version string like "3.26.0.68"
+ * @param raw - Version string like "3.26.0.68" or "3.27.3"
  * @throws BridgeError if the string doesn't match the expected format.
  */
 export function parseFirmwareVersion(raw: string): FirmwareVersion {
   const trimmed = raw.trim();
+
+  if (BUILD_TIMESTAMP_REGEX.test(trimmed)) {
+    throw new BridgeError(
+      ErrorCode.FIRMWARE_PARSE_FAILED,
+      `"${trimmed}" is a build timestamp, not a firmware version.`,
+      'Read the release version from /usr/share/remarkable/update.conf or /etc/os-release instead.',
+    );
+  }
+
   const match = trimmed.match(FIRMWARE_REGEX);
 
   if (!match) {
     throw new BridgeError(
       ErrorCode.FIRMWARE_PARSE_FAILED,
-      `Cannot parse firmware version: "${trimmed}". Expected format: X.Y.Z.B (e.g., 3.26.0.68).`,
+      `Cannot parse firmware version: "${trimmed}". Expected format: X.Y.Z[.B] (e.g., 3.27.3.0).`,
       'This may not be a reMarkable device, or the firmware version format has changed.',
     );
   }
@@ -48,7 +60,7 @@ export function parseFirmwareVersion(raw: string): FirmwareVersion {
     major: parseInt(match[1], 10),
     minor: parseInt(match[2], 10),
     patch: parseInt(match[3], 10),
-    build: parseInt(match[4], 10),
+    build: match[4] === undefined ? 0 : parseInt(match[4], 10),
   };
 }
 
@@ -107,13 +119,13 @@ export function usesV6FileFormat(firmware: FirmwareVersion): boolean {
  * Returns a warning message if the firmware is untested, or null if it's known-good.
  */
 export function getFirmwareCompatibilityWarning(firmware: FirmwareVersion): string | null {
-  // Known-good range per spec: 3.0 through 3.26.x
-  if (firmware.major === 3 && firmware.minor <= 26) {
+  // Known-good range: 3.0 through 3.27.x, the highest verified on hardware.
+  if (firmware.major === 3 && firmware.minor <= 27) {
     return null;
   }
 
-  if (firmware.major > 3 || (firmware.major === 3 && firmware.minor > 26)) {
-    return `Firmware ${firmware.raw} is newer than the tested range (up to 3.26.x). ` +
+  if (firmware.major > 3 || (firmware.major === 3 && firmware.minor > 27)) {
+    return `Firmware ${firmware.raw} is newer than the tested range (up to 3.27.x). ` +
       'The bridge should still work, but some features may behave unexpectedly. ' +
       'Please report any issues.';
   }
