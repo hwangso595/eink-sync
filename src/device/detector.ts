@@ -21,6 +21,28 @@ import { logger } from '../utils/logger';
 /** Path where reMarkable stores its version string. */
 const FIRMWARE_VERSION_PATH = '/etc/version';
 const UPDATE_CONF_PATH = '/usr/share/remarkable/update.conf';
+const OS_RELEASE_PATH = '/etc/os-release';
+
+/**
+ * Where the release version can be read, best source first.
+ *
+ * update.conf is absent on some models, and /etc/version holds a build timestamp
+ * on firmware 3.x -- so all three are tried in order.
+ */
+const FIRMWARE_SOURCES: ReadonlyArray<{ label: string; command: string }> = [
+  {
+    label: `${UPDATE_CONF_PATH} (REMARKABLE_RELEASE_VERSION)`,
+    command: `. ${UPDATE_CONF_PATH} 2>/dev/null && echo "$REMARKABLE_RELEASE_VERSION"`,
+  },
+  {
+    label: `${OS_RELEASE_PATH} (IMG_VERSION)`,
+    command: `. ${OS_RELEASE_PATH} 2>/dev/null && echo "$IMG_VERSION"`,
+  },
+  {
+    label: FIRMWARE_VERSION_PATH,
+    command: `cat ${FIRMWARE_VERSION_PATH} 2>/dev/null`,
+  },
+];
 
 /** Path to the device model file on reMarkable. */
 const DEVICE_MODEL_PATH = '/sys/devices/soc0/machine';
@@ -40,34 +62,40 @@ const RM2_MAX_RAM_MB = 1200;
 /**
  * Detect the reMarkable's firmware version.
  *
- * Reads /etc/version which contains the raw version string.
+ * Tries each source in FIRMWARE_SOURCES and uses the first that yields a parsable
+ * version. Every rejected source is logged so a miss is never silent.
  */
 export async function detectFirmwareVersion(ssh: SSHExecutor): Promise<FirmwareVersion> {
-  // Try update.conf first; contains REMARKABLE_RELEASE_VERSION=X.Y.Z.B
-  const confResult = await ssh.execute(
-    `grep REMARKABLE_RELEASE_VERSION ${UPDATE_CONF_PATH} 2>/dev/null | cut -d= -f2`
-  );
-  if (confResult.exitCode === 0 && confResult.stdout.trim()) {
-    const version = confResult.stdout.trim();
+  const attempts: string[] = [];
+
+  for (const source of FIRMWARE_SOURCES) {
+    const result = await ssh.execute(source.command);
+    const value = result.stdout.trim();
+
+    if (result.exitCode !== 0 || !value) {
+      attempts.push(`${source.label}: not present`);
+      continue;
+    }
+
     try {
-      return parseFirmwareVersion(version);
-    } catch {
-      // Fall through to /etc/version
+      const firmware = parseFirmwareVersion(value);
+      logger.info(`Firmware version ${value} read from ${source.label}`);
+      return firmware;
+    } catch (err) {
+      // A source that exists but holds a non-version is worth surfacing even
+      // when a later source succeeds.
+      const reason = err instanceof Error ? err.message : String(err);
+      attempts.push(`${source.label}: ${reason}`);
+      logger.warn(`Firmware source ${source.label}: ${reason}`);
     }
   }
 
-  // Fallback to /etc/version (may be a build timestamp on newer firmware)
-  const result = await ssh.execute(`cat ${FIRMWARE_VERSION_PATH}`);
-
-  if (result.exitCode !== 0 || !result.stdout.trim()) {
-    throw new BridgeError(
-      ErrorCode.FIRMWARE_PARSE_FAILED,
-      `Could not read firmware version from ${UPDATE_CONF_PATH} or ${FIRMWARE_VERSION_PATH}.`,
-      'This device may not be a reMarkable tablet.',
-    );
-  }
-
-  return parseFirmwareVersion(result.stdout.trim());
+  throw new BridgeError(
+    ErrorCode.FIRMWARE_PARSE_FAILED,
+    ['Could not read a firmware version from the device.', ...attempts].join('\n'),
+    'This device may not be a reMarkable tablet, or the firmware version format has changed. ' +
+      'Please report this along with the lines above.',
+  );
 }
 
 /**
