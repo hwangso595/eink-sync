@@ -235,7 +235,11 @@ describe('archiveOldDocuments sync-method verification', () => {
     write(dir, `${uuid}.metadata`);
     write(dir, `${uuid}.content`);
     write(dir, `${uuid}.pdf`, 'PDFDATA');
-    const ssh = archiveSsh(' 47430 3656 43260 8% /home\n');
+    const ssh = archiveSsh([
+      'Filesystem           1K-blocks      Used Available Use% Mounted on',
+      '/dev/mapper/remarkable-userdata-with-a-long-source-name',
+      '                         47430      3656     43260   8% /home',
+    ].join('\n'));
 
     const count = await archiveOldDocuments(ssh, {
       thresholdPercent: 80,

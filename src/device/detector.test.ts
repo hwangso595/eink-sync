@@ -254,7 +254,11 @@ describe('detectStorageInfo', () => {
   it('parses df output when a long filesystem name wraps to the previous line', async () => {
     const ssh = createMockSSH({
       'df -m /home': {
-        stdout: ' 47430 3656 43260 8% /home',
+        stdout: [
+          'Filesystem           1M-blocks      Used Available Use% Mounted on',
+          '/dev/mapper/remarkable-userdata-with-a-long-source-name',
+          '                         47430      3656     43260   8% /home',
+        ].join('\n'),
         exitCode: 0,
       },
     });
