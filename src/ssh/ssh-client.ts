@@ -41,6 +41,89 @@ export interface SSHExecutor {
   isConnected(): boolean;
 }
 
+/** Map a low-level ssh2 connection error to an actionable plugin error. */
+export function mapSSHConnectionError(err: Error, config: SSHConfig): BridgeError {
+  const msg = err.message.toLowerCase();
+  const socketError = err as Error & { code?: unknown; syscall?: unknown };
+  const errorCode = typeof socketError.code === 'string'
+    ? socketError.code.toUpperCase()
+    : '';
+  const syscall = typeof socketError.syscall === 'string'
+    ? socketError.syscall.toLowerCase()
+    : '';
+
+  // Server-side credential rejection is not an operating-system socket
+  // policy failure, even though both may be described as "permission denied".
+  if (
+    msg.includes('authentication')
+    || msg.includes('auth')
+    || msg.includes('permission denied')
+  ) {
+    return new BridgeError(
+      ErrorCode.SSH_AUTH_FAILED,
+      'SSH authentication failed. The root password may be incorrect.',
+      'Find the correct password in Settings > Help > About > Copyrights and Licenses on your reMarkable.',
+      err,
+    );
+  }
+
+  const socketAccessDenied = (
+    (errorCode === 'EACCES' && (!syscall || syscall === 'connect'))
+    || /\bconnect\s+eacces\b/i.test(err.message)
+    || /access (?:a )?socket .*forbidden/i.test(err.message)
+  );
+  if (socketAccessDenied) {
+    return new BridgeError(
+      ErrorCode.SSH_SOCKET_ACCESS_DENIED,
+      `SSH access to ${config.host}:${config.port} was denied before authentication (EACCES).`,
+      config.method === 'usb'
+        ? 'First confirm Developer Mode and USB SSH are enabled on the tablet. Enabling Developer Mode factory-resets current tablets, so back up first; a successful ping does not prove TCP 22 is available. If USB SSH is already enabled, allow Obsidian (its Electron/Node runtime) through Windows Defender Firewall, endpoint security, and VPN network-lock rules, including outbound TCP 22 to 10.11.99.1 on a Public USB network.'
+        : `First enable tablet WiFi SSH by connecting over USB and running rm-ssh-over-wlan on. If WiFi SSH is already enabled, allow Obsidian (its Electron/Node runtime) through the firewall, endpoint security, and VPN network-lock rules for outbound TCP 22 to ${config.host}.`,
+      err,
+    );
+  }
+
+  if (msg.includes('econnrefused') || msg.includes('connection refused')) {
+    return new BridgeError(
+      ErrorCode.SSH_CONNECTION_REFUSED,
+      `Connection refused by ${config.host}:${config.port}.`,
+      config.method === 'usb'
+        ? 'Ensure the tablet is powered on. Current models require Developer Mode before USB SSH; enabling it factory-resets the tablet, so back up first.'
+        : 'WiFi SSH may be disabled. Connect over USB, enable Developer Mode if required (back up first; enabling it factory-resets current tablets), then run rm-ssh-over-wlan on.',
+      err,
+    );
+  }
+
+  if (msg.includes('etimedout') || msg.includes('timeout') || msg.includes('timed out')) {
+    return new BridgeError(
+      ErrorCode.SSH_TIMEOUT,
+      `Connection to ${config.host} timed out.`,
+      config.method === 'usb'
+        ? 'Check the USB cable and Developer Mode. Enabling Developer Mode factory-resets current tablets, so back up first. The USB address is normally 10.11.99.1.'
+        : 'Ensure both devices are on the same network and the tablet is awake. If needed, connect over USB and run rm-ssh-over-wlan on.',
+      err,
+    );
+  }
+
+  if (msg.includes('ehostunreach') || msg.includes('enetunreach') || msg.includes('unreachable')) {
+    return new BridgeError(
+      ErrorCode.SSH_HOST_UNREACHABLE,
+      `Host ${config.host} is unreachable.`,
+      config.method === 'usb'
+        ? 'Reconnect the USB cable and verify Developer Mode when required. Enabling it factory-resets current tablets, so back up first.'
+        : 'Check that both devices are on the same WiFi network. If needed, connect over USB and run rm-ssh-over-wlan on.',
+      err,
+    );
+  }
+
+  return new BridgeError(
+    ErrorCode.SSH_COMMAND_FAILED,
+    `SSH error: ${err.message}`,
+    'Check your connection settings and try again.',
+    err,
+  );
+}
+
 /**
  * Manages an SSH connection to the reMarkable tablet.
  *
@@ -238,56 +321,6 @@ export class ReMarkableSSHClient implements SSHExecutor {
    * Map low-level ssh2 errors to user-friendly BridgeErrors.
    */
   private mapSSHError(err: Error): BridgeError {
-    const msg = err.message.toLowerCase();
-
-    if (msg.includes('authentication') || msg.includes('auth')) {
-      return new BridgeError(
-        ErrorCode.SSH_AUTH_FAILED,
-        'SSH authentication failed. The root password may be incorrect.',
-        'Find the correct password in Settings > Help > About > Copyrights and Licenses on your reMarkable.',
-        err,
-      );
-    }
-
-    if (msg.includes('econnrefused') || msg.includes('connection refused')) {
-      return new BridgeError(
-        ErrorCode.SSH_CONNECTION_REFUSED,
-        `Connection refused by ${this.config.host}:${this.config.port}.`,
-        this.config.method === 'usb'
-          ? 'Ensure the tablet is powered on. Current models require Developer Mode before USB SSH; enabling it factory-resets the tablet, so back up first.'
-          : 'WiFi SSH may be disabled. Connect over USB, enable Developer Mode if required (back up first; enabling it factory-resets current tablets), then run rm-ssh-over-wlan on.',
-        err,
-      );
-    }
-
-    if (msg.includes('etimedout') || msg.includes('timeout') || msg.includes('timed out')) {
-      return new BridgeError(
-        ErrorCode.SSH_TIMEOUT,
-        `Connection to ${this.config.host} timed out.`,
-        this.config.method === 'usb'
-          ? 'Check the USB cable and Developer Mode. Enabling Developer Mode factory-resets current tablets, so back up first. The USB address is normally 10.11.99.1.'
-          : 'Ensure both devices are on the same network and the tablet is awake. If needed, connect over USB and run rm-ssh-over-wlan on.',
-        err,
-      );
-    }
-
-    if (msg.includes('ehostunreach') || msg.includes('enetunreach') || msg.includes('unreachable')) {
-      return new BridgeError(
-        ErrorCode.SSH_HOST_UNREACHABLE,
-        `Host ${this.config.host} is unreachable.`,
-        this.config.method === 'usb'
-          ? 'Reconnect the USB cable and verify Developer Mode when required. Enabling it factory-resets current tablets, so back up first.'
-          : 'Check that both devices are on the same WiFi network. If needed, connect over USB and run rm-ssh-over-wlan on.',
-        err,
-      );
-    }
-
-    // Fallback for unexpected errors
-    return new BridgeError(
-      ErrorCode.SSH_COMMAND_FAILED,
-      `SSH error: ${err.message}`,
-      'Check your connection settings and try again.',
-      err,
-    );
+    return mapSSHConnectionError(err, this.config);
   }
 }
