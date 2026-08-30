@@ -17,6 +17,18 @@ import { isValidUuid } from './uuid-validation';
 /** Remote xochitl data directory on the tablet. */
 const XOCHITL_DIR = '/home/root/.local/share/remarkable/xochitl';
 
+/** Parse Use% from the final df row, whether or not its filesystem column wrapped. */
+function parseDfUsagePercent(output: string): number | null {
+  const parts = output.trim().split(/\s+/);
+  if (parts.length < 5) return null;
+
+  const match = /^(\d+)%$/.exec(parts.at(-2) ?? '');
+  if (!match) return null;
+
+  const usagePercent = parseInt(match[1], 10);
+  return usagePercent >= 0 && usagePercent <= 100 ? usagePercent : null;
+}
+
 /** Options controlling which documents are eligible for archiving. */
 export interface ArchiveOptions {
   /** Disk usage percentage (0-100) above which archiving kicks in. */
@@ -206,10 +218,12 @@ export async function archiveOldDocuments(
   }
 
   // Step 1: Check /home disk usage
-  const dfResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
-  const usagePercent = parseInt(dfResult.stdout.trim(), 10);
+  const dfResult = await ssh.execute('df /home');
+  const usagePercent = dfResult.exitCode === 0
+    ? parseDfUsagePercent(dfResult.stdout)
+    : null;
 
-  if (isNaN(usagePercent)) {
+  if (usagePercent === null) {
     logger.warn('Could not parse /home disk usage');
     return 0;
   }
@@ -329,9 +343,11 @@ export async function archiveOldDocuments(
 
     // Re-check disk usage; stop if below threshold
     if (!force) {
-      const recheckResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
-      const currentUsage = parseInt(recheckResult.stdout.trim(), 10);
-      if (!isNaN(currentUsage) && currentUsage < thresholdPercent) {
+      const recheckResult = await ssh.execute('df /home');
+      const currentUsage = recheckResult.exitCode === 0
+        ? parseDfUsagePercent(recheckResult.stdout)
+        : null;
+      if (currentUsage !== null && currentUsage < thresholdPercent) {
         logger.info(`Disk usage now ${currentUsage}%, below threshold -- stopping`);
         break;
       }

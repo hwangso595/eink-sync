@@ -196,7 +196,7 @@ export async function detectStorageInfo(
   mountPoint: string,
 ): Promise<StorageInfo> {
   // Use df with 1M block size for MB values
-  const result = await ssh.execute(`df -m ${mountPoint} | tail -1`);
+  const result = await ssh.execute(`df -m ${mountPoint}`);
 
   if (result.exitCode !== 0) {
     throw new BridgeError(

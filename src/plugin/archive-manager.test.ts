@@ -170,7 +170,9 @@ describe('tabletFilesBackedUpLocally', () => {
 describe('archiveOldDocuments sync-method verification', () => {
   const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
 
-  function archiveSsh(): SSHExecutor {
+  function archiveSsh(
+    dfOutput = '/dev/mmcblk1p7 6685 669 5678 10% /home\n',
+  ): SSHExecutor {
     return {
       connect: jest.fn(),
       disconnect: jest.fn(),
@@ -178,7 +180,7 @@ describe('archiveOldDocuments sync-method verification', () => {
       isConnected: jest.fn(),
       execute: jest.fn().mockImplementation(async (command: string) => {
         if (command.startsWith('df ')) {
-          return { stdout: '90\n', stderr: '', exitCode: 0 };
+          return { stdout: dfOutput, stderr: '', exitCode: 0 };
         }
         if (command.includes("-name '*.metadata'")) {
           return {
@@ -226,5 +228,24 @@ describe('archiveOldDocuments sync-method verification', () => {
 
     expect(count).toBe(1);
     expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${uuid}.local`));
+  });
+
+  it('archives when df wraps a long filesystem name to the previous line', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`);
+    write(dir, `${uuid}.content`);
+    write(dir, `${uuid}.pdf`, 'PDFDATA');
+    const ssh = archiveSsh(' 47430 3656 43260 8% /home\n');
+
+    const count = await archiveOldDocuments(ssh, {
+      thresholdPercent: 80,
+      minAgeDays: 1,
+      force: true,
+      localSyncDir: dir,
+      allowSftpSkippedFiles: true,
+    });
+
+    expect(count).toBe(1);
+    expect(ssh.execute).toHaveBeenCalledWith('df /home');
   });
 });
