@@ -10,13 +10,18 @@
  */
 
 import { SSHExecutor } from '../ssh/ssh-client';
-import { DeviceArchitecture, FirmwareVersion } from '../types/device';
+import { DeviceArchitecture, DeviceModel, FirmwareVersion } from '../types/device';
 import { logger } from '../utils/logger';
 import {
   getInstallationPath,
+  isKnownLegacyInstallerTarget,
   type InstallationPath,
 } from './firmware';
-import { detectDeviceArchitecture, detectFirmwareVersion } from './detector';
+import {
+  detectDeviceArchitecture,
+  detectDeviceModelIdentity,
+  detectFirmwareVersion,
+} from './detector';
 
 /** Paths where Entware should be installed (on /home, survives OTA). */
 const ENTWARE_HOME_PATH = '/home/root/.entware';
@@ -248,9 +253,9 @@ async function checkXochitlData(ssh: SSHExecutor): Promise<HealthCheckItem> {
 /**
  * Run a full post-update health check.
  *
- * Verifies the applicable sync path after a firmware update. ARMv7 devices
- * receive the legacy Entware/Syncthing checks. Other architectures use the
- * SFTP-only path, so the health check skips legacy package and service checks.
+ * Verifies the applicable sync path after a firmware update. Only identified
+ * reMarkable 1/2 ARMv7 devices receive legacy Entware/Syncthing checks. Every
+ * other model/architecture uses the SFTP-only path.
  *
  * If the service was wiped by a firmware update, provides recovery steps.
  */
@@ -269,8 +274,8 @@ export async function runPostUpdateHealthCheck(
     recoverySteps: [],
   };
 
-  // Architecture determines whether the legacy ARMv7 package stack applies.
-  // Fail closed to SFTP-only if architecture detection is unavailable.
+  // Both architecture and explicit model identity determine whether the
+  // root-modifying legacy package stack applies. Either unknown fails closed.
   try {
     result.architecture = await detectDeviceArchitecture(ssh);
   } catch (err) {
@@ -279,7 +284,19 @@ export async function runPostUpdateHealthCheck(
     );
   }
 
-  const usesLegacyPackageStack = result.architecture === 'armv7';
+  let deviceModel: DeviceModel = 'unknown';
+  try {
+    deviceModel = await detectDeviceModelIdentity(ssh);
+  } catch (err) {
+    logger.warn(
+      `Could not detect device model: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const usesLegacyPackageStack = isKnownLegacyInstallerTarget(
+    deviceModel,
+    result.architecture,
+  );
   if (!usesLegacyPackageStack) {
     result.installPath = 'sftp-only';
   }
@@ -291,12 +308,25 @@ export async function runPostUpdateHealthCheck(
       ? 'Architecture could not be identified; using the safe SFTP-only path'
       : `Architecture ${result.architecture} detected`,
   });
+  result.checks.push({
+    name: 'Device model',
+    status: deviceModel === 'unknown' ? 'warn' : 'pass',
+    message: deviceModel === 'unknown'
+      ? 'Model could not be verified; using the safe SFTP-only path'
+      : `Model ${deviceModel} detected`,
+  });
 
   // Check firmware version -- /etc/version alone is a build timestamp on 3.x,
   // so go through the same multi-source detection the setup wizard uses.
   try {
     result.firmwareVersion = await detectFirmwareVersion(ssh);
-    result.installPath = getInstallationPath(result.firmwareVersion, result.architecture);
+    const architecturePath = getInstallationPath(
+      result.firmwareVersion,
+      result.architecture,
+    );
+    result.installPath = usesLegacyPackageStack
+      ? architecturePath
+      : 'sftp-only';
 
     result.checks.push({
       name: 'Firmware version',
@@ -311,12 +341,13 @@ export async function runPostUpdateHealthCheck(
     });
   }
 
-  // The legacy package and systemd layout is ARMv7-only. On current devices,
-  // keep this diagnostic read-only and limited to the SFTP-accessible data.
+  // Keep unknown/current devices read-only and limited to SFTP-accessible data.
   if (!usesLegacyPackageStack) {
     result.checks.push({
       name: 'Sync mode',
-      status: result.architecture === 'unknown' ? 'warn' : 'pass',
+      status: result.architecture === 'unknown' || deviceModel === 'unknown'
+        ? 'warn'
+        : 'pass',
       message: 'SFTP-only mode; legacy Entware and Syncthing service checks were skipped',
     });
     result.checks.push(await checkXochitlData(ssh));

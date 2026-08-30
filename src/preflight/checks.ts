@@ -13,6 +13,7 @@ import { DeviceInfo, ResourceBudget, DEFAULT_RESOURCE_BUDGETS } from '../types/d
 import {
   getInstallationPath,
   getFirmwareCompatibilityWarning,
+  isKnownLegacyInstallerTarget,
   usesV6FileFormat,
   type InstallationPath,
 } from '../device/firmware';
@@ -87,6 +88,12 @@ export async function runPreflightChecks(
   let installationPath: InstallationPath;
   try {
     installationPath = getInstallationPath(deviceInfo.firmware, deviceInfo.architecture);
+    if (
+      installationPath === 'entware'
+      && !isKnownLegacyInstallerTarget(deviceInfo.model, deviceInfo.architecture)
+    ) {
+      installationPath = 'sftp-only';
+    }
   } catch {
     installationPath = 'sftp-only'; // Safe fallback: never guess a package architecture
     checks.push({

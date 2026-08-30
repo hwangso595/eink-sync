@@ -10,7 +10,7 @@
  * - Firmware < 2.6: unsupported
  */
 
-import { DeviceArchitecture, FirmwareVersion } from '../types/device';
+import { DeviceArchitecture, DeviceModel, FirmwareVersion } from '../types/device';
 import { BridgeError, ErrorCode } from '../types/errors';
 
 /** Regex for reMarkable firmware version strings; the build component is optional. */
@@ -75,6 +75,15 @@ export function compareFirmwareVersions(a: FirmwareVersion, b: FirmwareVersion):
 
 /** Which installation path to use based on firmware version and device architecture. */
 export type InstallationPath = 'entware' | 'sftp-only';
+
+/** Fail closed: the legacy root-modifying installer is known only on rM1/rM2. */
+export function isKnownLegacyInstallerTarget(
+  model: DeviceModel,
+  architecture: DeviceArchitecture,
+): boolean {
+  return architecture === 'armv7'
+    && (model === 'reMarkable1' || model === 'reMarkable2');
+}
 
 /**
  * Determine the installation path for a given firmware version and architecture.

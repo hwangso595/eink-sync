@@ -1,4 +1,7 @@
 import { Client, type SFTPWrapper } from 'ssh2';
+import type { ConnectionMethod, SSHConfig } from '../types/config';
+import { mapSSHConnectionError } from '../ssh/ssh-client';
+import type { BridgeError } from '../types/errors';
 import { makeHostVerifier } from '../ssh/host-key-store';
 
 /** Settings required to establish an SSH-backed SFTP session. */
@@ -8,6 +11,26 @@ export interface SftpConnectionOptions {
   username: string;
   password: string;
   timeoutMs: number;
+  connectionMethod: ConnectionMethod;
+}
+
+function sshConfig(options: SftpConnectionOptions): SSHConfig {
+  return {
+    host: options.host,
+    port: options.port,
+    username: options.username,
+    password: options.password,
+    timeoutMs: options.timeoutMs,
+    method: options.connectionMethod,
+  };
+}
+
+/** Preserve the same actionable connection errors for command SSH and SFTP. */
+export function mapSftpConnectionError(
+  err: Error,
+  options: SftpConnectionOptions,
+): BridgeError {
+  return mapSSHConnectionError(err, sshConfig(options));
 }
 
 /** Connect to the tablet and open one authenticated SFTP session. */
@@ -19,9 +42,13 @@ export function connectSftp(
 
     const timeoutId = window.setTimeout(() => {
       conn.destroy();
-      reject(new Error(
-        `SFTP connection to ${options.host}:${options.port} timed out after ${options.timeoutMs}ms.`,
-      ));
+      const error = Object.assign(
+        new Error(
+          `SFTP connection to ${options.host}:${options.port} timed out after ${options.timeoutMs}ms.`,
+        ),
+        { code: 'ETIMEDOUT', syscall: 'connect' },
+      );
+      reject(mapSftpConnectionError(error, options));
     }, options.timeoutMs + 1000);
 
     conn.on('ready', () => {
@@ -38,7 +65,7 @@ export function connectSftp(
 
     conn.on('error', (err) => {
       window.clearTimeout(timeoutId);
-      reject(new Error(`SSH connection failed: ${err.message}`));
+      reject(mapSftpConnectionError(err, options));
     });
 
     conn.connect({

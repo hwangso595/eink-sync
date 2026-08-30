@@ -51,7 +51,13 @@ import {
   type InstallProgressCallback,
 } from '../sync/installer';
 import { materializeExtractionAssets } from './extraction-assets';
-import { parseGlobalIpv4, parseRouteSourceIpv4 } from './net-utils';
+import { parseGlobalIpv4, parseRouteSourceIpv4, USB_TABLET_IP } from './net-utils';
+import {
+  commitUsbConnection,
+  enableVerifyAndCommitWifiConnection,
+  verifyAndCommitWifiConnection,
+  type WifiTransitionResult,
+} from './wifi-setup';
 
 /**
  * Progress callback for the multi-phase install flow.
@@ -658,6 +664,48 @@ export default class ReMarkableBridgePlugin extends Plugin {
     };
   }
 
+  /** Verify setup over the fixed USB endpoint without trusting stale WiFi settings. */
+  async connectAndVerifyUsb(
+    onProgress?: ProgressCallback,
+  ): Promise<ConnectionResult> {
+    return connectAndVerify(
+      {
+        ...this.buildSSHConfig(),
+        host: USB_TABLET_IP,
+        method: 'usb',
+      },
+      onProgress,
+    );
+  }
+
+  /**
+   * Explicit USB-authenticated WiFi setup. Settings change only after the
+   * discovered endpoint presents the USB tablet's host key and answers SSH.
+   */
+  async enableAndUseWifiViaUsb(): Promise<WifiTransitionResult> {
+    return enableVerifyAndCommitWifiConnection(
+      this.buildSSHConfig(),
+      this.settings,
+      () => this.saveSettings(),
+    );
+  }
+
+  /** Test a manual/remembered WiFi endpoint before selecting or saving it. */
+  async useVerifiedWifiAddress(host: string): Promise<void> {
+    await verifyAndCommitWifiConnection(
+      this.buildSSHConfig(),
+      this.settings,
+      host.trim(),
+      () => this.saveSettings(),
+    );
+  }
+
+  /** Select USB while retaining the last verified WiFi address for later. */
+  async useUsbConnection(): Promise<void> {
+    await commitUsbConnection(this.settings, () => this.saveSettings());
+    this.toggleAutoSyncTimer();
+  }
+
   /**
    * Open an SSH session, run the callback, and guarantee cleanup.
    * Centralises the connect-try-finally-disconnect pattern so every
@@ -701,6 +749,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
         localSyncDir,
         includeEpub: this.settings.includeEpub,
       });
@@ -717,6 +766,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
       },
     });
   }
@@ -736,6 +786,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
       },
       <T>(fn: (ssh: SSHExecutor) => Promise<T>) => this.withSSH(fn),
       () => this.refreshTabletLibraryNow(),
@@ -1018,6 +1069,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
         localSyncDir: resolvePath(this.app, src.syncFolder),
         includeEpub: this.settings.includeEpub,
       });
@@ -1043,6 +1095,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           username: 'root',
           password: this.settings.rootPassword,
           timeoutMs: this.settings.sshTimeoutMs,
+          connectionMethod: this.settings.connectionMethod,
           localSyncDir: resolvePath(this.app, targetSources[0].syncFolder),
           includeEpub: this.settings.includeEpub,
         });

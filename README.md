@@ -129,7 +129,7 @@ New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target 
 1. Enable the plugin in Obsidian settings
 2. A setup wizard opens automatically -- follow the steps to configure:
    - Initial SSH connection over USB
-   - Verified WiFi promotion for everyday use when the tablet is reachable on WiFi
+   - Optional, explicit WiFi setup for everyday use: over authenticated USB, the plugin uses the vendor `rm-ssh-over-wlan on` control when available, discovers the route-selected address without assuming `wlan0`, verifies the same SSH host key and a working SSH command, and only then saves WiFi as the default. The final setup check also opens the configured SFTP subsystem. Legacy tablets with WiFi SSH already available use the same verification without changing their system configuration.
    - Direct SFTP or Syncthing as the sync method
    - Sync and highlight output folders
    - Automatic Python environment installation and verification

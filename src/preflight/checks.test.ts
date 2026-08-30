@@ -73,6 +73,21 @@ describe('runPreflightChecks', () => {
     }));
   });
 
+  it('routes an unknown ARMv7 model to SFTP instead of the legacy installer', async () => {
+    const ssh = createMockSSH({
+      'test -d': { stdout: 'exists', exitCode: 0 },
+    });
+    const info = makeDeviceInfo({ model: 'unknown', architecture: 'armv7' });
+
+    const report = await runPreflightChecks(info, ssh);
+
+    expect(report.installationPath).toBe('sftp-only');
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      name: 'Automatic Syncthing Installation',
+      severity: 'warning',
+    }));
+  });
+
   it('fails when firmware is too old', async () => {
     const ssh = createMockSSH({
       'test -d': { stdout: 'exists', exitCode: 0 },

@@ -1,5 +1,6 @@
 import {
   isValidIpv4,
+  isUsableWifiAddress,
   parseGlobalIpv4,
   parseRouteSourceIpv4,
   sharesLocalSubnet,
@@ -21,6 +22,17 @@ describe('isValidIpv4', () => {
     expect(isValidIpv4('10.0.0.01')).toBe(false);
     expect(isValidIpv4('remarkable.local')).toBe(false);
     expect(isValidIpv4('10.0.0.41 ')).toBe(true);
+  });
+});
+
+describe('isUsableWifiAddress', () => {
+  it('accepts unicast WiFi candidates and rejects non-routable/special endpoints', () => {
+    expect(isUsableWifiAddress(' 192.168.2.42 ')).toBe(true);
+    expect(isUsableWifiAddress('10.11.99.1')).toBe(false);
+    expect(isUsableWifiAddress('127.0.0.1')).toBe(false);
+    expect(isUsableWifiAddress('169.254.2.42')).toBe(false);
+    expect(isUsableWifiAddress('224.0.0.1')).toBe(false);
+    expect(isUsableWifiAddress('255.255.255.255')).toBe(false);
   });
 });
 

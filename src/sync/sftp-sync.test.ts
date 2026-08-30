@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { connectSftp } from './sftp-connection';
+import { BridgeError, ErrorCode } from '../types/errors';
 import {
   SftpSyncEngine,
   RemoteFileInfo,
@@ -48,6 +49,7 @@ function defaultOptions(localDir: string): SftpSyncOptions {
     username: 'root',
     password: 'test',
     timeoutMs: 5000,
+    connectionMethod: 'usb',
     localSyncDir: localDir,
     includeEpub: true,
   };
@@ -130,6 +132,24 @@ describe('template asset support', () => {
     expect(end).toHaveBeenCalled();
     cleanupDir(localDir);
     cleanupDir(outsideDir);
+  });
+});
+
+describe('connection errors', () => {
+  it('keeps actionable BridgeError guidance in a failed sync result', async () => {
+    const localDir = createTempDir();
+    mockedConnectSftp.mockRejectedValueOnce(new BridgeError(
+      ErrorCode.SSH_SOCKET_ACCESS_DENIED,
+      'SSH access to 10.11.99.1:22 was denied before authentication (EACCES).',
+      'Confirm USB SSH, then allow outbound TCP 22.',
+    ));
+
+    const result = await new SftpSyncEngine(defaultOptions(localDir)).sync();
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain('denied before authentication');
+    expect(result.errors[0]).toContain('Suggestion: Confirm USB SSH');
+    cleanupDir(localDir);
   });
 });
 

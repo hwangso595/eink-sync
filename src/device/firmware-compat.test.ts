@@ -33,6 +33,9 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>>): SSHEx
       if (cmd.includes('uname -m')) {
         return { stdout: 'armv7l', stderr: '', exitCode: 0 };
       }
+      if (cmd.includes('/sys/devices/soc0/machine')) {
+        return { stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 };
+      }
       // Default: command not found
       return { stdout: '', stderr: 'command not found', exitCode: 127 };
     }),
@@ -195,6 +198,30 @@ describe('runPostUpdateHealthCheck', () => {
     expect(result.installPath).toBe('sftp-only');
     expect(result.firmwareUpdateDetected).toBe(false);
     expect(result.recoverySteps).toEqual([]);
+    expect(commands).not.toContain('.entware');
+    expect(commands).not.toContain('systemctl');
+  });
+
+  it('skips legacy health checks for an unknown ARMv7 model', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'armv7l' },
+      '/sys/devices/soc0/machine': {
+        stdout: 'reMarkable Future ARM Device',
+      },
+      '/proc/device-tree/model': { stdout: '', exitCode: 1 },
+      '/proc/device-tree/compatible': { stdout: '', exitCode: 1 },
+      'cat /etc/version': { stdout: '3.26.0.68' },
+      'test -e /home/root/.local/share/remarkable/xochitl': { stdout: 'yes' },
+      'ls /home/root/.local/share/remarkable/xochitl/*.metadata': { stdout: '1' },
+    });
+
+    const result = await runPostUpdateHealthCheck(ssh);
+    const commands = (ssh.execute as jest.Mock).mock.calls
+      .map(([command]: [string]) => command)
+      .join('\n');
+
+    expect(result.architecture).toBe('armv7');
+    expect(result.installPath).toBe('sftp-only');
     expect(commands).not.toContain('.entware');
     expect(commands).not.toContain('systemctl');
   });

@@ -50,6 +50,7 @@ function createHarness() {
       username: 'root',
       password: '',
       timeoutMs: 1000,
+      connectionMethod: 'usb',
     },
     withSSH,
     refresh,
@@ -69,12 +70,17 @@ function createHarness() {
 
 describe('TabletDocumentAdapter', () => {
   it('sends directly and refreshes the tablet for every sync mode', async () => {
-    const { adapter, operations } = createHarness();
+    const { adapter, operations, upload } = createHarness();
 
     await expect(adapter.sendDocument(UUID, '/vault/Sync')).resolves.toEqual({
       tabletLibraryRefreshed: true,
     });
     expect(operations).toEqual(['upload', 'refresh']);
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionMethod: 'usb' }),
+      UUID,
+      expect.any(Function),
+    );
   });
 
   it('reports connecting, per-file upload, refresh, and completion phases', async () => {

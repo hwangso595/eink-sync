@@ -24,6 +24,8 @@ import { Client, SFTPWrapper } from 'ssh2';
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../utils/logger';
+import { BridgeError } from '../types/errors';
+import type { ConnectionMethod } from '../types/config';
 import { connectSftp } from './sftp-connection';
 import { XOCHITL_SYNC_PATH } from './types';
 import {
@@ -47,6 +49,8 @@ export interface SftpSyncOptions {
   password: string;
   /** SSH connection timeout in milliseconds. */
   timeoutMs: number;
+  /** Whether this endpoint is reached over the tablet's USB or WiFi interface. */
+  connectionMethod: ConnectionMethod;
   /** Local directory to sync files into (absolute path). */
   localSyncDir: string;
   /** Remote xochitl path on the tablet. */
@@ -368,7 +372,9 @@ export class SftpSyncEngine {
       const success = errors.length === 0;
       return this.buildResult(success, filesDownloaded, filesSkipped, bytesDownloaded, Date.now() - startTime, errors);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof BridgeError
+        ? err.toUserMessage()
+        : err instanceof Error ? err.message : String(err);
       logger.error(`SFTP sync failed: ${msg}`);
       progress('error', msg);
       errors.push(msg);

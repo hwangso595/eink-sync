@@ -110,14 +110,8 @@ export async function detectFirmwareVersion(ssh: SSHExecutor): Promise<FirmwareV
  * values never stop later, more specific sources from being checked.
  */
 export async function detectDeviceModel(ssh: SSHExecutor): Promise<DeviceModel> {
-  const sources = [DEVICE_MODEL_PATH, DEVICE_TREE_MODEL_PATH, DEVICE_TREE_COMPATIBLE_PATH];
-  for (const source of sources) {
-    const result = await ssh.execute(`cat ${source} 2>/dev/null`);
-    if (result.exitCode !== 0 || !result.stdout.trim()) continue;
-
-    const model = parseModelString(result.stdout);
-    if (model !== 'unknown') return model;
-  }
+  const identifiedModel = await detectDeviceModelIdentity(ssh);
+  if (identifiedModel !== 'unknown') return identifiedModel;
 
   // Last resort: RAM-based heuristic
   logger.warn('Could not read device model file, falling back to RAM-based detection');
@@ -130,6 +124,28 @@ export async function detectDeviceModel(ssh: SSHExecutor): Promise<DeviceModel> 
     }
   } catch (err) {
     logger.warn(`RAM-based device detection unavailable: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Identify a model only from the tablet's explicit hardware identity files.
+ *
+ * Unlike {@link detectDeviceModel}, this deliberately does not infer a legacy
+ * model from RAM size. Mutating legacy installer paths use this stricter result
+ * so an unknown/future ARMv7 device can never be authorized by a memory guess.
+ */
+export async function detectDeviceModelIdentity(
+  ssh: SSHExecutor,
+): Promise<DeviceModel> {
+  const sources = [DEVICE_MODEL_PATH, DEVICE_TREE_MODEL_PATH, DEVICE_TREE_COMPATIBLE_PATH];
+  for (const source of sources) {
+    const result = await ssh.execute(`cat ${source} 2>/dev/null`);
+    if (result.exitCode !== 0 || !result.stdout.trim()) continue;
+
+    const model = parseModelString(result.stdout);
+    if (model !== 'unknown') return model;
   }
 
   return 'unknown';
@@ -253,19 +269,15 @@ export async function detectStorageInfo(
     );
   }
 
-  const [total, used, available, usage, reportedMount] = parts.slice(-5);
+  // `df <path>` reports the containing filesystem's mount target, not the
+  // queried path itself. For example, `/home` legitimately reports `/` when
+  // a device keeps both directories on one filesystem.
+  const [total, used, available, usage] = parts.slice(-5);
   const totalMB = parseInt(total, 10);
   const usedMB = parseInt(used, 10);
   const availableMB = parseInt(available, 10);
   const usageMatch = /^(\d+)%$/.exec(usage);
   const usagePercent = usageMatch ? parseInt(usageMatch[1], 10) : NaN;
-
-  if (reportedMount !== mountPoint) {
-    throw new BridgeError(
-      ErrorCode.PREFLIGHT_CHECK_FAILED,
-      `Unexpected df output format for ${mountPoint}: "${result.stdout}"`,
-    );
-  }
 
   return {
     mountPoint,

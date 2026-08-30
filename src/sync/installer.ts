@@ -19,7 +19,11 @@ import type { SSHExecutor } from '../ssh/ssh-client';
 import { BridgeError, ErrorCode } from '../types/errors';
 import { SYNCTHING_BIN_PATH } from './types';
 import { logger } from '../utils/logger';
-import { detectDeviceArchitecture } from '../device/detector';
+import {
+  detectDeviceArchitecture,
+  detectDeviceModelIdentity,
+} from '../device/detector';
+import { isKnownLegacyInstallerTarget } from '../device/firmware';
 
 /** Callback for reporting installation progress. */
 export type InstallProgressCallback = (step: string, detail: string) => void;
@@ -97,13 +101,16 @@ export async function getSyncthingVersion(ssh: SSHExecutor): Promise<string | nu
 /** Fail closed before invoking the legacy ARMv7 package stack. */
 async function requireLegacyArmv7(ssh: SSHExecutor): Promise<void> {
   const architecture = await detectDeviceArchitecture(ssh);
-  if (architecture === 'armv7') return;
+  const model = await detectDeviceModelIdentity(ssh);
+  if (isKnownLegacyInstallerTarget(model, architecture)) return;
 
   throw new BridgeError(
     ErrorCode.SYNC_INSTALL_FAILED,
     architecture === 'aarch64'
       ? 'Automatic Syncthing installation is not supported on this AArch64 reMarkable.'
-      : 'Automatic Syncthing installation is disabled because the tablet architecture could not be verified.',
+      : architecture !== 'armv7'
+        ? 'Automatic Syncthing installation is disabled because the tablet architecture could not be verified.'
+        : `Automatic Syncthing installation is disabled for the unverified tablet model "${model}".`,
     'Use SFTP sync on this tablet. The legacy Entware installer is only safe for ARMv7 reMarkable 1/2 devices.',
   );
 }

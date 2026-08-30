@@ -1,6 +1,7 @@
 import {
   detectFirmwareVersion,
   detectDeviceModel,
+  detectDeviceModelIdentity,
   detectDeviceArchitecture,
   detectMemoryInfo,
   detectStorageInfo,
@@ -202,6 +203,24 @@ describe('detectDeviceModel', () => {
     const model = await detectDeviceModel(ssh);
     expect(model).toBe('unknown');
   });
+
+  it('does not authorize a legacy model from RAM in strict identity mode', async () => {
+    const ssh = createMockSSH({
+      ['/sys/devices/soc0/machine']: {
+        stdout: 'reMarkable Future ARM Device',
+        exitCode: 0,
+      },
+      ['/proc/device-tree/model']: { stdout: '', exitCode: 1 },
+      ['/proc/device-tree/compatible']: { stdout: '', exitCode: 1 },
+      'cat /proc/meminfo': {
+        stdout: 'MemTotal:         524288 kB\nMemAvailable:    262144 kB',
+        exitCode: 0,
+      },
+    });
+
+    await expect(detectDeviceModelIdentity(ssh)).resolves.toBe('unknown');
+    expect(ssh.execute).not.toHaveBeenCalledWith('cat /proc/meminfo');
+  });
 });
 
 describe('detectDeviceArchitecture', () => {
@@ -305,6 +324,23 @@ describe('detectStorageInfo', () => {
           '/dev/mapper/remarkable-userdata-with-a-long-source-name',
           '                         47430      3656     43260   8% /home',
         ].join('\n'),
+        exitCode: 0,
+      },
+    });
+
+    await expect(detectStorageInfo(ssh, '/home')).resolves.toEqual({
+      mountPoint: '/home',
+      totalMB: 47430,
+      usedMB: 3656,
+      availableMB: 43260,
+      usagePercent: 8,
+    });
+  });
+
+  it('accepts a queried directory that lives on a parent mount', async () => {
+    const ssh = createMockSSH({
+      'df -m /home': {
+        stdout: '/dev/root   47430  3656  43260  8% /',
         exitCode: 0,
       },
     });

@@ -1,6 +1,6 @@
 /** Networking helpers used by settings and tablet-side address discovery. */
 
-const USB_TABLET_IP = '10.11.99.1';
+export const USB_TABLET_IP = '10.11.99.1';
 
 /** True if `value` is a syntactically valid dotted-quad IPv4 address. */
 export function isValidIpv4(value: string): boolean {
@@ -44,9 +44,17 @@ export function sharesLocalSubnet(
   return false;
 }
 
-function isUsableWifiAddress(value: string): boolean {
-  if (!isValidIpv4(value)) return false;
-  return value !== USB_TABLET_IP && !value.startsWith('127.') && !value.startsWith('169.254.');
+export function isUsableWifiAddress(value: string): boolean {
+  const normalized = value.trim();
+  if (!isValidIpv4(normalized)) return false;
+  const firstOctet = Number(normalized.split('.')[0]);
+  return normalized !== USB_TABLET_IP
+    && normalized !== '0.0.0.0'
+    && normalized !== '255.255.255.255'
+    && firstOctet > 0
+    && firstOctet < 224
+    && !normalized.startsWith('127.')
+    && !normalized.startsWith('169.254.');
 }
 
 /** Read the source address selected by the kernel's default IPv4 route. */

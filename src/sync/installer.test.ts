@@ -33,6 +33,9 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>>): SSHEx
       if (command.includes('uname -m')) {
         return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
       }
+      if (command.includes('/sys/devices/soc0/machine')) {
+        return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
+      }
       return Promise.resolve({ stdout: '', stderr: '', exitCode: 1 });
     }),
   };
@@ -164,6 +167,24 @@ describe('installEntware', () => {
     await expect(installEntware(ssh)).rejects.toThrow(/architecture could not be verified/);
   });
 
+  it('refuses an unknown ARMv7 model before downloading anything', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'armv7l', exitCode: 0 },
+      '/sys/devices/soc0/machine': {
+        stdout: 'reMarkable Future ARM Device',
+        exitCode: 0,
+      },
+      '/proc/device-tree/model': { stdout: '', exitCode: 1 },
+      '/proc/device-tree/compatible': { stdout: '', exitCode: 1 },
+    });
+
+    await expect(installEntware(ssh)).rejects.toThrow(/unverified tablet model/);
+    expect(ssh.execute).not.toHaveBeenCalledWith(
+      expect.stringContaining('wget'),
+      expect.anything(),
+    );
+  });
+
   it('calls progress callback during installation', async () => {
     const progress = jest.fn();
     const ssh = createMockSSH({
@@ -200,6 +221,9 @@ describe('installEntware', () => {
         if (command.includes('uname -m')) {
           return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
         }
+        if (command.includes('/sys/devices/soc0/machine')) {
+          return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
+        }
         if (command.includes('entware_install.sh')) {
           return Promise.resolve({ stdout: 'done', stderr: '', exitCode: 0 });
         }
@@ -223,6 +247,7 @@ describe('installEntware', () => {
           return Promise.resolve({ stdout: opkgChecks === 1 ? 'no' : 'yes', stderr: '', exitCode: 0 });
         }
         if (command.includes('uname -m')) return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
+        if (command.includes('/sys/devices/soc0/machine')) return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
         if (command.includes('wget -q --spider')) return Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 });
         if (command.includes('entware_install.sh')) return Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 });
         return Promise.resolve({ stdout: '', stderr: '', exitCode: 1 });
