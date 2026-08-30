@@ -205,19 +205,21 @@ export async function detectStorageInfo(
     );
   }
 
-  // df output: Filesystem 1M-blocks Used Available Use% Mounted on
+  // Read the storage columns from the right. df may wrap a long filesystem name
+  // onto the previous line, leaving only these five columns in the final line.
   const parts = result.stdout.trim().split(/\s+/);
-  if (parts.length < 6) {
+  if (parts.length < 5) {
     throw new BridgeError(
       ErrorCode.PREFLIGHT_CHECK_FAILED,
       `Unexpected df output format for ${mountPoint}: "${result.stdout}"`,
     );
   }
 
-  const totalMB = parseInt(parts[1], 10);
-  const usedMB = parseInt(parts[2], 10);
-  const availableMB = parseInt(parts[3], 10);
-  const usagePercent = parseInt(parts[4].replace('%', ''), 10);
+  const [total, used, available, usage] = parts.slice(-5);
+  const totalMB = parseInt(total, 10);
+  const usedMB = parseInt(used, 10);
+  const availableMB = parseInt(available, 10);
+  const usagePercent = parseInt(usage.replace('%', ''), 10);
 
   return {
     mountPoint,

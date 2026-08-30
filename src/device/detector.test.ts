@@ -251,6 +251,22 @@ describe('detectStorageInfo', () => {
     expect(storage.usagePercent).toBe(33);
   });
 
+  it('parses df output when a long filesystem name wraps to the previous line', async () => {
+    const ssh = createMockSSH({
+      'df -m /home': {
+        stdout: ' 47430 3656 43260 8% /home',
+        exitCode: 0,
+      },
+    });
+
+    const storage = await detectStorageInfo(ssh, '/home');
+    expect(storage.mountPoint).toBe('/home');
+    expect(storage.totalMB).toBe(47430);
+    expect(storage.usedMB).toBe(3656);
+    expect(storage.availableMB).toBe(43260);
+    expect(storage.usagePercent).toBe(8);
+  });
+
   it('throws BridgeError on command failure', async () => {
     const ssh = createMockSSH({
       'df -m /nonexistent': { stdout: '', exitCode: 1 },
