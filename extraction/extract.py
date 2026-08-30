@@ -109,7 +109,7 @@ def extract_single_document(
     try:
         # Use format-aware extraction that auto-detects v6 vs v3/v5 per page
         highlights, warnings = extract_highlights_for_document_auto(
-            doc.uuid, doc.page_uuids, xochitl_path
+            doc.uuid, doc.page_uuids, xochitl_path, doc.page_redir
         )
         result["highlights"] = [asdict(h) for h in highlights]
         result["warnings"] = warnings
@@ -118,7 +118,7 @@ def extract_single_document(
         # parser is unavailable
         try:
             highlights, warnings = extract_highlights_for_document(
-                doc.uuid, doc.page_uuids, xochitl_path
+                doc.uuid, doc.page_uuids, xochitl_path, doc.page_redir
             )
             result["highlights"] = [asdict(h) for h in highlights]
             result["warnings"] = warnings

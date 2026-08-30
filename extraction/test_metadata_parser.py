@@ -109,8 +109,8 @@ class TestParseContentFile(unittest.TestCase):
                     "pageCount": 2,
                     "cPages": {
                         "pages": [
-                            {"id": "v6-page-1"},
-                            {"id": "v6-page-2"},
+                            {"id": "v6-page-1", "redir": {"value": 1}},
+                            {"id": "v6-page-2", "redir": {"value": 0}},
                         ]
                     },
                 },
@@ -123,6 +123,25 @@ class TestParseContentFile(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.page_uuids, ["v6-page-1", "v6-page-2"])
         self.assertIsNotNone(result.c_pages)
+        self.assertEqual(result.page_redir, {0: 1, 1: 0})
+
+    def test_v6_pdf_with_only_inserted_pages_preserves_empty_redirect_map(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".content", delete=False
+        ) as f:
+            json.dump(
+                {
+                    "fileType": "pdf",
+                    "cPages": {"pages": [{"id": "inserted-page"}]},
+                },
+                f,
+            )
+            f.flush()
+            result = parse_content_file(f.name)
+
+        os.unlink(f.name)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.page_redir, {})
 
     def test_returns_none_for_missing_file(self):
         result = parse_content_file("/nonexistent/path.content")
@@ -183,6 +202,7 @@ class TestDiscoverDocuments(unittest.TestCase):
                 "fileType": "pdf",
                 "pageCount": 15,
                 "pages": ["p1", "p2", "p3"],
+                "redirectionPageMap": [2, 0],
             },
         )
         # Create the PDF file
@@ -240,6 +260,7 @@ class TestDiscoverDocuments(unittest.TestCase):
         self.assertEqual(len(docs), 1)
         self.assertEqual(docs[0].visible_name, "Attention Is All You Need")
         self.assertEqual(docs[0].doc_type, "pdf")
+        self.assertEqual(docs[0].page_redir, {0: 2, 1: 0})
 
     def test_reconstructs_folder_hierarchy(self):
         docs = discover_documents(self.tmpdir)

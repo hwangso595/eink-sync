@@ -45,12 +45,13 @@ import { initHostKeyStore } from '../ssh/host-key-store';
 
 // Sprint 2 imports
 import {
-  isSyncthingInstalled,
   isEntwareInstalled,
+  getSyncthingVersion,
   installSyncStack,
   type InstallProgressCallback,
 } from '../sync/installer';
 import { materializeExtractionAssets } from './extraction-assets';
+import { parseGlobalIpv4, parseRouteSourceIpv4 } from './net-utils';
 
 /**
  * Progress callback for the multi-phase install flow.
@@ -909,7 +910,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
-   * Detect the tablet's WiFi IP address via SSH and read the wlan0 interface IP.
+   * Detect the tablet's WiFi IP address via SSH without assuming an interface name.
    * Returns null if the tablet is not on WiFi.
    *
    * @param overrideHost - Connect to this host instead of the saved tablet IP.
@@ -932,9 +933,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
     );
     try {
       await ssh.connect();
-      const result = await ssh.execute('ip -4 addr show wlan0 2>/dev/null');
-      const match = result.stdout.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
-      return match ? match[1] : null;
+      const route = await ssh.execute('ip -4 route get 1.1.1.1 2>/dev/null');
+      const routeAddress = route.exitCode === 0 ? parseRouteSourceIpv4(route.stdout) : null;
+      if (routeAddress) return routeAddress;
+
+      const addresses = await ssh.execute('ip -4 addr show scope global 2>/dev/null');
+      return addresses.exitCode === 0 ? parseGlobalIpv4(addresses.stdout) : null;
     } finally {
       await ssh.disconnect();
     }
@@ -1108,8 +1112,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async verifySyncInstallation(): Promise<boolean> {
     return this.withSSH(async (ssh) => {
       const entware = await isEntwareInstalled(ssh);
-      const syncthing = await isSyncthingInstalled(ssh);
-      return entware && syncthing;
+      const syncthingVersion = await getSyncthingVersion(ssh);
+      return entware && syncthingVersion !== null;
     });
   }
 
@@ -1883,7 +1887,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
           localSyncDir,
-          allowSftpSkippedFiles: (this.settings.syncMethod ?? 'sftp') === 'sftp',
         }, () => this.scheduleXochitlRestart());
       });
 

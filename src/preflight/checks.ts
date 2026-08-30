@@ -86,14 +86,23 @@ export async function runPreflightChecks(
   // Determine installation path (may throw for truly unsupported firmware)
   let installationPath: InstallationPath;
   try {
-    installationPath = getInstallationPath(deviceInfo.firmware);
+    installationPath = getInstallationPath(deviceInfo.firmware, deviceInfo.architecture);
   } catch {
-    installationPath = 'entware'; // Default fallback
+    installationPath = 'sftp-only'; // Safe fallback: never guess a package architecture
     checks.push({
       name: 'Installation Path',
       passed: false,
       message: `Cannot determine installation path for firmware ${deviceInfo.firmware.raw}.`,
       severity: 'error',
+    });
+  }
+
+  if (installationPath === 'sftp-only') {
+    checks.push({
+      name: 'Automatic Syncthing Installation',
+      passed: true,
+      message: 'SFTP is supported. Automatic Syncthing installation is unavailable for this architecture.',
+      severity: 'warning',
     });
   }
 
@@ -182,7 +191,7 @@ function checkHomeStorage(deviceInfo: DeviceInfo, budget: ResourceBudget): Check
     return {
       name: '/home Storage',
       passed: false,
-      message: 'Could not find /home partition. All bridge components install to /home/root/ for safety.',
+      message: 'Could not find /home partition. Tablet documents and legacy package data are expected under /home.',
       severity: 'error',
     };
   }
@@ -200,7 +209,7 @@ function checkHomeStorage(deviceInfo: DeviceInfo, budget: ResourceBudget): Check
   return {
     name: '/home Storage',
     passed: true,
-    message: `${homePartition.availableMB}MB free on /home (${homePartition.usagePercent}% used). Sufficient for installation.`,
+    message: `${homePartition.availableMB}MB free on /home (${homePartition.usagePercent}% used). Sufficient for sync operations.`,
     severity: 'info',
   };
 }
@@ -212,18 +221,19 @@ function checkRootPartition(deviceInfo: DeviceInfo): CheckResult {
     return {
       name: 'Root Partition',
       passed: true,
-      message: 'Could not read root partition info (non-critical -- we do not write to root).',
+      message: 'Could not read root partition info. This is non-critical for SFTP; the legacy Entware installer does create root-filesystem mount configuration.',
       severity: 'warning',
     };
   }
 
-  // We don't write to root, but warn if it's dangerously full
+  // SFTP does not write package files, but the legacy installer creates a
+  // small mount configuration on root and should not run when it is full.
   if (rootPartition.usagePercent > 95) {
     return {
       name: 'Root Partition',
       passed: true,
       message: `Root partition is ${rootPartition.usagePercent}% full (${rootPartition.availableMB}MB free). ` +
-        'This is concerning but does not block installation since we only write to /home.',
+        'SFTP can still operate, but do not run the legacy Entware installer until space is available.',
       severity: 'warning',
     };
   }
@@ -270,13 +280,16 @@ function checkDeviceModel(deviceInfo: DeviceInfo): CheckResult {
   const modelLabels: Record<string, string> = {
     reMarkable1: 'reMarkable 1 (512MB RAM, ARM Cortex-A9)',
     reMarkable2: 'reMarkable 2 (1GB RAM, ARM Cortex-A7)',
+    paperPro: 'reMarkable Paper Pro (2GB RAM, AArch64)',
+    paperProMove: 'reMarkable Paper Pro Move (2GB RAM, AArch64)',
+    paperPure: 'reMarkable Paper Pure (2GB RAM, AArch64)',
   };
 
   return {
     name: 'Device Model',
     passed: true,
-    message: `Detected: ${modelLabels[deviceInfo.model] ?? deviceInfo.model}. Resource budgets configured accordingly.`,
-    severity: 'warning',
+    message: `Detected: ${modelLabels[deviceInfo.model] ?? deviceInfo.model}; architecture ${deviceInfo.architecture}. Resource budgets configured accordingly.`,
+    severity: 'info',
   };
 }
 
@@ -294,6 +307,7 @@ export function formatPreflightReport(report: PreflightReport): string {
   lines.push('');
 
   lines.push(`Device: ${report.deviceInfo.model}`);
+  lines.push(`Architecture: ${report.deviceInfo.architecture}`);
   lines.push(`Firmware: ${report.deviceInfo.firmware.raw}`);
   lines.push(`File Format: ${report.usesV6Format ? 'v6 (rmscene)' : 'Legacy (v3/v5)'}`);
   lines.push(`Installation Path: ${report.installationPath}`);

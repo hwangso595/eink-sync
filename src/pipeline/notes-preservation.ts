@@ -46,7 +46,7 @@ interface AnchoredNote {
 /**
  * Normalize an anchor so cosmetic render differences don't break matching:
  * page-image filenames embed a content hash that changes on re-render
- * (`Name_p3_a4af.png` -> `Name_p3_b2c1.png`), and embed size aliases
+ * (`Name_p3_0123456789abcdef.png` -> `Name_p3_fedcba9876543210.png`), and embed size aliases
  * (`|900`) are presentation-only.
  */
 function normalizeAnchor(text: string): string {

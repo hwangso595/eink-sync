@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from constants import RM_SCREEN_WIDTH, RM_SCREEN_HEIGHT
+from page_geometry import LEGACY_PAGE_GEOMETRY, PageGeometry, read_page_geometry
 
 try:
     import fitz  # PyMuPDF
@@ -84,8 +85,25 @@ def _color_id_to_name(color_id: int) -> str:
         7: "red",
         8: "gray_overlap",
         9: "yellow",  # PenColor.HIGHLIGHT — default highlighter color
+        10: "green",  # PenColor.GREEN_2
+        11: "cyan",
+        12: "magenta",
+        13: "yellow",  # PenColor.YELLOW_2
     }
     return color_map.get(color_id, f"unknown_{color_id}")
+
+
+def _rgba_to_color(color_rgba: object) -> Optional[str]:
+    """Return an exact #RRGGBB color for a valid rmscene RGBA tuple."""
+    if not isinstance(color_rgba, (tuple, list)) or len(color_rgba) < 3:
+        return None
+    try:
+        channels = tuple(int(channel) for channel in color_rgba[:3])
+    except (TypeError, ValueError):
+        return None
+    if any(channel < 0 or channel > 255 for channel in channels):
+        return None
+    return "#%02X%02X%02X" % channels
 
 
 def _extract_highlights_from_rm_file(rm_path: str) -> list[dict]:
@@ -123,11 +141,12 @@ def _extract_highlights_from_rm_file(rm_path: str) -> list[dict]:
 def _glyph_range_to_dict(gr: "GlyphRange") -> dict:
     """Convert a GlyphRange object to a plain dict for downstream processing."""
     # Handle color: can be an enum (PenColor) with .value, or a raw int
-    color_val = gr.color.value if hasattr(gr.color, "value") else gr.color
+    color = getattr(gr, "color", 9)
+    color_val = color.value if hasattr(color, "value") else color
     highlight_data: dict = {
         "start": gr.start,
         "length": gr.length,
-        "color": _color_id_to_name(color_val),
+        "color": _rgba_to_color(getattr(gr, "color_rgba", None)) or _color_id_to_name(color_val),
         "rects": [],
     }
     # GlyphRange also stores the matched text directly
@@ -371,12 +390,24 @@ def _get_bounds_from_rects(rects: list[dict]) -> Optional[dict]:
     }
 
 
+def _backing_pdf_page_index(
+    logical_page_index: int,
+    page_redir: Optional[dict[int, int]],
+) -> Optional[int]:
+    """Resolve a logical notebook page to its backing PDF page, if any."""
+    if page_redir is None:
+        return logical_page_index
+    return page_redir.get(logical_page_index)
+
+
 def _process_v6_page(
     rm_path: str,
     pdf_doc: "fitz.Document",
     page_index: int,
     highlights: list[ExtractedHighlight],
     warnings: list[str],
+    geometry: Optional[PageGeometry] = None,
+    logical_page_index: Optional[int] = None,
 ) -> None:
     """
     Process a single v6-format .rm page: parse GlyphRange blocks and extract
@@ -386,20 +417,29 @@ def _process_v6_page(
 
     Results are appended in-place to the highlights and warnings lists.
     """
+    geometry = geometry or read_page_geometry(rm_path)
+    display_page_index = (
+        page_index if logical_page_index is None else logical_page_index
+    )
+
     try:
         glyph_ranges = _extract_highlights_from_rm_file(rm_path)
     except (ValueError, ImportError) as e:
-        warnings.append(f"Page {page_index + 1}: {e}")
+        warnings.append(f"Page {display_page_index + 1}: {e}")
         return
 
     if page_index < 0:
-        warnings.append(f"Page {page_index + 1}: page index out of range in PDF")
+        warnings.append(
+            f"Page {display_page_index + 1}: page index out of range in PDF"
+        )
         return
 
     try:
         page = pdf_doc[page_index]
     except (IndexError, TypeError):
-        warnings.append(f"Page {page_index + 1}: page index out of range in PDF")
+        warnings.append(
+            f"Page {display_page_index + 1}: page index out of range in PDF"
+        )
         return
     pdf_w, pdf_h = page.rect.width, page.rect.height
 
@@ -409,7 +449,8 @@ def _process_v6_page(
         # merging so detected PDF gutters use the same coordinate space.
         pdf_rects = [
             _v6_rm_rect_to_pdf_rect(
-                r["x"], r["y"], r["width"], r["height"], pdf_w, pdf_h
+                r["x"], r["y"], r["width"], r["height"], pdf_w, pdf_h,
+                geometry=geometry,
             )
             for r in gr.get("rects", [])
         ]
@@ -426,7 +467,7 @@ def _process_v6_page(
 
         if not text:
             warnings.append(
-                f"Page {page_index + 1}: Empty text for highlight at "
+                f"Page {display_page_index + 1}: Empty text for highlight at "
                 f"offset {gr['start']}+{gr['length']}"
             )
             continue
@@ -436,7 +477,7 @@ def _process_v6_page(
         highlights.append(
             ExtractedHighlight(
                 text=text,
-                page_number=page_index + 1,  # 1-indexed
+                page_number=display_page_index + 1,  # 1-indexed logical page
                 color=gr.get("color", "yellow"),
                 bounds=bounds,
                 created_at=None,  # GlyphRange does not store timestamps
@@ -447,33 +488,36 @@ def _process_v6_page(
     # highlighter tool (pen 5/18) instead of tap-to-select-text. Stored as
     # Line blocks, not GlyphRange. Without this pass these annotations appear
     # in the rendered page PNG but never as text quotes in the markdown.
-    _process_highlighter_strokes(rm_path, pdf_doc, page_index, highlights, warnings)
-
-
-# Empirically calibrated against the AlphaGo Zero paper (page 26): rmscene
-# v6 stroke/glyph coordinates live in a logical space sized at
-# canvas * 300/226 (i.e. PDF pages of 612x792 pt map onto an
-# (1404*300/226) x (1872*300/226) ≈ 1863 x 2485 logical grid).
-# Verified by comparing GR#1 rm_y=437 to PDF "action is selected" at y=139.9
-# (ratio matches 226/300 * 792/1872 to within 0.5%).
-_V6_LOGICAL_DPI = 300
-_V6_PHYSICAL_DPI = 226
+    _process_highlighter_strokes(
+        rm_path,
+        pdf_doc,
+        page_index,
+        highlights,
+        warnings,
+        geometry=geometry,
+        logical_page_index=display_page_index,
+    )
 
 
 def _v6_rm_rect_to_pdf_rect(
     rm_x: float, rm_y: float, rm_w: float, rm_h: float,
     pdf_w: float, pdf_h: float,
+    geometry: PageGeometry = LEGACY_PAGE_GEOMETRY,
 ) -> dict:
-    """Convert a v6 rm-space rectangle (center-origin x, top-origin y) to PDF pt."""
-    canvas_logical_w = RM_SCREEN_WIDTH * (_V6_LOGICAL_DPI / _V6_PHYSICAL_DPI)
-    canvas_logical_h = RM_SCREEN_HEIGHT * (_V6_LOGICAL_DPI / _V6_PHYSICAL_DPI)
-    sx = pdf_w / canvas_logical_w
-    sy = pdf_h / canvas_logical_h
+    """Convert a v6 rm-space rectangle to PDF points.
+
+    This is the exact inverse of ``png_renderer``'s PDF path: annotations are
+    scaled uniformly into the device canvas, while the PDF background is fit
+    to the canvas width.  Using independent physical-DPI x/y scales happened
+    to be close on the 4:3 legacy display, but diverges on Paper Pro Move.
+    """
+    canvas_to_pdf = pdf_w / geometry.width
+    annotation_scale = geometry.pdf_coord_scale * canvas_to_pdf
     return {
-        "x": (rm_x + canvas_logical_w / 2) * sx,
-        "y": rm_y * sy,
-        "width": rm_w * sx,
-        "height": rm_h * sy,
+        "x": (rm_x * geometry.pdf_coord_scale + geometry.width / 2) * canvas_to_pdf,
+        "y": rm_y * annotation_scale,
+        "width": rm_w * annotation_scale,
+        "height": rm_h * annotation_scale,
     }
 
 
@@ -520,7 +564,10 @@ def _extract_highlighter_strokes_from_rm_file(rm_path: str) -> list[dict]:
         color_val = getattr(color, "value", color) if color is not None else None
         strokes.append({
             "pen_type": pen_type,
-            "color": _color_id_to_name(color_val) if color_val is not None else "yellow",
+            "color": (
+                _rgba_to_color(getattr(val, "color_rgba", None))
+                or (_color_id_to_name(color_val) if color_val is not None else "yellow")
+            ),
             "rm_bbox": (x0, y0, x1 - x0, y1 - y0),
         })
 
@@ -533,6 +580,8 @@ def _process_highlighter_strokes(
     page_index: int,
     highlights: list[ExtractedHighlight],
     warnings: list[str],
+    geometry: PageGeometry = LEGACY_PAGE_GEOMETRY,
+    logical_page_index: Optional[int] = None,
 ) -> None:
     """
     Extract text from highlighter-pen strokes on a v6 page.
@@ -547,6 +596,9 @@ def _process_highlighter_strokes(
 
     This function performs path 2.
     """
+    display_page_index = (
+        page_index if logical_page_index is None else logical_page_index
+    )
     if page_index < 0 or page_index >= len(pdf_doc):
         return
     strokes = _extract_highlighter_strokes_from_rm_file(rm_path)
@@ -563,7 +615,9 @@ def _process_highlighter_strokes(
     for s in strokes:
         x, y, w, h = s["rm_bbox"]
         # PDF rect is only used to query text — convert from rm to PDF coords.
-        pdf_rect = _v6_rm_rect_to_pdf_rect(x, y, w, h, pdf_w, pdf_h)
+        pdf_rect = _v6_rm_rect_to_pdf_rect(
+            x, y, w, h, pdf_w, pdf_h, geometry=geometry,
+        )
         pdf_rect["y"] -= Y_PAD_PT
         pdf_rect["height"] += 2 * Y_PAD_PT
         pdf_rect["x"] = max(0.0, pdf_rect["x"])
@@ -576,7 +630,7 @@ def _process_highlighter_strokes(
         text = _extract_text_by_rectangle(pdf_doc, page_index, [pdf_rect])
         if not text:
             warnings.append(
-                f"Page {page_index + 1}: highlighter stroke at "
+                f"Page {display_page_index + 1}: highlighter stroke at "
                 f"PDF y={pdf_rect['y']:.1f} matched no text"
             )
             continue
@@ -586,7 +640,7 @@ def _process_highlighter_strokes(
         highlights.append(
             ExtractedHighlight(
                 text=text,
-                page_number=page_index + 1,
+                page_number=display_page_index + 1,
                 color=s["color"],
                 bounds=dict(pdf_rect),
                 created_at=None,
@@ -598,6 +652,7 @@ def extract_highlights_for_document(
     doc_uuid: str,
     page_uuids: list[str],
     xochitl_path: str,
+    page_redir: Optional[dict[int, int]] = None,
 ) -> tuple[list[ExtractedHighlight], list[str]]:
     """
     Extract all text highlights from a PDF document's .rm annotation files.
@@ -613,6 +668,7 @@ def extract_highlights_for_document(
         doc_uuid: The document's UUID in the xochitl filesystem.
         page_uuids: Ordered list of page UUIDs from the .content file.
         xochitl_path: Path to the synced xochitl directory.
+        page_redir: Optional logical-page to backing-PDF-page mapping.
 
     Returns:
         Tuple of (highlights, warnings) where highlights is a list of
@@ -653,12 +709,27 @@ def extract_highlights_for_document(
             if not os.path.exists(rm_path):
                 continue  # No annotations on this page
 
-            if page_index < len(pdf_doc):
-                gutter_x = _detect_page_gutter(pdf_doc[page_index])
+            pdf_page_index = _backing_pdf_page_index(page_index, page_redir)
+            if pdf_page_index is None:
+                warnings.append(
+                    f"Page {page_index + 1}: inserted page has no backing PDF; "
+                    "skipping PDF highlight extraction"
+                )
+                continue
+
+            if 0 <= pdf_page_index < len(pdf_doc):
+                gutter_x = _detect_page_gutter(pdf_doc[pdf_page_index])
                 if gutter_x is not None:
                     page_gutters[page_index + 1] = gutter_x
 
-            _process_v6_page(rm_path, pdf_doc, page_index, highlights, warnings)
+            _process_v6_page(
+                rm_path,
+                pdf_doc,
+                pdf_page_index,
+                highlights,
+                warnings,
+                logical_page_index=page_index,
+            )
     finally:
         pdf_doc.close()
 
@@ -711,6 +782,7 @@ def extract_highlights_for_document_auto(
     doc_uuid: str,
     page_uuids: list[str],
     xochitl_path: str,
+    page_redir: Optional[dict[int, int]] = None,
 ) -> tuple[list[ExtractedHighlight], list[str]]:
     """
     Extract highlights with automatic format detection per .rm file.
@@ -754,16 +826,31 @@ def extract_highlights_for_document_auto(
             if not os.path.exists(rm_path):
                 continue
 
+            pdf_page_index = _backing_pdf_page_index(page_index, page_redir)
+            if pdf_page_index is None:
+                warnings.append(
+                    f"Page {page_index + 1}: inserted page has no backing PDF; "
+                    "skipping PDF highlight extraction"
+                )
+                continue
+
             fmt = _detect_rm_format(rm_path)
 
-            if page_index < len(pdf_doc):
-                gutter_x = _detect_page_gutter(pdf_doc[page_index])
+            if 0 <= pdf_page_index < len(pdf_doc):
+                gutter_x = _detect_page_gutter(pdf_doc[pdf_page_index])
                 if gutter_x is not None:
                     page_gutters[page_index + 1] = gutter_x
 
             if fmt == "v6":
                 # Delegate to the shared v6 extraction helper
-                _process_v6_page(rm_path, pdf_doc, page_index, highlights, warnings)
+                _process_v6_page(
+                    rm_path,
+                    pdf_doc,
+                    pdf_page_index,
+                    highlights,
+                    warnings,
+                    logical_page_index=page_index,
+                )
 
             elif fmt in ("v3", "v5"):
                 # Legacy path: parse highlighter strokes, extract text by rect
@@ -783,8 +870,8 @@ def extract_highlights_for_document_auto(
                     continue
 
                 # Convert reMarkable coordinates to PDF coordinates
-                if page_index < len(pdf_doc):
-                    page = pdf_doc[page_index]
+                if 0 <= pdf_page_index < len(pdf_doc):
+                    page = pdf_doc[pdf_page_index]
                     page_rect = page.rect
                     page_w = page_rect.width
                     page_h = page_rect.height
@@ -799,7 +886,7 @@ def extract_highlights_for_document_auto(
                         region.bounds, page_w, page_h
                     )
                     text = _extract_text_by_rectangle(
-                        pdf_doc, page_index, [pdf_rect]
+                        pdf_doc, pdf_page_index, [pdf_rect]
                     )
                     if not text:
                         warnings.append(

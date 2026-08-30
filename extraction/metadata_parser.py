@@ -75,6 +75,9 @@ class ReMarkableDocument:
     folder_path: str  # Reconstructed path like "Papers/Machine Learning"
     tags: list[str] = field(default_factory=list)
     page_tags: dict[str, list[str]] = field(default_factory=dict)
+    # Logical page index -> backing PDF page index. Missing keys are inserted
+    # notebook pages with no PDF background.
+    page_redir: Optional[dict[int, int]] = None
 
 
 def parse_metadata_file(filepath: str) -> Optional[DocumentMetadata]:
@@ -176,15 +179,26 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
                         page_tags_map[page_id] = []
                     page_tags_map[page_id].append(tag_name)
 
+        file_type = data.get("fileType", "")
+        # cPages PDF/EPUB documents use absence from the redirect map to mark
+        # inserted pages. Preserve an empty mapping when every original page
+        # was deleted; collapsing it to None would incorrectly restore identity
+        # mapping onto the source PDF.
+        resolved_page_redir: Optional[dict[int, int]] = (
+            page_redir
+            if page_redir
+            else {} if c_pages is not None and file_type in ("pdf", "epub") else None
+        )
+
         return DocumentContent(
             uuid=os.path.splitext(os.path.basename(filepath))[0],
-            file_type=data.get("fileType", ""),
+            file_type=file_type,
             page_count=page_count,
             page_uuids=page_uuids,
             page_templates=page_templates,
             orientation=data.get("orientation", "portrait"),
             c_pages=c_pages,
-            page_redir=page_redir if page_redir else None,
+            page_redir=resolved_page_redir,
             tags=doc_tags,
             page_tags=page_tags_map,
         )
@@ -308,6 +322,7 @@ def discover_documents(xochitl_path: str) -> list[ReMarkableDocument]:
                 folder_path=folder_path,
                 tags=content.tags,
                 page_tags=content.page_tags,
+                page_redir=content.page_redir,
             )
         )
 
@@ -390,6 +405,7 @@ def discover_all_documents(
                 folder_path=folder_path,
                 tags=content.tags,
                 page_tags=content.page_tags,
+                page_redir=content.page_redir,
             )
         )
 

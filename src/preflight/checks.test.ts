@@ -30,6 +30,7 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>> = {}): 
 function makeDeviceInfo(overrides: Partial<DeviceInfo> = {}): DeviceInfo {
   return {
     model: 'reMarkable1' as DeviceModel,
+    architecture: 'armv7',
     firmware: parseFirmwareVersion('3.26.0.68'),
     memory: { totalMB: 512, availableMB: 300, usedMB: 212 },
     storage: [
@@ -53,6 +54,23 @@ describe('runPreflightChecks', () => {
     expect(report.passed).toBe(true);
     expect(report.checks.length).toBeGreaterThanOrEqual(6);
     expect(report.checks.every(c => c.passed)).toBe(true);
+  });
+
+  it('routes AArch64 tablets to SFTP without failing core preflight', async () => {
+    const ssh = createMockSSH({
+      'test -d': { stdout: 'exists', exitCode: 0 },
+    });
+    const info = makeDeviceInfo({ model: 'paperPro', architecture: 'aarch64' });
+
+    const report = await runPreflightChecks(info, ssh);
+
+    expect(report.installationPath).toBe('sftp-only');
+    expect(report.passed).toBe(true);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      name: 'Automatic Syncthing Installation',
+      passed: true,
+      severity: 'warning',
+    }));
   });
 
   it('fails when firmware is too old', async () => {

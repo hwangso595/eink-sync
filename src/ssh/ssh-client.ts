@@ -253,7 +253,9 @@ export class ReMarkableSSHClient implements SSHExecutor {
       return new BridgeError(
         ErrorCode.SSH_CONNECTION_REFUSED,
         `Connection refused by ${this.config.host}:${this.config.port}.`,
-        'Ensure the tablet is powered on and SSH is enabled (it is by default on reMarkable).',
+        this.config.method === 'usb'
+          ? 'Ensure the tablet is powered on. Current models require Developer Mode before USB SSH; enabling it factory-resets the tablet, so back up first.'
+          : 'WiFi SSH may be disabled. Connect over USB, enable Developer Mode if required (back up first; enabling it factory-resets current tablets), then run rm-ssh-over-wlan on.',
         err,
       );
     }
@@ -263,8 +265,8 @@ export class ReMarkableSSHClient implements SSHExecutor {
         ErrorCode.SSH_TIMEOUT,
         `Connection to ${this.config.host} timed out.`,
         this.config.method === 'usb'
-          ? 'Check the USB cable connection. The tablet should show 10.11.99.1 in Settings > Help > About.'
-          : 'Ensure both devices are on the same network and the tablet is not in sleep mode.',
+          ? 'Check the USB cable and Developer Mode. Enabling Developer Mode factory-resets current tablets, so back up first. The USB address is normally 10.11.99.1.'
+          : 'Ensure both devices are on the same network and the tablet is awake. If needed, connect over USB and run rm-ssh-over-wlan on.',
         err,
       );
     }
@@ -274,8 +276,8 @@ export class ReMarkableSSHClient implements SSHExecutor {
         ErrorCode.SSH_HOST_UNREACHABLE,
         `Host ${this.config.host} is unreachable.`,
         this.config.method === 'usb'
-          ? 'Reconnect the USB cable and ensure the tablet is powered on.'
-          : 'Check that both devices are on the same WiFi network.',
+          ? 'Reconnect the USB cable and verify Developer Mode when required. Enabling it factory-resets current tablets, so back up first.'
+          : 'Check that both devices are on the same WiFi network. If needed, connect over USB and run rm-ssh-over-wlan on.',
         err,
       );
     }

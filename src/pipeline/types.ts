@@ -211,7 +211,7 @@ export interface PipelineConfig {
   ocrEnabled?: boolean;
   /** Tesseract language code(s) for OCR (default: 'eng'). */
   ocrLanguage?: string;
-  /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
+  /** Directory of reMarkable PNG/SVG/.template assets for notebook backgrounds. */
   templatesDir?: string;
   /** Python executable to use (resolved managed env). Falls back to PATH detection. */
   pythonPath?: string;

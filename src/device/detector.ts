@@ -9,6 +9,7 @@
 import { SSHExecutor } from '../ssh/ssh-client';
 import {
   DeviceModel,
+  DeviceArchitecture,
   FirmwareVersion,
   MemoryInfo,
   StorageInfo,
@@ -46,6 +47,9 @@ const FIRMWARE_SOURCES: ReadonlyArray<{ label: string; command: string }> = [
 
 /** Path to the device model file on reMarkable. */
 const DEVICE_MODEL_PATH = '/sys/devices/soc0/machine';
+
+/** Newer tablets also expose a human-readable device-tree model. */
+const DEVICE_TREE_MODEL_PATH = '/proc/device-tree/model';
 
 /** Fallback: check the device tree compatible string. */
 const DEVICE_TREE_COMPATIBLE_PATH = '/proc/device-tree/compatible';
@@ -99,31 +103,33 @@ export async function detectFirmwareVersion(ssh: SSHExecutor): Promise<FirmwareV
 }
 
 /**
- * Detect the device model (rM1 vs rM2).
+ * Detect the device model across every released reMarkable generation.
  *
- * Tries /sys/devices/soc0/machine first, falls back to /proc/device-tree/compatible,
- * and finally to RAM-based heuristic (rM1 = 512MB, rM2 = 1GB).
+ * Tries the human-readable machine/model sources first, then the compatible
+ * string, and finally a RAM heuristic for the two legacy devices. Unknown
+ * values never stop later, more specific sources from being checked.
  */
 export async function detectDeviceModel(ssh: SSHExecutor): Promise<DeviceModel> {
-  // Try the machine file first
-  const machineResult = await ssh.execute(`cat ${DEVICE_MODEL_PATH} 2>/dev/null`);
-  if (machineResult.exitCode === 0 && machineResult.stdout.trim()) {
-    return parseModelString(machineResult.stdout.trim());
-  }
+  const sources = [DEVICE_MODEL_PATH, DEVICE_TREE_MODEL_PATH, DEVICE_TREE_COMPATIBLE_PATH];
+  for (const source of sources) {
+    const result = await ssh.execute(`cat ${source} 2>/dev/null`);
+    if (result.exitCode !== 0 || !result.stdout.trim()) continue;
 
-  // Fallback: device tree compatible string
-  const dtResult = await ssh.execute(`cat ${DEVICE_TREE_COMPATIBLE_PATH} 2>/dev/null`);
-  if (dtResult.exitCode === 0 && dtResult.stdout) {
-    return parseModelString(dtResult.stdout);
+    const model = parseModelString(result.stdout);
+    if (model !== 'unknown') return model;
   }
 
   // Last resort: RAM-based heuristic
   logger.warn('Could not read device model file, falling back to RAM-based detection');
-  const memInfo = await detectMemoryInfo(ssh);
-  if (memInfo.totalMB < RM1_MAX_RAM_MB) {
-    return 'reMarkable1';
-  } else if (memInfo.totalMB < RM2_MAX_RAM_MB) {
-    return 'reMarkable2';
+  try {
+    const memInfo = await detectMemoryInfo(ssh);
+    if (memInfo.totalMB > 0 && memInfo.totalMB < RM1_MAX_RAM_MB) {
+      return 'reMarkable1';
+    } else if (memInfo.totalMB > 0 && memInfo.totalMB < RM2_MAX_RAM_MB) {
+      return 'reMarkable2';
+    }
+  } catch (err) {
+    logger.warn(`RAM-based device detection unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return 'unknown';
@@ -133,15 +139,33 @@ export async function detectDeviceModel(ssh: SSHExecutor): Promise<DeviceModel> 
  * Parse a model identification string into our enum.
  */
 function parseModelString(raw: string): DeviceModel {
-  const lower = raw.toLowerCase();
+  const lower = raw
+    .toLowerCase()
+    .replace(/\0/g, ' ')
+    .replace(/[_,-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Current devices use internal codenames in their machine/device-tree data.
+  // Check the most specific names first so words or digits in marketing names
+  // cannot be mistaken for a legacy generation.
+  if (lower.includes('chiappa') || /remarkable paper pro move/.test(lower)) {
+    return 'paperProMove';
+  }
+  if (lower.includes('tatsu') || /remarkable paper (?:pro )?pure/.test(lower)) {
+    return 'paperPure';
+  }
+  if (lower.includes('ferrari') || /remarkable paper pro/.test(lower)) {
+    return 'paperPro';
+  }
 
   // rM1: "reMarkable 1.0", "reMarkable Prototype 1"
   // The machine file typically contains "reMarkable 1.0" or "reMarkable 2.0"
-  if (lower.includes('remarkable') && (lower.includes('1') || lower.includes('prototype'))) {
+  if (/remarkable (?:1(?:\.0)?|prototype 1)(?: |$)/.test(lower)) {
     return 'reMarkable1';
   }
 
-  if (lower.includes('remarkable') && lower.includes('2')) {
+  if (/remarkable ?2(?:\.0)?(?: |$)/.test(lower)) {
     return 'reMarkable2';
   }
 
@@ -152,6 +176,20 @@ function parseModelString(raw: string): DeviceModel {
   }
 
   logger.warn(`Device model string not recognized as reMarkable: "${raw}"`);
+  return 'unknown';
+}
+
+/** Detect and normalize the kernel architecture reported by uname. */
+export async function detectDeviceArchitecture(
+  ssh: SSHExecutor,
+): Promise<DeviceArchitecture> {
+  const result = await ssh.execute('uname -m');
+  const raw = result.exitCode === 0 ? result.stdout.trim().toLowerCase() : '';
+
+  if (raw === 'aarch64' || raw === 'arm64') return 'aarch64';
+  if (/^armv7/.test(raw)) return 'armv7';
+
+  logger.warn(`Device architecture not recognized: "${raw || 'unavailable'}"`);
   return 'unknown';
 }
 
@@ -196,7 +234,7 @@ export async function detectStorageInfo(
   mountPoint: string,
 ): Promise<StorageInfo> {
   // Use df with 1M block size for MB values
-  const result = await ssh.execute(`df -m ${mountPoint} | tail -1`);
+  const result = await ssh.execute(`df -m ${mountPoint}`);
 
   if (result.exitCode !== 0) {
     throw new BridgeError(
@@ -205,19 +243,29 @@ export async function detectStorageInfo(
     );
   }
 
-  // df output: Filesystem 1M-blocks Used Available Use% Mounted on
+  // Read from the right: a long filesystem source can wrap onto the preceding
+  // line, leaving only Total/Used/Available/Use%/Mount on the final row.
   const parts = result.stdout.trim().split(/\s+/);
-  if (parts.length < 6) {
+  if (parts.length < 5) {
     throw new BridgeError(
       ErrorCode.PREFLIGHT_CHECK_FAILED,
       `Unexpected df output format for ${mountPoint}: "${result.stdout}"`,
     );
   }
 
-  const totalMB = parseInt(parts[1], 10);
-  const usedMB = parseInt(parts[2], 10);
-  const availableMB = parseInt(parts[3], 10);
-  const usagePercent = parseInt(parts[4].replace('%', ''), 10);
+  const [total, used, available, usage, reportedMount] = parts.slice(-5);
+  const totalMB = parseInt(total, 10);
+  const usedMB = parseInt(used, 10);
+  const availableMB = parseInt(available, 10);
+  const usageMatch = /^(\d+)%$/.exec(usage);
+  const usagePercent = usageMatch ? parseInt(usageMatch[1], 10) : NaN;
+
+  if (reportedMount !== mountPoint) {
+    throw new BridgeError(
+      ErrorCode.PREFLIGHT_CHECK_FAILED,
+      `Unexpected df output format for ${mountPoint}: "${result.stdout}"`,
+    );
+  }
 
   return {
     mountPoint,
@@ -243,6 +291,9 @@ export async function detectDeviceInfo(ssh: SSHExecutor): Promise<DeviceInfo> {
   const model = await detectDeviceModel(ssh);
   logger.info(`Model: ${model}`);
 
+  const architecture = await detectDeviceArchitecture(ssh);
+  logger.info(`Architecture: ${architecture}`);
+
   const memory = await detectMemoryInfo(ssh);
   logger.info(`Memory: ${memory.totalMB}MB total, ${memory.availableMB}MB available`);
 
@@ -264,6 +315,7 @@ export async function detectDeviceInfo(ssh: SSHExecutor): Promise<DeviceInfo> {
 
   const deviceInfo: DeviceInfo = {
     model,
+    architecture,
     firmware,
     memory,
     storage: [rootStorage, homeStorage],

@@ -9,14 +9,11 @@
  * Design decisions:
  * - Sequential transfers: one file at a time to avoid overwhelming the rM1.
  * - PDFs/EPUBs are immutable: skip download if local copy matches by size.
- * - Annotation dirs (UUID folders with .rm files) are only listed when the
- *   document's .metadata/.content changed (xochitl rewrites those on every
- *   save), so unchanged documents cost zero extra round trips per sync.
- *   Within a listed dir, files are compared by mtime+size.
- * - Skips non-essential directories: .textconversion, .highlights, .stfolder,
- *   .cache and .thumbnails (tablet-rendered previews the extraction pipeline
- *   never reads, regenerated on every page view), .pagedata files, and
- *   Syncthing conflict files.
+ * - Every UUID and UUID.* collection entry is preserved, including unknown
+ *   future sidecars and recursively nested directories.
+ * - Files are compared by mtime+size and downloaded atomically.
+ * - Unsafe traversal names, symlinks, and special files fail the document
+ *   closed instead of being followed or copied outside the sync directory.
  * - Progress callback for UI integration.
  *
  * Privacy: Only communicates with the user's tablet over SSH/SFTP.
@@ -29,6 +26,10 @@ import * as path from 'path';
 import { logger } from '../utils/logger';
 import { connectSftp } from './sftp-connection';
 import { XOCHITL_SYNC_PATH } from './types';
+import {
+  assertSafeRemotePathSegment,
+  documentUuidForCollectionEntry,
+} from './document-collection';
 
 // ---------------------------------------------------------------
 // Types
@@ -50,7 +51,10 @@ export interface SftpSyncOptions {
   localSyncDir: string;
   /** Remote xochitl path on the tablet. */
   remotePath?: string;
-  /** Whether to include EPUB files. */
+  /**
+   * Retained for API compatibility. Complete backups always sync EPUB source
+   * files; the extraction pipeline separately decides whether to process them.
+   */
   includeEpub?: boolean;
 }
 
@@ -66,6 +70,10 @@ export interface RemoteFileInfo {
   mtime: number;
   /** Whether this is a directory. */
   isDirectory: boolean;
+  /** Owning document UUID for UUID / UUID.* collection entries. */
+  documentUuid?: string;
+  /** Filesystem entry type. Symlinks and special files are never downloaded. */
+  entryType?: 'file' | 'directory' | 'symlink' | 'special';
 }
 
 /** Result of an SFTP sync operation. */
@@ -97,76 +105,38 @@ export type SftpProgressCallback = (
 ) => void;
 
 // ---------------------------------------------------------------
-// Skip patterns
+// Collection state
 // ---------------------------------------------------------------
 
 /**
- * Directory names to skip during sync.
- * These are non-essential for highlight extraction.
- */
-const SKIP_DIRS = new Set([
-  '.textconversion',
-  '.highlights',
-  '.stfolder',
-]);
-
-/**
- * File names/patterns to skip during sync.
- */
-const SKIP_FILES = new Set([
-  '.stignore',
-  '.local',
-]);
-
-/** File extensions to skip. */
-const SKIP_EXTENSIONS = new Set([
-  '.pagedata',
-]);
-
-/**
- * Marker file left inside a local annotation dir whose last download had
- * errors. Its presence forces compareFiles() to re-include the dir on the
- * next sync even when the doc's metadata looks up to date, so a partial
- * download can never masquerade as a complete one.
+ * Markers live outside document collections so they can never be uploaded to
+ * the tablet when an archived document is restored.
  */
 const INCOMPLETE_MARKER = '.eink-sync-incomplete';
+const SYNC_STATE_DIR = '.eink-sync-state';
+const MAX_COLLECTION_DEPTH = 64;
 
-/**
- * Check whether a filename should be skipped.
- */
-function shouldSkipEntry(filename: string, isDirectory: boolean): boolean {
-  if (isDirectory) {
-    return SKIP_DIRS.has(filename);
+const FILE_TYPE_MASK = 0o170000;
+const REGULAR_FILE_TYPE = 0o100000;
+const DIRECTORY_TYPE = 0o040000;
+const SYMLINK_TYPE = 0o120000;
+
+function entryTypeFromMode(mode: number): RemoteFileInfo['entryType'] {
+  switch (mode & FILE_TYPE_MASK) {
+    case REGULAR_FILE_TYPE: return 'file';
+    case DIRECTORY_TYPE: return 'directory';
+    case SYMLINK_TYPE: return 'symlink';
+    default: return 'special';
   }
-
-  if (SKIP_FILES.has(filename)) return true;
-
-  // Skip Syncthing conflict files
-  if (filename.includes('sync-conflict')) return true;
-
-  // Skip by extension
-  const ext = path.extname(filename).toLowerCase();
-  if (SKIP_EXTENSIONS.has(ext)) return true;
-
-  return false;
 }
 
-/**
- * Check whether a filename represents a document we want to sync.
- * We want: .metadata, .content, .pdf, .epub, and UUID annotation directories.
- */
-function isRelevantFile(filename: string, includeEpub: boolean): boolean {
-  const ext = path.extname(filename).toLowerCase();
-  if (ext === '.metadata' || ext === '.content' || ext === '.pdf') return true;
-  if (ext === '.epub' && includeEpub) return true;
-  return false;
-}
-
-/**
- * Check whether a name looks like a UUID (8-4-4-4-12 hex pattern).
- */
-function isUuidLike(name: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name);
+/** Template asset formats shipped by supported firmware generations. */
+export function isSupportedTemplateAsset(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return filename === 'templates.json'
+    || lower.endsWith('.png')
+    || lower.endsWith('.template')
+    || lower.endsWith('.svg');
 }
 
 // ---------------------------------------------------------------
@@ -186,11 +156,79 @@ function sftpReaddir(sftp: SFTPWrapper, remotePath: string): Promise<RemoteFileI
         filename: entry.filename,
         size: entry.attrs.size,
         mtime: entry.attrs.mtime,
-        isDirectory: (entry.attrs.mode & 0o040000) !== 0,
+        isDirectory: (entry.attrs.mode & FILE_TYPE_MASK) === DIRECTORY_TYPE,
+        entryType: entryTypeFromMode(entry.attrs.mode),
       }));
       resolve(entries);
     });
   });
+}
+
+function missingPath(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/** Return the target's path segments below a trusted local root. */
+function localDescendantSegments(localRoot: string, targetPath: string): string[] {
+  const root = path.resolve(localRoot);
+  const target = path.resolve(targetPath);
+  const relative = path.relative(root, target);
+  if (relative === '') return [];
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to write outside the local sync directory: ${targetPath}`);
+  }
+  return relative.split(path.sep);
+}
+
+/** Create descendants one segment at a time without following links. */
+function ensureSafeLocalDirectory(localRoot: string, directoryPath: string): void {
+  const root = path.resolve(localRoot);
+  fs.mkdirSync(root, { recursive: true });
+  if (!fs.statSync(root).isDirectory()) {
+    throw new Error(`Local sync path is not a directory: ${localRoot}`);
+  }
+
+  let current = root;
+  for (const segment of localDescendantSegments(root, directoryPath)) {
+    current = path.join(current, segment);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(current);
+    } catch (error) {
+      if (!missingPath(error)) throw error;
+      fs.mkdirSync(current);
+      stat = fs.lstatSync(current);
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write through a local symlink or junction: ${current}`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`Local download parent is not a directory: ${current}`);
+    }
+  }
+}
+
+/** Validate the destination and temporary file before SFTP opens either. */
+function assertSafeLocalFileTarget(localRoot: string, localPath: string): void {
+  localDescendantSegments(localRoot, localPath);
+  ensureSafeLocalDirectory(localRoot, path.dirname(localPath));
+
+  for (const candidate of [localPath, `${localPath}.part`]) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(candidate);
+    } catch (error) {
+      if (missingPath(error)) continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to write through a local symlink or junction: ${candidate}`);
+    }
+    if (!stat.isFile()) {
+      throw new Error(`Local download target is not a regular file: ${candidate}`);
+    }
+  }
 }
 
 /**
@@ -204,8 +242,13 @@ function sftpReaddir(sftp: SFTPWrapper, remotePath: string): Promise<RemoteFileI
  * (or nothing) rather than a torn file.
  */
 function sftpDownloadFile(
-  sftp: SFTPWrapper, remotePath: string, localPath: string, remoteMtime?: number,
+  sftp: SFTPWrapper,
+  remotePath: string,
+  localPath: string,
+  remoteMtime?: number,
+  validateLocalPaths?: () => void,
 ): Promise<void> {
+  validateLocalPaths?.();
   const tmpPath = `${localPath}.part`;
   return new Promise((resolve, reject) => {
     sftp.fastGet(remotePath, tmpPath, (err) => {
@@ -225,6 +268,7 @@ function sftpDownloadFile(
         }
       }
       try {
+        validateLocalPaths?.();
         fs.renameSync(tmpPath, localPath);
       } catch (renameErr) {
         try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore cleanup */ }
@@ -257,6 +301,17 @@ export class SftpSyncEngine {
       remotePath: options.remotePath ?? XOCHITL_SYNC_PATH,
       includeEpub: options.includeEpub ?? true,
     };
+  }
+
+  private downloadToLocalFile(
+    sftp: SFTPWrapper,
+    remotePath: string,
+    localPath: string,
+    remoteMtime?: number,
+    localRoot = this.options.localSyncDir,
+  ): Promise<void> {
+    const validate = (): void => assertSafeLocalFileTarget(localRoot, localPath);
+    return sftpDownloadFile(sftp, remotePath, localPath, remoteMtime, validate);
   }
 
   /**
@@ -347,6 +402,11 @@ export class SftpSyncEngine {
     let bytesDownloaded = 0;
     const errors: string[] = [];
     const failedDocs = new Set<string>();
+    const attemptedDocs = new Set(
+      toDownload
+        .map((entry) => entry.documentUuid ?? documentUuidForCollectionEntry(entry.filename))
+        .filter((uuid): uuid is string => uuid !== null && uuid !== undefined),
+    );
 
     for (let i = 0; i < toDownload.length; i++) {
       const file = toDownload[i];
@@ -359,20 +419,21 @@ export class SftpSyncEngine {
           filesDownloaded += dirResult.filesDownloaded;
           bytesDownloaded += dirResult.bytesDownloaded;
           if (dirResult.errors.length > 0) {
-            failedDocs.add(file.filename);
+            const uuid = file.documentUuid ?? documentUuidForCollectionEntry(file.filename);
+            if (uuid) failedDocs.add(uuid);
           }
           errors.push(...dirResult.errors);
         } else {
           const ext = path.extname(file.filename).toLowerCase();
-          const uuid = path.basename(file.filename, ext);
-          if ((ext === '.metadata' || ext === '.content') && failedDocs.has(uuid)) {
+          const uuid = file.documentUuid ?? documentUuidForCollectionEntry(file.filename);
+          if (uuid && (ext === '.metadata' || ext === '.content') && failedDocs.has(uuid)) {
             logger.warn(
               `SFTP sync: holding back ${file.filename} (page data failed; will retry next sync)`,
             );
             continue;
           }
           const localPath = path.join(this.options.localSyncDir, file.filename);
-          await sftpDownloadFile(sftp, file.path, localPath, file.mtime);
+          await this.downloadToLocalFile(sftp, file.path, localPath, file.mtime);
           filesDownloaded++;
           bytesDownloaded += file.size;
         }
@@ -380,17 +441,42 @@ export class SftpSyncEngine {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn(`SFTP sync: failed to download ${file.filename}: ${msg}`);
         errors.push(`${file.filename}: ${msg}`);
+        const uuid = file.documentUuid ?? documentUuidForCollectionEntry(file.filename);
+        if (uuid) failedDocs.add(uuid);
       }
+    }
+
+    for (const uuid of attemptedDocs) {
+      this.setIncompleteMarker(uuid, failedDocs.has(uuid));
     }
 
     return { filesDownloaded, bytesDownloaded, errors };
   }
 
+  private incompleteMarkerPath(uuid: string): string {
+    return path.join(this.options.localSyncDir, SYNC_STATE_DIR, `${uuid}${INCOMPLETE_MARKER}`);
+  }
+
+  private setIncompleteMarker(uuid: string, incomplete: boolean): void {
+    const markerPath = this.incompleteMarkerPath(uuid);
+    try {
+      if (incomplete) {
+        assertSafeLocalFileTarget(this.options.localSyncDir, markerPath);
+        fs.writeFileSync(markerPath, '');
+      } else {
+        fs.rmSync(markerPath, { force: true });
+      }
+    } catch {
+      // Best effort. Download errors are still returned to the caller.
+    }
+  }
+
   /**
    * List all relevant files in the remote xochitl directory.
    *
-   * Returns: .metadata, .content, .pdf, .epub files, and UUID annotation
-   * directories (which contain .rm pen stroke files).
+   * Every exact UUID and UUID.* entry belongs to the document collection.
+   * This intentionally does not use an extension allowlist: newer firmware
+   * can add sidecars without requiring a plugin release first.
    */
   async listRemoteFiles(sftp: SFTPWrapper): Promise<RemoteFileInfo[]> {
     const remotePath = this.options.remotePath;
@@ -398,26 +484,17 @@ export class SftpSyncEngine {
     const relevant: RemoteFileInfo[] = [];
 
     for (const entry of entries) {
-      // Skip known non-essential entries
-      if (shouldSkipEntry(entry.filename, entry.isDirectory)) {
-        continue;
-      }
+      const documentUuid = documentUuidForCollectionEntry(entry.filename);
+      if (!documentUuid) continue;
 
-      if (entry.isDirectory) {
-        // Include only UUID-named annotation directories. UUID.cache /
-        // UUID.thumbnails hold tablet-rendered previews that the pipeline
-        // renders itself from stroke data; syncing them would re-download
-        // every page's preview each scan (they're touched on every page view).
-        if (isUuidLike(entry.filename)) {
-          relevant.push(entry);
-        }
-        continue;
+      assertSafeRemotePathSegment(entry.filename);
+      const entryType = entry.entryType ?? (entry.isDirectory ? 'directory' : 'file');
+      if (entryType !== 'file' && entryType !== 'directory') {
+        throw new Error(
+          `Unsupported ${entryType} in tablet document collection: ${entry.filename}`,
+        );
       }
-
-      // Include relevant document files
-      if (isRelevantFile(entry.filename, this.options.includeEpub)) {
-        relevant.push(entry);
-      }
+      relevant.push({ ...entry, documentUuid, entryType });
     }
 
     return relevant;
@@ -442,26 +519,19 @@ export class SftpSyncEngine {
    * - New files (not present locally)
    * - Changed files (newer mtime for .metadata/.content)
    * - PDFs/EPUBs: skip if local file exists with matching size (immutable)
-   * - Annotation dirs: only when the document changed; judged by its
-   *   .metadata/.content files, which xochitl rewrites on every save. Dirs
-   *   with no metadata sibling in the listing or no local copy are always
-   *   included (conservative fallback; per-file comparison inside
-   *   downloadDirectory() still deduplicates).
+   * - Every collection directory: recursively inventoried on every run because
+   *   nested files can change without a reliable parent/metadata timestamp;
+   *   downloadDirectory() still deduplicates unchanged regular files.
    *
    * Directories are ordered before files so page data lands before the
    * .metadata/.content that gates it; a failed dir download leaves the old
    * metadata in place and is retried on the next sync.
    */
   compareFiles(remoteFiles: RemoteFileInfo[]): RemoteFileInfo[] {
-    // First pass: which documents changed, judged by their sidecar files
-    const docChanged = new Map<string, boolean>();
+    const incompleteDocs = new Set<string>();
     for (const remote of remoteFiles) {
-      if (remote.isDirectory) continue;
-      const ext = path.extname(remote.filename).toLowerCase();
-      if (ext !== '.metadata' && ext !== '.content') continue;
-      const uuid = path.basename(remote.filename, ext);
-      const changed = docChanged.get(uuid) ?? false;
-      docChanged.set(uuid, changed || this.fileNeedsDownload(remote));
+      const uuid = remote.documentUuid ?? documentUuidForCollectionEntry(remote.filename);
+      if (uuid && fs.existsSync(this.incompleteMarkerPath(uuid))) incompleteDocs.add(uuid);
     }
 
     const dirs: RemoteFileInfo[] = [];
@@ -469,22 +539,26 @@ export class SftpSyncEngine {
 
     for (const remote of remoteFiles) {
       if (remote.isDirectory) {
-        const localDir = path.join(this.options.localSyncDir, remote.filename);
-        const incomplete = fs.existsSync(path.join(localDir, INCOMPLETE_MARKER));
-        if (
-          docChanged.get(remote.filename) !== false
-          || incomplete
-          || !fs.existsSync(localDir)
-        ) {
-          dirs.push(remote);
-        }
+        // Recursively inventory every collection directory. A nested sidecar
+        // can change without metadata or the parent directory mtime changing.
+        dirs.push(remote);
         continue;
       }
-      if (this.fileNeedsDownload(remote)) {
+      const uuid = remote.documentUuid ?? documentUuidForCollectionEntry(remote.filename);
+      if ((uuid && incompleteDocs.has(uuid)) || this.fileNeedsDownload(remote)) {
         files.push(remote);
       }
     }
 
+    // Commit metadata/content last. If any earlier collection member fails,
+    // downloadAll() holds these mutable discovery sidecars back.
+    files.sort((a, b) => {
+      const aExt = path.extname(a.filename).toLowerCase();
+      const bExt = path.extname(b.filename).toLowerCase();
+      const aCommit = aExt === '.metadata' || aExt === '.content' ? 1 : 0;
+      const bCommit = bExt === '.metadata' || bExt === '.content' ? 1 : 0;
+      return aCommit - bCommit || a.filename.localeCompare(b.filename);
+    });
     return [...dirs, ...files];
   }
 
@@ -499,7 +573,8 @@ export class SftpSyncEngine {
     // PDFs and EPUBs are immutable on reMarkable: skip if size matches
     if (ext === '.pdf' || ext === '.epub') {
       try {
-        return fs.statSync(localPath).size !== remote.size;
+        const localStat = fs.lstatSync(localPath);
+        return !localStat.isFile() || localStat.isSymbolicLink() || localStat.size !== remote.size;
       } catch {
         return true;
       }
@@ -510,7 +585,8 @@ export class SftpSyncEngine {
     // only mtime can leave an older local file that later fails archive's
     // byte-for-byte backup verification.
     try {
-      const localStat = fs.statSync(localPath);
+      const localStat = fs.lstatSync(localPath);
+      if (!localStat.isFile() || localStat.isSymbolicLink()) return true;
       const localMtime = Math.floor(localStat.mtimeMs / 1000);
       return remote.mtime > localMtime || remote.size !== localStat.size;
     } catch {
@@ -527,9 +603,7 @@ export class SftpSyncEngine {
     remotePath: string,
     localPath: string,
   ): Promise<void> {
-    const dir = path.dirname(localPath);
-    fs.mkdirSync(dir, { recursive: true });
-    await sftpDownloadFile(sftp, remotePath, localPath);
+    await this.downloadToLocalFile(sftp, remotePath, localPath);
   }
 
   /**
@@ -540,6 +614,7 @@ export class SftpSyncEngine {
     sftp: SFTPWrapper,
     dirInfo: RemoteFileInfo,
   ): Promise<{ filesDownloaded: number; bytesDownloaded: number; errors: string[] }> {
+    assertSafeRemotePathSegment(dirInfo.filename);
     const localDir = path.join(this.options.localSyncDir, dirInfo.filename);
 
     let filesDownloaded = 0;
@@ -558,48 +633,66 @@ export class SftpSyncEngine {
       return { filesDownloaded, bytesDownloaded, errors };
     }
 
-    fs.mkdirSync(localDir, { recursive: true });
+    ensureSafeLocalDirectory(this.options.localSyncDir, localDir);
 
-    for (const entry of entries) {
-      if (entry.isDirectory) continue; // Skip nested directories
+    const walk = async (
+      currentEntries: RemoteFileInfo[],
+      currentLocalDir: string,
+      relativePrefix: string,
+      depth: number,
+    ): Promise<void> => {
+      if (depth > MAX_COLLECTION_DEPTH) {
+        errors.push(`${relativePrefix}: collection nesting exceeds ${MAX_COLLECTION_DEPTH} levels`);
+        return;
+      }
 
-      const localFilePath = path.join(localDir, entry.filename);
-
-      // Check if local file exists and is up to date
-      if (fs.existsSync(localFilePath)) {
+      for (const entry of currentEntries) {
+        const relativeName = `${relativePrefix}/${entry.filename}`;
         try {
-          const localStat = fs.statSync(localFilePath);
-          const localMtime = Math.floor(localStat.mtimeMs / 1000);
-          if (entry.mtime <= localMtime && localStat.size === entry.size) {
-            continue; // Up to date
+          assertSafeRemotePathSegment(entry.filename);
+          const entryType = entry.entryType ?? (entry.isDirectory ? 'directory' : 'file');
+          if (entryType !== 'file' && entryType !== 'directory') {
+            throw new Error(`unsupported ${entryType}`);
           }
-        } catch {
-          // Stat failed -> download
+
+          const localEntryPath = path.join(currentLocalDir, entry.filename);
+          if (entryType === 'directory') {
+            let children: RemoteFileInfo[];
+            try {
+              children = await this.listRemoteAnnotationDir(sftp, entry.path);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              errors.push(`${relativeName}: ${msg}`);
+              continue;
+            }
+            ensureSafeLocalDirectory(this.options.localSyncDir, localEntryPath);
+            await walk(children, localEntryPath, relativeName, depth + 1);
+            continue;
+          }
+
+          if (fs.existsSync(localEntryPath)) {
+            try {
+              const localStat = fs.lstatSync(localEntryPath);
+              const localMtime = Math.floor(localStat.mtimeMs / 1000);
+              if (localStat.isFile() && entry.mtime <= localMtime && localStat.size === entry.size) {
+                continue;
+              }
+            } catch {
+              // Stat failed -> download
+            }
+          }
+
+          await this.downloadToLocalFile(sftp, entry.path, localEntryPath, entry.mtime);
+          filesDownloaded++;
+          bytesDownloaded += entry.size;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          errors.push(`${relativeName}: ${msg}`);
         }
       }
+    };
 
-      try {
-        await sftpDownloadFile(sftp, entry.path, localFilePath, entry.mtime);
-        filesDownloaded++;
-        bytesDownloaded += entry.size;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`${dirInfo.filename}/${entry.filename}: ${msg}`);
-      }
-    }
-
-    // Maintain the incomplete marker so a partial download is re-attempted
-    // next sync even after the doc's metadata catches up locally.
-    const markerPath = path.join(localDir, INCOMPLETE_MARKER);
-    try {
-      if (errors.length > 0) {
-        fs.writeFileSync(markerPath, '');
-      } else {
-        fs.rmSync(markerPath, { force: true });
-      }
-    } catch {
-      // Best-effort: marker maintenance must not fail the sync
-    }
+    await walk(entries, localDir, dirInfo.filename, 1);
 
     return { filesDownloaded, bytesDownloaded, errors };
   }
@@ -610,9 +703,10 @@ export class SftpSyncEngine {
    * The templates (ruled/grid/planner backgrounds) live at
    * `/usr/share/remarkable/templates/` on the device and are NOT part of the
    * synced xochitl data, so they must be pulled separately. Downloads
-   * `templates.json`, every `*.png` (older firmware) and every `*.template`
-   * (firmware 3.x vector definitions) into `localTemplatesDir`, skipping files
-   * already present and up to date. Manages its own connection.
+   * `templates.json`, every `*.png` (older firmware), `*.template` vector
+   * definition, and `*.svg` asset (including Paper Pro firmware) into
+   * `localTemplatesDir`, skipping files already present and up to date.
+   * Manages its own connection.
    *
    * Best-effort: returns the count and any per-file errors rather than throwing,
    * so a template-fetch hiccup never fails the document sync.
@@ -630,24 +724,35 @@ export class SftpSyncEngine {
       conn = connection.conn;
       const sftp = connection.sftp;
 
-      fs.mkdirSync(localTemplatesDir, { recursive: true });
+      ensureSafeLocalDirectory(localTemplatesDir, localTemplatesDir);
       const entries = await sftpReaddir(sftp, remoteTemplatesDir);
 
       for (const entry of entries) {
-        if (entry.isDirectory) continue;
-        const lower = entry.filename.toLowerCase();
         // Two firmware generations: older devices ship PNG art, firmware 3.x
-        // ships `.template` vector definitions (and no PNGs at all). Take
-        // both, plus the name->file map.
-        if (!lower.endsWith('.png') && !lower.endsWith('.template')
-            && entry.filename !== 'templates.json') continue;
+        // ships `.template` definitions or SVG assets. Take all supported art
+        // plus the name-to-file map.
+        if (!isSupportedTemplateAsset(entry.filename)) continue;
+
+        try {
+          assertSafeRemotePathSegment(entry.filename);
+          const entryType = entry.entryType ?? (entry.isDirectory ? 'directory' : 'file');
+          if (entryType !== 'file') throw new Error(`unsupported ${entryType}`);
+        } catch (err) {
+          errors.push(`${entry.filename}: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
 
         const localFilePath = path.join(localTemplatesDir, entry.filename);
         if (fs.existsSync(localFilePath)) {
           try {
-            const localStat = fs.statSync(localFilePath);
+            const localStat = fs.lstatSync(localFilePath);
             const localMtime = Math.floor(localStat.mtimeMs / 1000);
-            if (entry.mtime <= localMtime && localStat.size === entry.size) {
+            if (
+              localStat.isFile()
+              && !localStat.isSymbolicLink()
+              && entry.mtime <= localMtime
+              && localStat.size === entry.size
+            ) {
               continue; // up to date
             }
           } catch {
@@ -656,7 +761,13 @@ export class SftpSyncEngine {
         }
 
         try {
-          await sftpDownloadFile(sftp, entry.path, localFilePath, entry.mtime);
+          await this.downloadToLocalFile(
+            sftp,
+            entry.path,
+            localFilePath,
+            entry.mtime,
+            localTemplatesDir,
+          );
           downloaded++;
         } catch (err) {
           errors.push(`${entry.filename}: ${err instanceof Error ? err.message : String(err)}`);

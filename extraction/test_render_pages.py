@@ -436,7 +436,7 @@ class TestRenderCache(unittest.TestCase):
         return {
             "uuid-1": {
                 "filename": "Doc_p1_abcd.png",
-                "rm_mtime": 1700000000,
+                "input_fingerprint": "fingerprint-1",
                 "highlight_texts": ["some text"],
                 "ocr_text": None,
             }
@@ -459,7 +459,24 @@ class TestRenderCache(unittest.TestCase):
             changed = {"truncate_blank": False, "templates": False}
             self.assertEqual(_load_render_cache(path, changed), {})
 
-    def test_entry_freshness_checks_template_and_mtime(self):
+    def test_png_renderer_version_invalidates_cache(self):
+        from png_renderer import PNG_RENDERER_VERSION
+        from render_pages import (
+            _load_render_cache,
+            _render_cache_settings,
+            _save_render_cache,
+        )
+
+        current = _render_cache_settings(False, False)
+        self.assertEqual(current["png_renderer"], PNG_RENDERER_VERSION)
+        stale = {**current, "png_renderer": PNG_RENDERER_VERSION - 1}
+
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, ".render-cache-x.json")
+            _save_render_cache(path, stale, self._entry())
+            self.assertEqual(_load_render_cache(path, current), {})
+
+    def test_entry_freshness_checks_input_fingerprint(self):
         from render_pages import _cache_entry_fresh
 
         with tempfile.TemporaryDirectory() as td:
@@ -468,25 +485,134 @@ class TestRenderCache(unittest.TestCase):
                 f.write(b"png")
             entry = {
                 "filename": "Doc_p1_abcd.png",
-                "rm_mtime": 1700000000,
-                "template": "P Lines medium",
+                "input_fingerprint": "fingerprint-1",
                 "highlight_texts": [],
                 "ocr_text": "",
             }
             fresh = lambda **kw: _cache_entry_fresh(
                 {**entry, **kw.get("entry", {})},
                 kw.get("filename", "Doc_p1_abcd.png"),
-                kw.get("rm_mtime", 1700000000),
-                kw.get("template", "P Lines medium"),
+                kw.get("input_fingerprint", "fingerprint-1"),
                 kw.get("out_path", png),
             )
             self.assertTrue(fresh())
-            # A template switch rewrites .content without touching the .rm
-            self.assertFalse(fresh(template="Grid"))
-            self.assertFalse(fresh(rm_mtime=1700000001))
+            self.assertFalse(fresh(input_fingerprint="fingerprint-2"))
             self.assertFalse(fresh(filename="Doc_p2_abcd.png"))
             self.assertFalse(fresh(out_path=os.path.join(td, "missing.png")))
-            self.assertFalse(_cache_entry_fresh(None, "x.png", 1, None, png))
+            self.assertFalse(_cache_entry_fresh(None, "x.png", "fingerprint-1", png))
+
+    def test_content_fingerprint_detects_same_size_same_mtime_rm_change(self):
+        from render_pages import _page_render_fingerprint, _render_cache_settings
+
+        with tempfile.TemporaryDirectory() as td:
+            rm_path = os.path.join(td, "page.rm")
+            with open(rm_path, "wb") as handle:
+                handle.write(b"AAAA")
+            source_stat = os.stat(rm_path)
+            settings = _render_cache_settings(False, False)
+            first = _page_render_fingerprint(
+                rm_path, None, 0, None, None, settings, {},
+            )
+
+            with open(rm_path, "wb") as handle:
+                handle.write(b"BBBB")
+            os.utime(rm_path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            second = _page_render_fingerprint(
+                rm_path, None, 0, None, None, settings, {},
+            )
+            self.assertNotEqual(first, second)
+
+    def test_template_appearance_and_preserved_mtime_change_fingerprint(self):
+        from render_pages import (
+            _page_image_filename,
+            _page_render_fingerprint,
+            _render_cache_settings,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            rm_path = os.path.join(td, "page.rm")
+            template_path = os.path.join(td, "Grid.svg")
+            with open(rm_path, "wb") as handle:
+                handle.write(b"scene")
+            settings = _render_cache_settings(False, True)
+            missing = _page_render_fingerprint(
+                rm_path, None, 0, "Grid", None, settings, {},
+            )
+
+            with open(template_path, "wb") as handle:
+                handle.write(b"<svg>A</svg>")
+            present = _page_render_fingerprint(
+                rm_path, None, 0, "Grid", template_path, settings, {},
+            )
+            source_stat = os.stat(template_path)
+            with open(template_path, "wb") as handle:
+                handle.write(b"<svg>B</svg>")
+            os.utime(template_path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            changed = _page_render_fingerprint(
+                rm_path, None, 0, "Grid", template_path, settings, {},
+            )
+
+            self.assertNotEqual(missing, present)
+            self.assertNotEqual(present, changed)
+            self.assertNotEqual(
+                _page_image_filename("Doc", 1, missing),
+                _page_image_filename("Doc", 1, present),
+            )
+            self.assertNotEqual(
+                _page_image_filename("Doc", 1, present),
+                _page_image_filename("Doc", 1, changed),
+            )
+
+    def test_fingerprint_is_stable_and_covers_pdf_redirect_and_settings(self):
+        from render_pages import _page_render_fingerprint, _render_cache_settings
+
+        with tempfile.TemporaryDirectory() as td:
+            rm_path = os.path.join(td, "page.rm")
+            pdf_path = os.path.join(td, "doc.pdf")
+            with open(rm_path, "wb") as handle:
+                handle.write(b"scene")
+            with open(pdf_path, "wb") as handle:
+                handle.write(b"pdf")
+            settings = _render_cache_settings(False, False)
+            first = _page_render_fingerprint(
+                rm_path, pdf_path, 0, None, None, settings, {},
+            )
+            same = _page_render_fingerprint(
+                rm_path, pdf_path, 0, None, None, settings, {},
+            )
+            redirected = _page_render_fingerprint(
+                rm_path, pdf_path, 1, None, None, settings, {},
+            )
+            changed_settings = _page_render_fingerprint(
+                rm_path, pdf_path, 0, None, None,
+                {**settings, "png_renderer": settings["png_renderer"] + 1}, {},
+            )
+
+            self.assertEqual(first, same)
+            self.assertNotEqual(first, redirected)
+            self.assertNotEqual(first, changed_settings)
+
+    def test_later_page_failure_preserves_old_images_for_successful_earlier_page(self):
+        from render_pages import _cleanup_page_images_after_success
+
+        with tempfile.TemporaryDirectory() as td:
+            old_path = os.path.join(td, "Doc_p1_old.png")
+            new_path = os.path.join(td, "Doc_p1_new.png")
+            with open(old_path, "wb") as handle:
+                handle.write(b"old")
+            with open(new_path, "wb") as handle:
+                handle.write(b"new")
+            rendered = [(td, "Doc", 1, new_path)]
+
+            # Page 1 succeeded with a new key, but page 2 failed. The TS layer
+            # preserves the old note, so its old page-1 image must remain too.
+            _cleanup_page_images_after_success(rendered, ["Page 2: unsafe extent"])
+            self.assertTrue(os.path.isfile(old_path))
+            self.assertTrue(os.path.isfile(new_path))
+
+            _cleanup_page_images_after_success(rendered, [])
+            self.assertFalse(os.path.exists(old_path))
+            self.assertTrue(os.path.isfile(new_path))
 
     def test_cached_ocr_is_withheld_while_ocr_is_off(self):
         """Turning OCR off must stop cached text from being reported again.
@@ -495,19 +621,52 @@ class TestRenderCache(unittest.TestCase):
         disabling OCR had no effect: every sync rewrote the same handwriting
         callouts into the notes from cache.
         """
-        cached = {"filename": "Doc_p1_abcd.png", "rm_mtime": 1, "template": None,
-                  "highlight_texts": [], "ocr_text": "previously recognized text"}
+        from render_pages import _ocr_cache_key, _resolve_cached_ocr
 
-        def reported(ocr_active):
-            # Mirrors the cache-hit branch in main().
-            ocr_engine = (lambda *a, **k: "fresh") if ocr_active else None
-            text = cached.get("ocr_text") if ocr_engine is not None else None
-            return text or ""
+        cached = {
+            "filename": "Doc_p1_abcd.png",
+            "highlight_texts": [],
+            "ocr_key": _ocr_cache_key("eng"),
+            "ocr_text": "previously recognized text",
+        }
 
-        self.assertEqual(reported(ocr_active=False), "")
-        self.assertEqual(reported(ocr_active=True), "previously recognized text")
+        self.assertIsNone(_resolve_cached_ocr(cached, "page.png", None, "eng", 12))
         # The text stays cached either way, so re-enabling needs no re-run.
         self.assertEqual(cached["ocr_text"], "previously recognized text")
+
+    def test_cached_ocr_reruns_when_language_changes_without_changing_pixels(self):
+        from render_pages import (
+            _ocr_cache_key,
+            _render_cache_settings,
+            _resolve_cached_ocr,
+        )
+
+        cached = {
+            "ocr_key": _ocr_cache_key("eng"),
+            "ocr_text": "English text",
+        }
+        calls = []
+
+        def ocr_engine(image_path, language, timeout_seconds):
+            calls.append((image_path, language, timeout_seconds))
+            return "Deutscher Text"
+
+        pixel_settings = _render_cache_settings(False, False)
+        result = _resolve_cached_ocr(
+            cached, "page.png", ocr_engine, "deu", 7,
+        )
+
+        self.assertEqual(result, "Deutscher Text")
+        self.assertEqual(calls, [("page.png", "deu", 7)])
+        self.assertEqual(cached["ocr_key"], _ocr_cache_key("deu"))
+        self.assertEqual(pixel_settings, _render_cache_settings(False, False))
+
+        calls.clear()
+        self.assertEqual(
+            _resolve_cached_ocr(cached, "page.png", ocr_engine, "deu", 7),
+            "Deutscher Text",
+        )
+        self.assertEqual(calls, [])
 
     def test_missing_or_corrupt_cache_returns_empty(self):
         from render_pages import _load_render_cache

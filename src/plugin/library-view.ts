@@ -1044,6 +1044,7 @@ export class ReMarkableLibraryView extends ItemView {
       new Notice(`Archiving "${doc.name}" in your vault and removing it from the tablet...`);
       const result = await this.plugin.getTabletDocumentAdapter().archiveDocument(
         doc.uuid,
+        syncDir,
         archiveLocal,
       );
 

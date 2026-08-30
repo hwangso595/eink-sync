@@ -82,19 +82,22 @@ describe('compareFirmwareVersions', () => {
 describe('getInstallationPath', () => {
   const v = (s: string) => parseFirmwareVersion(s);
 
-  it('returns toltec for firmware 2.6 to 3.3', () => {
-    expect(getInstallationPath(v('2.6.0.0'))).toBe('toltec');
-    expect(getInstallationPath(v('3.3.2.1666'))).toBe('toltec');
+  it('returns entware for all supported ARMv7 firmware', () => {
+    expect(getInstallationPath(v('2.6.0.0'), 'armv7')).toBe('entware');
+    expect(getInstallationPath(v('3.3.2.1666'), 'armv7')).toBe('entware');
+    expect(getInstallationPath(v('3.4.0.0'), 'armv7')).toBe('entware');
+    expect(getInstallationPath(v('3.26.0.68'), 'armv7')).toBe('entware');
   });
 
-  it('returns entware for firmware 3.4+', () => {
-    expect(getInstallationPath(v('3.4.0.0'))).toBe('entware');
-    expect(getInstallationPath(v('3.26.0.68'))).toBe('entware');
+  it('uses SFTP instead of an ARMv7 package path on current architectures', () => {
+    expect(getInstallationPath(v('3.26.0.68'), 'aarch64')).toBe('sftp-only');
+    expect(getInstallationPath(v('3.26.0.68'), 'unknown')).toBe('sftp-only');
+    expect(getInstallationPath(v('3.26.0.68'), 'armv7')).toBe('entware');
   });
 
   it('throws for firmware below 2.6', () => {
-    expect(() => getInstallationPath(v('2.5.0.0'))).toThrow(BridgeError);
-    expect(() => getInstallationPath(v('1.0.0.0'))).toThrow(BridgeError);
+    expect(() => getInstallationPath(v('2.5.0.0'), 'armv7')).toThrow(BridgeError);
+    expect(() => getInstallationPath(v('1.0.0.0'), 'armv7')).toThrow(BridgeError);
   });
 });
 

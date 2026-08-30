@@ -143,7 +143,8 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       .setName('Connection method')
       .setDesc(
         'USB-only mode blocks all WiFi sync and disables auto-sync. ' +
-        'Use this if you want to ensure no data is sent over your network.',
+        'Use this if you want to ensure no data is sent over your network. ' +
+        'On current tablets, WiFi SSH must first be enabled over USB with rm-ssh-over-wlan on.',
       )
       .addDropdown((dropdown) =>
         dropdown
@@ -215,7 +216,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               try {
                 const detected = await this.plugin.detectTabletWifiIp('10.11.99.1');
                 if (!detected) {
-                  new Notice('E-Ink Sync: tablet not on Wi-Fi (no wlan0 IP found).', 6000);
+                  new Notice('E-Ink Sync: tablet not on Wi-Fi (no routable IP found).', 6000);
                   return;
                 }
                 this.plugin.settings.wifiTabletIp = detected;
@@ -238,7 +239,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // 3. Root password; always shown (needed for both modes)
     new Setting(containerEl)
       .setName('Root password')
-      .setDesc('Tablet > Settings > Help > About > Copyrights and Licenses')
+      .setDesc('Find it on the tablet’s Copyrights and licenses screen. Current devices require Developer Mode; enabling it factory-resets the tablet, so back up first.')
       .addText((text) => {
         text
           .setPlaceholder('Enter root password')

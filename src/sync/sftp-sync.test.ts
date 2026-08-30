@@ -1,14 +1,31 @@
 /**
  * Tests for the SFTP sync engine.
  *
- * Tests the core logic (file comparison, skip patterns, UUID detection)
+ * Tests file comparison, UUID collection discovery, recursive safety, and
+ * template compatibility
  * without requiring an actual SSH connection.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { SftpSyncEngine, RemoteFileInfo, SftpSyncOptions } from './sftp-sync';
+import { connectSftp } from './sftp-connection';
+import {
+  SftpSyncEngine,
+  RemoteFileInfo,
+  SftpSyncOptions,
+  isSupportedTemplateAsset,
+} from './sftp-sync';
+
+jest.mock('./sftp-connection', () => ({ connectSftp: jest.fn() }));
+
+const mockedConnectSftp = connectSftp as jest.MockedFunction<typeof connectSftp>;
+
+const UUID = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+
+function sftpEntry(filename: string, mode: number, size = 0, mtime = 1700000000): any {
+  return { filename, attrs: { mode, size, mtime } };
+}
 
 // ---------------------------------------------------------------
 // Test helpers
@@ -39,6 +56,82 @@ function defaultOptions(localDir: string): SftpSyncOptions {
 // ---------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------
+
+describe('template asset support', () => {
+  it('includes SVG art used by Paper Pro firmware', () => {
+    expect(isSupportedTemplateAsset('P Grid medium.svg')).toBe(true);
+    expect(isSupportedTemplateAsset('P Grid medium.SVG')).toBe(true);
+    expect(isSupportedTemplateAsset('notes.txt')).toBe(false);
+  });
+
+  it('downloads only safe regular template assets and reports rejected entries', async () => {
+    const localDir = createTempDir();
+    const end = jest.fn();
+    const sftp = {
+      readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+        sftpEntry('Paper Pro.svg', 0o100644, 4),
+        sftpEntry('../escape.svg', 0o100644, 4),
+        sftpEntry('..\\escape.svg', 0o100644, 4),
+        sftpEntry('linked.svg', 0o120777, 4),
+        sftpEntry('directory.svg', 0o040755),
+        sftpEntry('pipe.svg', 0o010644),
+      ])),
+      fastGet: jest.fn((_remotePath: string, localPath: string, callback: Function) => {
+        fs.writeFileSync(localPath, '<svg/>');
+        callback(undefined);
+      }),
+    } as any;
+    mockedConnectSftp.mockResolvedValueOnce({ conn: { end } as any, sftp });
+    const engine = new SftpSyncEngine(defaultOptions(localDir));
+
+    const result = await engine.fetchTemplates(path.join(localDir, 'templates'));
+
+    expect(result.downloaded).toBe(1);
+    expect(result.errors).toHaveLength(5);
+    expect(fs.existsSync(path.join(localDir, 'templates', 'Paper Pro.svg'))).toBe(true);
+    expect(fs.existsSync(path.join(localDir, 'escape.svg'))).toBe(false);
+    expect(sftp.fastGet).toHaveBeenCalledTimes(1);
+    expect(end).toHaveBeenCalled();
+    cleanupDir(localDir);
+  });
+
+  it('does not treat a local template symlink target as up to date', async () => {
+    const localDir = createTempDir();
+    const outsideDir = createTempDir();
+    const templatesDir = path.join(localDir, 'templates');
+    fs.mkdirSync(templatesDir);
+    const localAsset = path.join(templatesDir, 'Existing.svg');
+    fs.symlinkSync(
+      outsideDir,
+      localAsset,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const targetStat = fs.statSync(outsideDir);
+    const end = jest.fn();
+    const sftp = {
+      readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+        sftpEntry(
+          'Existing.svg',
+          0o100644,
+          targetStat.size,
+          Math.floor(targetStat.mtimeMs / 1000),
+        ),
+      ])),
+      fastGet: jest.fn(),
+    } as any;
+    mockedConnectSftp.mockResolvedValueOnce({ conn: { end } as any, sftp });
+    const engine = new SftpSyncEngine(defaultOptions(localDir));
+
+    const result = await engine.fetchTemplates(templatesDir);
+
+    expect(result.downloaded).toBe(0);
+    expect(result.errors.join('\n')).toContain('symlink or junction');
+    expect(sftp.fastGet).not.toHaveBeenCalled();
+    expect(end).toHaveBeenCalled();
+    cleanupDir(localDir);
+    cleanupDir(outsideDir);
+  });
+});
 
 describe('SftpSyncEngine', () => {
   let tempDir: string;
@@ -243,7 +336,7 @@ describe('SftpSyncEngine', () => {
       expect(toDownload.map((f) => f.filename)).toEqual([dirName, `${dirName}.metadata`]);
     });
 
-    it('should skip annotation directories for unchanged documents', () => {
+    it('should inventory annotation directories even for unchanged documents', () => {
       const engine = new SftpSyncEngine(defaultOptions(tempDir));
 
       const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
@@ -279,7 +372,7 @@ describe('SftpSyncEngine', () => {
       ];
 
       const toDownload = engine.compareFiles(remoteFiles);
-      expect(toDownload).toHaveLength(0);
+      expect(toDownload.map((entry) => entry.filename)).toEqual([dirName]);
     });
 
     it('should include unchanged-doc directories when the local copy is missing', () => {
@@ -318,8 +411,10 @@ describe('SftpSyncEngine', () => {
       const dirName = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
       const localDir = path.join(tempDir, dirName);
       fs.mkdirSync(localDir);
-      // A previous partial download left the marker behind
-      fs.writeFileSync(path.join(localDir, '.eink-sync-incomplete'), '');
+      // A previous partial download left the marker outside the collection.
+      const stateDir = path.join(tempDir, '.eink-sync-state');
+      fs.mkdirSync(stateDir);
+      fs.writeFileSync(path.join(stateDir, `${dirName}.eink-sync-incomplete`), '');
       const metaPath = path.join(tempDir, `${dirName}.metadata`);
       fs.writeFileSync(metaPath, '{}');
       fs.utimesSync(metaPath, new Date(1700000000000), new Date(1700000000000));
@@ -342,7 +437,7 @@ describe('SftpSyncEngine', () => {
       ];
 
       const toDownload = engine.compareFiles(remoteFiles);
-      expect(toDownload.map((f) => f.filename)).toEqual([dirName]);
+      expect(toDownload.map((f) => f.filename)).toEqual([dirName, `${dirName}.metadata`]);
     });
 
     it('should include directories with no metadata sibling in the listing', () => {
@@ -363,6 +458,155 @@ describe('SftpSyncEngine', () => {
 
       const toDownload = engine.compareFiles(remoteFiles);
       expect(toDownload).toHaveLength(1);
+    });
+  });
+
+  describe('future-compatible collection discovery', () => {
+    it('includes unknown UUID sidecars and sidecar directories', async () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+      const sftp = {
+        readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+          sftpEntry(`${UUID}.metadata`, 0o100644, 4),
+          sftpEntry(`${UUID}.future`, 0o100644, 0),
+          sftpEntry(`${UUID}.assets`, 0o040755),
+          sftpEntry(`${UUID}lookalike`, 0o100644, 3),
+          sftpEntry('unrelated.metadata', 0o100644, 3),
+        ])),
+      } as any;
+
+      const files = await engine.listRemoteFiles(sftp);
+      expect(files.map((entry) => entry.filename)).toEqual([
+        `${UUID}.metadata`,
+        `${UUID}.future`,
+        `${UUID}.assets`,
+      ]);
+      expect(files.every((entry) => entry.documentUuid === UUID)).toBe(true);
+    });
+
+    it('rejects top-level symlinks in a document collection', async () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+      const sftp = {
+        readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+          sftpEntry(`${UUID}.metadata`, 0o120777),
+        ])),
+      } as any;
+
+      await expect(engine.listRemoteFiles(sftp)).rejects.toThrow('Unsupported symlink');
+    });
+
+    it('downloads zero-byte files and recursively nested unknown directories', async () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+      const root = `/xochitl/${UUID}.assets`;
+      const listings = new Map<string, any[]>([
+        [root, [sftpEntry('zero.bin', 0o100644, 0), sftpEntry('a', 0o040755)]],
+        [`${root}/a`, [sftpEntry('b', 0o040755)]],
+        [`${root}/a/b`, [sftpEntry('c', 0o040755)]],
+        [`${root}/a/b/c`, [sftpEntry('payload.bin', 0o100644, 7)]],
+      ]);
+      const sftp = {
+        readdir: jest.fn((remotePath: string, callback: Function) => {
+          callback(undefined, listings.get(remotePath) ?? []);
+        }),
+        fastGet: jest.fn((remotePath: string, localPath: string, callback: Function) => {
+          fs.writeFileSync(localPath, remotePath.endsWith('zero.bin') ? '' : 'payload');
+          callback(undefined);
+        }),
+      } as any;
+
+      const result = await engine.downloadDirectory(sftp, {
+        path: root,
+        filename: `${UUID}.assets`,
+        size: 0,
+        mtime: 1700000000,
+        isDirectory: true,
+        entryType: 'directory',
+        documentUuid: UUID,
+      });
+
+      expect(result.errors).toEqual([]);
+      expect(result.filesDownloaded).toBe(2);
+      expect(fs.statSync(path.join(tempDir, `${UUID}.assets`, 'zero.bin')).size).toBe(0);
+      expect(fs.readFileSync(
+        path.join(tempDir, `${UUID}.assets`, 'a', 'b', 'c', 'payload.bin'),
+        'utf-8',
+      )).toBe('payload');
+    });
+
+    it('fails a recursive collection containing a symlink without following it', async () => {
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+      const root = `/xochitl/${UUID}`;
+      const sftp = {
+        readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+          sftpEntry('outside.rm', 0o120777),
+        ])),
+        fastGet: jest.fn(),
+      } as any;
+
+      const result = await engine.downloadDirectory(sftp, {
+        path: root,
+        filename: UUID,
+        size: 0,
+        mtime: 1700000000,
+        isDirectory: true,
+        entryType: 'directory',
+        documentUuid: UUID,
+      });
+
+      expect(result.errors[0]).toContain('unsupported symlink');
+      expect(sftp.fastGet).not.toHaveBeenCalled();
+    });
+
+    it('rejects a pre-existing local directory link before downloadFile writes', async () => {
+      const outsideDir = createTempDir();
+      const linkedDir = path.join(tempDir, 'linked');
+      fs.symlinkSync(outsideDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+      const sftp = { fastGet: jest.fn() } as any;
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      await expect(engine.downloadFile(
+        sftp,
+        '/xochitl/escape.bin',
+        path.join(linkedDir, 'escape.bin'),
+      )).rejects.toThrow('symlink or junction');
+      expect(sftp.fastGet).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(outsideDir, 'escape.bin'))).toBe(false);
+      cleanupDir(outsideDir);
+    });
+
+    it('rejects a nested local directory link during recursive collection download', async () => {
+      const outsideDir = createTempDir();
+      const collectionDir = path.join(tempDir, `${UUID}.assets`);
+      fs.mkdirSync(collectionDir);
+      fs.symlinkSync(
+        outsideDir,
+        path.join(collectionDir, 'nested'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const root = `/xochitl/${UUID}.assets`;
+      const sftp = {
+        readdir: jest.fn((remotePath: string, callback: Function) => callback(undefined,
+          remotePath === root
+            ? [sftpEntry('nested', 0o040755)]
+            : [sftpEntry('escape.bin', 0o100644, 4)],
+        )),
+        fastGet: jest.fn(),
+      } as any;
+      const engine = new SftpSyncEngine(defaultOptions(tempDir));
+
+      const result = await engine.downloadDirectory(sftp, {
+        path: root,
+        filename: `${UUID}.assets`,
+        size: 0,
+        mtime: 1700000000,
+        isDirectory: true,
+        entryType: 'directory',
+        documentUuid: UUID,
+      });
+
+      expect(result.errors.join('\n')).toContain('symlink or junction');
+      expect(sftp.fastGet).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(outsideDir, 'escape.bin'))).toBe(false);
+      cleanupDir(outsideDir);
     });
   });
 

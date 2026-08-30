@@ -30,6 +30,7 @@ import {
   PipelineConfig,
   PipelineDependencies,
   ExtractionResult,
+  ExtractedHighlight,
 } from './types';
 import { XochitlDocumentDiscovery } from './document-discovery';
 import { PythonHighlightExtractor } from './python-bridge';
@@ -68,6 +69,30 @@ export interface DocumentPipelineResult {
   success: boolean;
   error: string | null;
   warnings: string[];
+}
+
+function rendererHighlightKey(highlight: ExtractedHighlight): string {
+  const text = highlight.text.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+  return `${highlight.pageNumber}\0${text}`;
+}
+
+/**
+ * Add redirect-aware renderer fallbacks without duplicating the richer main
+ * extractor result. Existing entries win because they retain RGBA and bounds.
+ */
+export function mergeRendererHighlights(
+  extracted: ExtractedHighlight[],
+  renderer: ExtractedHighlight[],
+): ExtractedHighlight[] {
+  const merged = [...extracted];
+  const seen = new Set(extracted.map(rendererHighlightKey));
+  for (const highlight of renderer) {
+    const key = rendererHighlightKey(highlight);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(highlight);
+  }
+  return merged;
 }
 
 /** Callback for reporting pipeline progress. */
@@ -449,11 +474,13 @@ export async function runExtractionPipeline(
           // into the extraction result. These come from stroke bounding boxes
           // intersected with PDF text, complementing the PDF-annotation highlights.
           if (imageResult.rendererHighlights.length > 0) {
-            extractionResult.highlights = [
-              ...extractionResult.highlights,
-              ...imageResult.rendererHighlights,
-            ];
-            logger.info(`${doc.visibleName}: merged ${imageResult.rendererHighlights.length} renderer highlight(s)`);
+            const before = extractionResult.highlights.length;
+            extractionResult.highlights = mergeRendererHighlights(
+              extractionResult.highlights,
+              imageResult.rendererHighlights,
+            );
+            const added = extractionResult.highlights.length - before;
+            logger.info(`${doc.visibleName}: merged ${added} renderer highlight(s)`);
           }
         }
       } catch (drawErr) {

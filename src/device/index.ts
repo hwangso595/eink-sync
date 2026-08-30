@@ -1,6 +1,7 @@
 export {
   detectFirmwareVersion,
   detectDeviceModel,
+  detectDeviceArchitecture,
   detectMemoryInfo,
   detectStorageInfo,
   detectDeviceInfo,

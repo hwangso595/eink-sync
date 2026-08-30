@@ -40,6 +40,7 @@ export const RUNTIME_PY_FILES = [
   'stroke_renderer.py',
   'legacy_rm_parser.py',
   'constants.py',
+  'page_geometry.py',
   // render_pages.py closure (adds these on top of the shared modules above)
   'render_pages.py',
   'png_renderer.py',

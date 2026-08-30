@@ -2,7 +2,7 @@
 Render reMarkable .rm stroke data as a PNG image using PyMuPDF (fitz).
 
 Takes an .rm file path and renders the strokes directly onto a blank canvas
-at the reMarkable's native resolution (1404x1872). No coordinate mapping
+at the page's native device resolution. No coordinate mapping
 to PDF pages is needed -- the .rm stroke coordinates are used as-is.
 
 Pen rendering modes:
@@ -42,6 +42,11 @@ from stroke_renderer import (
 )
 
 
+# Bump whenever pixel-affecting renderer behavior changes. render_pages.py
+# includes this in its cache settings so stale images are regenerated.
+PNG_RENDERER_VERSION = 2
+
+
 def _require_fitz() -> None:
     """Raise a clear error if PyMuPDF is not installed."""
     if fitz is None:
@@ -60,6 +65,17 @@ def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     return (r, g, b)
 
 
+def _color_to_rgb255(color: str, fallback: str = "#FFD700") -> tuple[int, int, int]:
+    """Resolve a named/hex stroke color to integer RGB channels."""
+    hex_color = color if isinstance(color, str) and color.startswith("#") else COLOR_TO_HEX.get(color, fallback)
+    try:
+        value = hex_color.lstrip("#")
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+    except (ValueError, IndexError):
+        value = fallback.lstrip("#")
+        return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
 # Pen types that use particle-scatter rendering (pencil/graphite texture)
 PENCIL_PEN_TYPES = {1, 7, 13, 14}
 SHADER_PEN_TYPE = 23
@@ -72,6 +88,37 @@ BRUSH_PEN_TYPES = {0, 12}
 TRUNCATE_HEIGHT_THRESHOLD = 0.5
 # Never crop shorter than this, so even a single line of writing renders sanely.
 MIN_TRUNCATED_HEIGHT = 240
+
+# Untrusted scene coordinates can otherwise turn a small device page into a
+# multi-gigabyte pixmap. The area cap is the primary guard; the per-axis cap
+# still permits long, legitimate vertically-scrolled notebooks.
+MAX_RENDER_DIMENSION = 32_768
+MAX_RENDER_PIXELS = 32_000_000
+
+
+def _validate_render_extent(width: float, height: float) -> tuple[int, int]:
+    """Return integer canvas dimensions or reject an unsafe allocation."""
+    try:
+        width_f = float(width)
+        height_f = float(height)
+    except (TypeError, ValueError):
+        raise ValueError("render canvas dimensions must be numeric") from None
+    if not math.isfinite(width_f) or not math.isfinite(height_f):
+        raise ValueError("render canvas dimensions must be finite")
+    if width_f <= 0 or height_f <= 0:
+        raise ValueError("render canvas dimensions must be positive")
+    width_i = int(math.ceil(width_f))
+    height_i = int(math.ceil(height_f))
+    if (
+        width_i > MAX_RENDER_DIMENSION
+        or height_i > MAX_RENDER_DIMENSION
+        or width_i * height_i > MAX_RENDER_PIXELS
+    ):
+        raise ValueError(
+            f"render canvas {width_i}x{height_i} exceeds safe limits "
+            f"({MAX_RENDER_DIMENSION}px per axis, {MAX_RENDER_PIXELS} pixels)"
+        )
+    return width_i, height_i
 
 
 def _segment_width(point: StrokePoint, stroke: Stroke, tilt_override: float = -1) -> float:
@@ -424,6 +471,8 @@ def render_strokes_to_png(
     truncate_blank: bool = False,
     background_png: str = None,
     background_template: str = None,
+    canvas_width: float = RM_SCREEN_WIDTH,
+    canvas_height: float = RM_SCREEN_HEIGHT,
 ) -> int:
     """
     Render a list of strokes as a PNG image using PyMuPDF.
@@ -432,18 +481,17 @@ def render_strokes_to_png(
     - Pencil/shader types: particle-scatter for graphite texture
     - Other types: Shape API line drawing
 
-    coord_scale: stroke coordinate scale factor. Pass 226/300 for PDF documents,
-    1.0 for notebooks. If None, falls back to auto-detection (unreliable for PDF
-    pages where strokes don't happen to exceed canvas height).
+    coord_scale: stroke coordinate scale factor. Pass the page geometry's
+    calibrated PDF scale for PDF documents and 1.0 for notebooks. If None,
+    falls back to legacy auto-detection (unreliable for sparse PDF pages).
 
     truncate_blank: for notebook renders (no PDF background), crop trailing blank
     space when the content occupies less than TRUNCATE_HEIGHT_THRESHOLD of the
     page height. Ignored for PDF-backed pages (their geometry is fixed). Off by
     default so untouched pages render byte-for-byte identically.
 
-    background_png: path to a reMarkable page-template PNG (1404x1872) to draw
-    behind the strokes on notebook pages, so ruled/grid/planner backgrounds show
-    in the render. Ignored for PDF-backed pages and when None/missing.
+    background_png: path to reMarkable page-template art to draw behind notebook
+    strokes. Ignored for PDF-backed pages and when None/missing.
 
     Returns number of strokes actually drawn.
     """
@@ -454,15 +502,16 @@ def render_strokes_to_png(
     if not renderable and not glyph_highlights:
         return 0
 
-    canvas_w = RM_SCREEN_WIDTH
-    canvas_h = RM_SCREEN_HEIGHT
+    canvas_w = float(canvas_width)
+    canvas_h = float(canvas_height)
+    canvas_w_int, canvas_h_int = _validate_render_extent(canvas_w, canvas_h)
 
     # reMarkable coordinate system:
     #   x=0 is the horizontal centre of the page (negative = left, positive = right)
     #   y=0 is the top of the UI including toolbar; strokes start below the toolbar
     #
-    # PDF documents use a 300-DPI logical space (scale=226/300≈0.753).
-    # Notebooks use 1:1 screen-pixel coordinates (scale=1.0).
+    # PDF documents use a shared logical annotation grid whose calibrated scale
+    # depends on the device canvas. Notebooks use 1:1 page-pixel coordinates.
     # Callers should pass coord_scale explicitly; auto-detect is a fallback only.
     if coord_scale is not None:
         COORD_SCALE = coord_scale
@@ -470,16 +519,35 @@ def render_strokes_to_png(
         all_ys = [pt.y for s in renderable for pt in s.points]
         max_stroke_y = max(all_ys) if all_ys else 0.0
         COORD_SCALE = (226 / 300) if max_stroke_y > canvas_h * 1.05 else 1.0
+    if not math.isfinite(COORD_SCALE) or COORD_SCALE <= 0:
+        raise ValueError("render coordinate scale must be finite and positive")
 
     # x: centre-origin → shift by half the canvas width
     # y: no per-stroke offset; the PDF background carries the toolbar offset below
     x_origin = canvas_w / 2  # coord x=0 maps to the horizontal centre of the canvas
     offset_x, offset_y = x_origin, 0.0
-    canvas_w_int = int(canvas_w)
-    canvas_h_int = int(canvas_h)
+
+    # Validate transformed coordinates for both notebook and PDF paths before
+    # drawing. Even a fixed PDF canvas can consume unbounded CPU if a corrupt
+    # segment asks the circle interpolator to bridge billions of pixels.
+    cxs = [pt.x * COORD_SCALE + offset_x for s in renderable for pt in s.points]
+    cys = [pt.y * COORD_SCALE for s in renderable for pt in s.points]
+    if glyph_highlights:
+        for gh in glyph_highlights:
+            for (rx, ry, rw, rh) in gh.rectangles:
+                cxs += [rx * COORD_SCALE + offset_x, (rx + rw) * COORD_SCALE + offset_x]
+                cys += [ry * COORD_SCALE, (ry + rh) * COORD_SCALE]
+    if cxs or cys:
+        if not all(math.isfinite(value) for value in (*cxs, *cys)):
+            raise ValueError("render content coordinates must be finite")
+        if any(abs(value) > MAX_RENDER_DIMENSION for value in (*cxs, *cys)):
+            raise ValueError(
+                f"render content coordinate magnitude exceeds safe limits "
+                f"({MAX_RENDER_DIMENSION}px)"
+            )
 
     # Notebooks are a vertically- (and slightly horizontally-) scrollable canvas:
-    # strokes can extend past the standard 1404x1872 screen (verticalScroll pages).
+    # strokes can extend past the device's native screen (verticalScroll pages).
     # A fixed canvas silently clips that scrolled-in content (the pixmap bounds
     # checks in the scatter/circle painters drop out-of-range pixels). For
     # notebooks (no PDF background) grow the canvas to the content's bounding box,
@@ -488,13 +556,6 @@ def render_strokes_to_png(
     # byte-identical. PDFs keep fixed page geometry so strokes stay aligned to the
     # page background.
     if pdf_path is None:
-        cxs = [pt.x * COORD_SCALE + offset_x for s in renderable for pt in s.points]
-        cys = [pt.y * COORD_SCALE for s in renderable for pt in s.points]
-        if glyph_highlights:
-            for gh in glyph_highlights:
-                for (rx, ry, rw, rh) in gh.rectangles:
-                    cxs += [rx * COORD_SCALE + offset_x, (rx + rw) * COORD_SCALE + offset_x]
-                    cys += [ry * COORD_SCALE, (ry + rh) * COORD_SCALE]
         if cxs and cys:
             MARGIN = 8
             min_cx, max_cx = min(cxs), max(cxs)
@@ -508,7 +569,7 @@ def render_strokes_to_png(
                 offset_y += shift
                 max_cy += shift
             # Grow ONLY when content genuinely spills past the standard page.
-            # A page that fits inside 1404x1872 gets no shift and no growth, so it
+            # A page that fits inside its native canvas gets no shift/growth, so it
             # renders byte-for-byte identically to the pre-fix output.
             if max_cx > canvas_w_int:
                 canvas_w_int = int(math.ceil(max_cx)) + MARGIN
@@ -521,8 +582,11 @@ def render_strokes_to_png(
             # to preserve horizontal layout.
             if truncate_blank:
                 content_bottom = max_cy + MARGIN
-                if content_bottom < RM_SCREEN_HEIGHT * TRUNCATE_HEIGHT_THRESHOLD:
+                if content_bottom < canvas_h * TRUNCATE_HEIGHT_THRESHOLD:
                     canvas_h_int = max(int(math.ceil(content_bottom)), MIN_TRUNCATED_HEIGHT)
+
+    # Re-check after scrollable notebook content has expanded the canvas.
+    canvas_w_int, canvas_h_int = _validate_render_extent(canvas_w_int, canvas_h_int)
 
     # Create document and page for Shape API (non-pencil strokes)
     # If a PDF is provided, use the PDF page as the background
@@ -582,16 +646,19 @@ def render_strokes_to_png(
         # strokes use, so lines stay aligned even when the page was shifted. A
         # missing/unreadable template silently leaves the white background.
         #
-        # Vector templates (firmware 3.x) are rendered here rather than by the
-        # caller: only now is the final page height known, and a scrolled page
-        # is taller than one screen, so the ruling must be drawn to fit it.
+        # Vector templates are rendered here rather than by the caller because
+        # only now is the device canvas size known. Declarative `.template`
+        # files can extend over scrolled pages; legacy SVGs are fixed page art.
         template_art = background_png
-        template_height = RM_SCREEN_HEIGHT
+        template_height = canvas_h
         if background_template and os.path.exists(background_template):
-            page_height = max(canvas_h_int - offset_y, RM_SCREEN_HEIGHT)
+            is_svg = background_template.lower().endswith('.svg')
+            page_height = canvas_h if is_svg else max(canvas_h_int - offset_y, canvas_h)
             rendered = render_template_cached(
                 background_template,
                 os.path.join(os.path.dirname(background_template), '.rendered'),
+                width=canvas_w,
+                height=canvas_h,
                 canvas_height=page_height,
             )
             if rendered:
@@ -599,10 +666,10 @@ def render_strokes_to_png(
 
         if template_art and os.path.exists(template_art):
             try:
-                tmpl_left = offset_x - RM_SCREEN_WIDTH / 2
+                tmpl_left = offset_x - canvas_w / 2
                 tmpl_rect = fitz.Rect(
                     tmpl_left, offset_y,
-                    tmpl_left + RM_SCREEN_WIDTH, offset_y + template_height,
+                    tmpl_left + canvas_w, offset_y + template_height,
                 )
                 page.insert_image(tmpl_rect, filename=template_art)
             except Exception:
@@ -635,7 +702,7 @@ def render_strokes_to_png(
         if is_hl:
             smooth_ws = [_segment_width(p, stroke) for p in points]
             canvas_pts = [fitz.Point(_cx(pt.x), _cy(pt.y)) for pt in points]
-            _highlight_queue.append((canvas_pts, smooth_ws))
+            _highlight_queue.append((canvas_pts, smooth_ws, _color_to_rgb255(stroke.hex_color)))
             drawn += 1
             continue
 
@@ -726,14 +793,11 @@ def render_strokes_to_png(
         _draw_solid_circles_on_pixmap(pixmap, canvas_pts, smooth_ws, color,
                                       opacity=brush_opacity)
 
-    # Highlight pass: painted last so they sit on top of all drawings.
-    hl_color = (255, 215, 0)  # #FFD700 gold yellow
-
     # Stroke-based highlights (pen_type 5/18): circle rendering with gap-fill.
     if _highlight_queue:
-        for canvas_pts, smooth_ws in _highlight_queue:
+        for canvas_pts, smooth_ws, color in _highlight_queue:
             _draw_solid_circles_on_pixmap(
-                pixmap, canvas_pts, smooth_ws, hl_color,
+                pixmap, canvas_pts, smooth_ws, color,
                 opacity=HIGHLIGHTER_OPACITY,
             )
 
@@ -745,10 +809,10 @@ def render_strokes_to_png(
         h = pixmap.height
         n = pixmap.n
         samples = pixmap.samples_mv
-        r_c, g_c, b_c = hl_color
         a = HIGHLIGHTER_OPACITY
         inv = 1.0 - a
         for gh in glyph_highlights:
+            r_c, g_c, b_c = _color_to_rgb255(getattr(gh, "color", "yellow"))
             for (rx, ry, rw, rh) in gh.rectangles:
                 # Convert from reMarkable logical coords to canvas pixels.
                 # x is center-origin; y is top-origin.
@@ -946,17 +1010,19 @@ def render_rm_file_to_png(
     truncate_blank: bool = False,
     background_png: str = None,
     background_template: str = None,
+    canvas_width: float = RM_SCREEN_WIDTH,
+    canvas_height: float = RM_SCREEN_HEIGHT,
 ) -> int:
     """
     Convenience: parse an .rm file and render its strokes as a PNG.
     For PDF documents, pass pdf_path and page_index to render strokes
-    on top of the PDF page content. Pass coord_scale=226/300 for PDFs,
-    1.0 for notebooks (defaults to auto-detect if omitted).
+    on top of the PDF page content. Pass the page geometry's calibrated scale
+    for PDFs and 1.0 for notebooks (legacy auto-detection if omitted).
     Also renders glyph-range highlights (text selections) as filled rectangles.
     truncate_blank crops trailing blank space on short notebook pages.
-    background_png draws PNG template art behind notebook strokes (older
-    firmware); background_template does the same from a firmware 3.x
-    `.template` vector definition, drawn to the full page height.
+    background_png draws PNG template art behind notebook strokes;
+    background_template accepts firmware `.template` definitions or legacy
+    SVG art, rasterized for the current device canvas.
     """
     strokes = extract_strokes(rm_path)
     glyph_hls = extract_glyph_highlights(rm_path)
@@ -968,4 +1034,6 @@ def render_rm_file_to_png(
                                  glyph_highlights=glyph_hls,
                                  truncate_blank=truncate_blank,
                                  background_png=background_png,
-                                 background_template=background_template)
+                                 background_template=background_template,
+                                 canvas_width=canvas_width,
+                                 canvas_height=canvas_height)

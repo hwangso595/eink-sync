@@ -64,6 +64,8 @@ COLOR_TO_HEX = {
     "blue": "#2979FF",
     "red": "#FF1744",
     "gray_overlap": "#A0A0A0",
+    "cyan": "#00BCD4",
+    "magenta": "#D500F9",
 }
 
 # Color ID -> name (legacy v3/v5 + v6 integer IDs)
@@ -78,6 +80,10 @@ COLOR_ID_TO_NAME = {
     7: "red",
     8: "gray_overlap",
     9: "yellow",  # highlighter default
+    10: "green",
+    11: "cyan",
+    12: "magenta",
+    13: "yellow",
 }
 
 # Pen type -> default stroke width multiplier
@@ -145,6 +151,12 @@ class Stroke:
 
     @property
     def hex_color(self) -> str:
+        if isinstance(self.color, str) and len(self.color) == 7 and self.color.startswith("#"):
+            try:
+                int(self.color[1:], 16)
+                return self.color.upper()
+            except ValueError:
+                pass
         return COLOR_TO_HEX.get(self.color, "#000000")
 
 
@@ -152,8 +164,24 @@ class Stroke:
 # v6 stroke extraction via rmscene
 # ---------------------------------------------------------------------------
 
-def _color_from_v6(color_val: object) -> str:
-    """Convert a v6 color value (enum or int) to a color name."""
+def _rgba_to_hex(color_rgba: object) -> Optional[str]:
+    """Convert a validated rmscene RGBA tuple to #RRGGBB (alpha is separate)."""
+    if not isinstance(color_rgba, (tuple, list)) or len(color_rgba) < 3:
+        return None
+    try:
+        channels = tuple(int(channel) for channel in color_rgba[:3])
+    except (TypeError, ValueError):
+        return None
+    if any(channel < 0 or channel > 255 for channel in channels):
+        return None
+    return "#%02X%02X%02X" % channels
+
+
+def _color_from_v6(color_val: object, color_rgba: object = None) -> str:
+    """Convert a v6 color value to a name/hex value, preferring exact RGBA."""
+    rgba_hex = _rgba_to_hex(color_rgba)
+    if rgba_hex is not None:
+        return rgba_hex
     raw = color_val.value if hasattr(color_val, "value") else color_val
     if isinstance(raw, int):
         return COLOR_ID_TO_NAME.get(raw, "black")
@@ -233,7 +261,10 @@ def _line_to_stroke(line: object) -> Optional[Stroke]:
     if not points_data:
         return None
 
-    color_name = _color_from_v6(getattr(line, "color", 0))
+    color_name = _color_from_v6(
+        getattr(line, "color", 0),
+        getattr(line, "color_rgba", None),
+    )
 
     # Tool/pen type
     tool = getattr(line, "tool", None)
@@ -447,6 +478,7 @@ class GlyphHighlight:
     # x is center-origin (x=0 = horizontal centre of page).
     # y is top-origin.
     rectangles: list[tuple[float, float, float, float]] = field(default_factory=list)
+    color: str = "yellow"
 
 
 def extract_glyph_highlights(rm_path: str) -> list[GlyphHighlight]:
@@ -492,7 +524,14 @@ def extract_glyph_highlights(rm_path: str) -> list[GlyphHighlight]:
             h = float(getattr(r, "h", 0.0))
             rects.append((x, y, w, h))
         if rects:
-            highlights.append(GlyphHighlight(text=text, rectangles=rects))
+            highlights.append(GlyphHighlight(
+                text=text,
+                rectangles=rects,
+                color=_color_from_v6(
+                    getattr(val, "color", 9),
+                    getattr(val, "color_rgba", None),
+                ),
+            ))
 
     return highlights
 

@@ -28,6 +28,7 @@ from stroke_renderer import (
     extract_strokes,
     _stroke_to_svg_path,
     _average_width,
+    _color_from_v6,
     COLOR_TO_HEX,
     RM_SCREEN_WIDTH,
     RM_SCREEN_HEIGHT,
@@ -94,6 +95,16 @@ def _write_temp_rm(data: bytes) -> str:
 # ---------------------------------------------------------------------------
 # SVG path generation
 # ---------------------------------------------------------------------------
+
+def test_v6_rgba_overrides_ambiguous_enum_color():
+    # Current firmware stores custom/highlighter colors under a shared enum;
+    # color_rgba is the authoritative value.
+    assert _color_from_v6(9, (12, 34, 56, 255)) == "#0C2238"
+
+
+def test_v6_invalid_rgba_falls_back_to_enum_color():
+    assert _color_from_v6(3, (999, 34, 56, 255)) == "yellow"
+
 
 class TestStrokeToSvgPath:
     def test_empty_stroke(self):

@@ -9,10 +9,15 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { logger } from '../utils/logger';
 import { isRecord, parseJson } from '../utils/json';
 import { isValidUuid } from './uuid-validation';
+import {
+  collectionPathDepth,
+  normalizeDocumentRelativePath,
+} from '../sync/document-collection';
 
 /** Remote xochitl data directory on the tablet. */
 const XOCHITL_DIR = '/home/root/.local/share/remarkable/xochitl';
@@ -32,16 +37,25 @@ export interface ArchiveOptions {
   force: boolean;
   /**
    * Absolute path to the local synced copy of the xochitl directory. Required:
-   * before deleting any document from the tablet, we confirm its files exist
-   * (and are non-empty) here. Without a confirmed backup, "archive" would be
-   * "delete forever".
+   * before deleting any document from the tablet, we confirm its complete
+   * collection exists here with matching types, sizes, and checksums. Without
+   * a confirmed backup, "archive" would be "delete forever".
    */
   localSyncDir: string;
-  /**
-   * SFTP intentionally excludes regenerable xochitl files that extraction
-   * never uses. Do not require those files when validating an SFTP backup.
-   */
-  allowSftpSkippedFiles?: boolean;
+}
+
+/** Parse Use% from the final df row, even when a long filesystem wraps it. */
+export function parseDfUsagePercent(output: string): number | null {
+  const fields = output.trim().split(/\s+/);
+  if (fields.length < 5) return null;
+
+  const match = /^(\d+)%$/.exec(fields.at(-2) ?? '');
+  if (!match) return null;
+
+  const usagePercent = Number(match[1]);
+  return Number.isInteger(usagePercent) && usagePercent >= 0 && usagePercent <= 100
+    ? usagePercent
+    : null;
 }
 
 /**
@@ -62,12 +76,24 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
       return false;
     }
   };
-  // A directory counts only if it holds at least one non-empty file, so an
-  // empty .rm from a torn sync can't pass the gate.
+  // A directory counts only if it recursively holds a non-empty regular file.
+  // Future firmware may nest page assets; links are never followed.
   const dirHasContent = (p: string): boolean => {
     try {
-      if (!fs.statSync(p).isDirectory()) return false;
-      return fs.readdirSync(p).some((name) => nonEmptyFile(path.join(p, name)));
+      const root = fs.lstatSync(p);
+      if (root.isSymbolicLink() || !root.isDirectory()) return false;
+      const pending = [p];
+      while (pending.length > 0) {
+        const directory = pending.pop()!;
+        for (const name of fs.readdirSync(directory)) {
+          const entryPath = path.join(directory, name);
+          const stat = fs.lstatSync(entryPath);
+          if (stat.isSymbolicLink()) return false;
+          if (stat.isFile() && stat.size > 0) return true;
+          if (stat.isDirectory()) pending.push(entryPath);
+        }
+      }
+      return false;
     } catch {
       return false;
     }
@@ -89,87 +115,357 @@ export function hasLocalBackup(localSyncDir: string, uuid: string): boolean {
   return hasBody;
 }
 
-/**
- * Force the next SFTP sync to refresh a document's mutable sidecars and its
- * annotation directory. Archive uses this after a verification mismatch,
- * which can happen when xochitl rewrites a file between the initial download
- * and the byte-for-byte safety check.
- *
- * Only mtimes are changed. Existing backup contents remain intact if the
- * retry cannot connect.
- */
-export function markLocalBackupForRefresh(localSyncDir: string, uuid: string): void {
-  if (!isValidUuid(uuid)) {
-    throw new Error('Refusing to refresh a local backup with an invalid UUID.');
+/** Exact, typed tablet snapshot used for backup verification and deletion. */
+export interface TabletDocumentManifestEntry {
+  relativePath: string;
+  type: 'file' | 'directory';
+  size: number;
+  mtime: number;
+  /** SHA-256 for files; null for directories. */
+  sha256: string | null;
+}
+
+export interface TabletDocumentManifest {
+  uuid: string;
+  entries: TabletDocumentManifestEntry[];
+}
+
+/** Quote a validated remote path for the tablet's POSIX shell. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+export interface DocumentResyncProtection {
+  uuid: string;
+  /** Exact lines appended by this operation; pre-existing lines are omitted. */
+  addedLines: string[];
+}
+
+function archiveIgnoreLines(uuid: string): string[] {
+  if (!isValidUuid(uuid)) throw new Error('Refusing to modify ignore rules for an invalid UUID.');
+  // Leading slashes anchor at the xochitl root. A wildcard only after the
+  // literal dot covers sidecars without matching an unrelated UUIDsuffix.
+  return [`/${uuid}`, `/${uuid}.*`];
+}
+
+function legacyArchiveIgnoreLines(uuid: string): string[] {
+  return [uuid, `${uuid}.*`, `${uuid}/`, `${uuid}*`];
+}
+
+/** Add exact, deduplicated Syncthing protection and report what changed. */
+export async function protectDocumentFromResync(
+  ssh: SSHExecutor,
+  uuid: string,
+): Promise<DocumentResyncProtection> {
+  const lines = archiveIgnoreLines(uuid);
+  const commands = lines.map((line) =>
+    `if ! grep -Fqx ${shellQuote(line)} .stignore; then ` +
+    `printf '%s\\n' ${shellQuote(line)} >> .stignore && printf '%s\\n' ${shellQuote(line)}; fi`,
+  );
+  const result = await ssh.execute(
+    `cd ${XOCHITL_DIR} && touch .stignore && ${commands.join(' && ')}`,
+  );
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(`Could not protect archived document from re-sync${detail ? `: ${detail}` : '.'}`);
   }
 
-  const epoch = new Date(0);
-  for (const extension of ['.metadata', '.content']) {
-    const filePath = path.join(localSyncDir, `${uuid}${extension}`);
+  const addedLines = result.stdout.split('\n').filter((line) => lines.includes(line));
+  return { uuid: uuid.toLowerCase(), addedLines: [...new Set(addedLines)] };
+}
+
+async function removeDocumentIgnoreLines(
+  ssh: SSHExecutor,
+  uuid: string,
+  lines: string[],
+): Promise<void> {
+  archiveIgnoreLines(uuid);
+  if (lines.length === 0) return;
+  const allowed = new Set([...archiveIgnoreLines(uuid), ...legacyArchiveIgnoreLines(uuid)]);
+  if (lines.some((line) => !allowed.has(line))) {
+    throw new Error('Refusing to remove an unexpected ignore rule.');
+  }
+
+  const condition = lines.map((line) => `$0 != "${line}"`).join(' && ');
+  const temporary = `.stignore.eink-sync-${uuid}.tmp`;
+  const result = await ssh.execute(
+    `cd ${XOCHITL_DIR} && if [ -f .stignore ]; then ` +
+    `awk '${condition} { print }' .stignore > ${temporary} && mv ${temporary} .stignore; fi`,
+  );
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(`Could not update tablet ignore rules${detail ? `: ${detail}` : '.'}`);
+  }
+}
+
+/** Remove exact current and legacy archive rules before restoring a document. */
+export async function unprotectDocumentFromResync(
+  ssh: SSHExecutor,
+  uuid: string,
+): Promise<void> {
+  await removeDocumentIgnoreLines(
+    ssh,
+    uuid,
+    [...archiveIgnoreLines(uuid), ...legacyArchiveIgnoreLines(uuid)],
+  );
+}
+
+async function deleteProtectedVerifiedTabletDocument(
+  ssh: SSHExecutor,
+  manifest: TabletDocumentManifest,
+): Promise<void> {
+  const protection = await protectDocumentFromResync(ssh, manifest.uuid);
+  try {
+    await deleteVerifiedTabletDocument(ssh, manifest);
+  } catch (err) {
     try {
-      if (fs.statSync(filePath).isFile()) {
-        fs.utimesSync(filePath, epoch, epoch);
-      }
-    } catch {
-      // Missing sidecars remain a hard failure in hasLocalBackup(). Do not
-      // create placeholders that could make an incomplete backup look valid.
+      await removeDocumentIgnoreLines(ssh, manifest.uuid, protection.addedLines);
+    } catch (rollbackErr) {
+      const original = err instanceof Error ? err.message : String(err);
+      const rollback = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+      throw new Error(`${original} Ignore-rule rollback also failed: ${rollback}`);
     }
+    throw err;
   }
 }
 
 /**
- * Authoritative pre-delete check: every non-empty tablet file for the UUID must
- * exist non-empty locally. Catches cases hasLocalBackup can't see locally, e.g.
- * a PDF synced but its handwritten annotations ({uuid}/*.rm) not. Refuses on any
- * doubt (missing/empty local file, or the listing failing).
+ * Enumerate an exact UUID / UUID.* collection without a depth or size filter.
+ * The command reports entry type so links and special files cannot be mistaken
+ * for backed-up regular files. Newlines/tabs in a name make parsing fail closed.
  */
-export async function tabletFilesBackedUpLocally(
+export async function readTabletDocumentManifest(
   ssh: SSHExecutor,
-  localSyncDir: string,
   uuid: string,
-  options: { allowSftpSkippedFiles?: boolean } = {},
-): Promise<boolean> {
-  // List every non-empty file the delete removes with its size -- sidecar
-  // files, {uuid}/ strokes, and files inside sidecar dirs like {uuid}.highlights
-  // -- skipping regenerable caches. Each must exist locally at the SAME size, so
-  // a truncated/partial local copy can't pass the gate.
-  // SFTP deliberately omits xochitl-generated files that extraction never
-  // reads. They are safe to remove during archive but must not make a complete
-  // SFTP backup fail verification. Syncthing/automatic archive keeps the more
-  // conservative default and verifies these entries when present.
-  const sftpExclusions = options.allowSftpSkippedFiles
-    ? `-not -path './${uuid}.pagedata' ` +
-      `-not -path './${uuid}.local' ` +
-      `-not -path './${uuid}.highlights/*' `
-    : '';
-  const find = await ssh.execute(
-    `cd ${XOCHITL_DIR} && find . -maxdepth 3 -type f -size +0c ` +
-    `\\( -path './${uuid}.*' -o -path './${uuid}/*' \\) ` +
-    `-not -path './${uuid}.cache/*' ` +
-    `-not -path './${uuid}.thumbnails/*' ` +
-    `-not -path './${uuid}.textconversion/*' ` +
-    sftpExclusions +
-    `-exec stat -c '%s %n' {} \\; 2>/dev/null`,
+): Promise<TabletDocumentManifest> {
+  if (!isValidUuid(uuid)) throw new Error('Refusing to inspect an invalid document UUID.');
+
+  const result = await ssh.execute(
+    `cd ${XOCHITL_DIR} || exit 1; set -e; ` +
+    `for root in './${uuid}' './${uuid}'.*; do ` +
+    `[ -e "$root" ] || [ -L "$root" ] || continue; ` +
+    `find "$root" -exec sh -c '` +
+    `entry="$1"; ` +
+    `if [ -L "$entry" ]; then kind=l; size=0; mtime=0; digest=-; ` +
+    `elif [ -f "$entry" ]; then kind=f; ` +
+    `if size=$(stat -c %s "$entry") && mtime=$(stat -c %Y "$entry") ` +
+    `&& digest=$(sha256sum "$entry"); then digest=${'$'}{digest%% *}; ` +
+    `else kind=e; size=0; mtime=0; digest=-; fi; ` +
+    `elif [ -d "$entry" ]; then size=0; digest=-; ` +
+    `if mtime=$(stat -c %Y "$entry"); then kind=d; else kind=e; mtime=0; fi; ` +
+    `else kind=o; size=0; mtime=0; digest=-; fi; ` +
+    `printf "%s\\t%s\\t%s\\t%s\\t%s\\n" "$kind" "$size" "$mtime" "$digest" "$entry"` +
+    `' sh {} \\;; done`,
   );
-  if (find.exitCode !== 0) return false;
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim();
+    throw new Error(`Could not inventory tablet document${detail ? `: ${detail}` : '.'}`);
+  }
 
-  const lines = find.stdout.trim().split('\n').map((s) => s.trim()).filter(Boolean);
-  if (lines.length === 0) return false;
+  const entries: TabletDocumentManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const line of result.stdout.split('\n').filter((value) => value.length > 0)) {
+    const fields = line.split('\t');
+    if (fields.length !== 5) throw new Error('Tablet returned an unsafe document path.');
 
-  for (const line of lines) {
-    const sep = line.indexOf(' ');
-    if (sep < 0) return false;
-    const tabletSize = parseInt(line.slice(0, sep), 10);
-    const rel = line.slice(sep + 1).replace(/^\.\//, '');
-    if (!Number.isFinite(tabletSize) || !rel) return false;
+    const [kind, sizeText, mtimeText, digest, rawPath] = fields;
+    if (kind === 'l' || kind === 'o') {
+      throw new Error(`Unsupported tablet entry type in ${uuid}.`);
+    }
+    if (kind !== 'f' && kind !== 'd') throw new Error('Tablet returned an invalid entry type.');
+
+    const relativePath = normalizeDocumentRelativePath(uuid, rawPath);
+    if (seen.has(relativePath)) throw new Error('Tablet returned a duplicate document entry.');
+    seen.add(relativePath);
+
+    const size = Number(sizeText);
+    const mtime = Number(mtimeText);
+    if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(mtime) || mtime < 0) {
+      throw new Error('Tablet returned invalid document metadata.');
+    }
+    if (kind === 'f' && !/^[0-9a-f]{64}$/i.test(digest)) {
+      throw new Error('Tablet returned an invalid document checksum.');
+    }
+    if (kind === 'd' && digest !== '-') {
+      throw new Error('Tablet returned an invalid directory checksum.');
+    }
+    entries.push({
+      relativePath,
+      type: kind === 'f' ? 'file' : 'directory',
+      size,
+      mtime,
+      sha256: kind === 'f' ? digest.toLowerCase() : null,
+    });
+  }
+
+  return { uuid: uuid.toLowerCase(), entries };
+}
+
+/** Hash without loading a potentially large PDF/EPUB into memory. */
+function hashLocalFileSha256(filePath: string): string {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    let bytesRead: number;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest('hex');
+}
+
+/** Confirm every entry locally by type, size, and SHA-256. */
+export function localBackupMatchesManifest(
+  localSyncDir: string,
+  manifest: TabletDocumentManifest,
+): boolean {
+  if (manifest.entries.length === 0) return false;
+
+  for (const entry of manifest.entries) {
+    let safeRelativePath: string;
     try {
-      const st = fs.statSync(path.join(localSyncDir, rel));
-      if (!st.isFile() || st.size !== tabletSize) return false;
+      safeRelativePath = normalizeDocumentRelativePath(manifest.uuid, entry.relativePath);
+    } catch {
+      return false;
+    }
+    if (safeRelativePath !== entry.relativePath) return false;
+    const parts = safeRelativePath.split('/');
+    let localPath = localSyncDir;
+    try {
+      for (let index = 0; index < parts.length; index++) {
+        localPath = path.join(localPath, parts[index]);
+        const stat = fs.lstatSync(localPath);
+        if (stat.isSymbolicLink()) return false;
+        if (index < parts.length - 1 && !stat.isDirectory()) return false;
+        if (index === parts.length - 1) {
+          if (entry.type === 'file') {
+            if (!stat.isFile() || stat.size !== entry.size) return false;
+            if (entry.sha256 === null || hashLocalFileSha256(localPath) !== entry.sha256) return false;
+          }
+          if (entry.type === 'directory' && !stat.isDirectory()) return false;
+        }
+      }
     } catch {
       return false;
     }
   }
   return true;
+}
+
+/** Compare two snapshots immediately before deletion to close common races. */
+function manifestsMatch(a: TabletDocumentManifest, b: TabletDocumentManifest): boolean {
+  if (a.uuid !== b.uuid || a.entries.length !== b.entries.length) return false;
+  const byPath = new Map(a.entries.map((entry) => [entry.relativePath, entry]));
+  return b.entries.every((entry) => {
+    const previous = byPath.get(entry.relativePath);
+    return previous?.type === entry.type
+      && previous.size === entry.size
+      && previous.mtime === entry.mtime
+      && previous.sha256 === entry.sha256;
+  });
+}
+
+async function runExactDeleteCommands(ssh: SSHExecutor, commands: string[]): Promise<void> {
+  const MAX_COMMAND_LENGTH = 6000;
+  let batch: string[] = [];
+  let length = 0;
+
+  const flush = async (): Promise<void> => {
+    if (batch.length === 0) return;
+    const result = await ssh.execute(`cd ${XOCHITL_DIR} && ${batch.join(' && ')}`);
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.trim();
+      throw new Error(`Tablet rejected archive deletion${detail ? `: ${detail}` : '.'}`);
+    }
+    batch = [];
+    length = 0;
+  };
+
+  for (const command of commands) {
+    if (batch.length > 0 && length + command.length + 4 > MAX_COMMAND_LENGTH) await flush();
+    batch.push(command);
+    length += command.length + 4;
+  }
+  await flush();
+}
+
+/** Delete only the entries present in a verified, unchanged manifest. */
+export async function deleteVerifiedTabletDocument(
+  ssh: SSHExecutor,
+  manifest: TabletDocumentManifest,
+): Promise<void> {
+  const current = await readTabletDocumentManifest(ssh, manifest.uuid);
+  if (!manifestsMatch(manifest, current)) {
+    throw new Error('Tablet document changed during archive; sync it again before retrying.');
+  }
+
+  const commitRank = (relativePath: string): number => {
+    if (relativePath === `${manifest.uuid}.metadata`) return 2;
+    if (relativePath === `${manifest.uuid}.content`) return 1;
+    return 0;
+  };
+  const files = manifest.entries
+    .filter((entry) => entry.type === 'file')
+    .sort((a, b) => {
+      return commitRank(a.relativePath) - commitRank(b.relativePath)
+        || collectionPathDepth(b.relativePath) - collectionPathDepth(a.relativePath);
+    });
+  const directories = manifest.entries
+    .filter((entry) => entry.type === 'directory')
+    .sort((a, b) => collectionPathDepth(b.relativePath) - collectionPathDepth(a.relativePath));
+
+  await runExactDeleteCommands(ssh, [
+    ...files.map((entry) => {
+      const remotePath = shellQuote(`./${entry.relativePath}`);
+      return `[ -f ${remotePath} ] && [ ! -L ${remotePath} ] ` +
+        `&& [ "$(stat -c %s ${remotePath})" = '${entry.size}' ] ` +
+        `&& [ "$(sha256sum ${remotePath} | awk '{print $1}')" = '${entry.sha256}' ] ` +
+        `&& rm -f ${remotePath}`;
+    }),
+    ...directories.map((entry) => `rmdir ${shellQuote(`./${entry.relativePath}`)}`),
+  ]);
+
+  const remaining = await readTabletDocumentManifest(ssh, manifest.uuid);
+  if (remaining.entries.length > 0) {
+    throw new Error('Tablet document deletion could not be verified.');
+  }
+}
+
+/**
+ * Authoritative pre-delete check used by archive flows. Every tablet entry,
+ * including zero-byte/deep/unknown entries, must have a matching local copy.
+ */
+export async function tabletFilesBackedUpLocally(
+  ssh: SSHExecutor,
+  localSyncDir: string,
+  uuid: string,
+): Promise<boolean> {
+  try {
+    const manifest = await readTabletDocumentManifest(ssh, uuid);
+    return localBackupMatchesManifest(localSyncDir, manifest);
+  } catch {
+    return false;
+  }
+}
+
+/** Verify a complete local backup and remove only that verified collection. */
+export async function archiveVerifiedTabletDocument(
+  ssh: SSHExecutor,
+  localSyncDir: string,
+  uuid: string,
+): Promise<void> {
+  if (!hasLocalBackup(localSyncDir, uuid)) {
+    throw new Error('The local backup is incomplete; the tablet copy was not deleted.');
+  }
+  const manifest = await readTabletDocumentManifest(ssh, uuid);
+  if (!localBackupMatchesManifest(localSyncDir, manifest)) {
+    throw new Error('The tablet has document files that are not completely backed up locally.');
+  }
+  await deleteProtectedVerifiedTabletDocument(ssh, manifest);
 }
 
 /**
@@ -196,7 +492,6 @@ export async function archiveOldDocuments(
     minAgeDays,
     force,
     localSyncDir,
-    allowSftpSkippedFiles = false,
   } = options;
   const minAgeMs = minAgeDays * 24 * 60 * 60 * 1000;
 
@@ -205,144 +500,150 @@ export async function archiveOldDocuments(
     return 0;
   }
 
-  // Step 1: Check /home disk usage
-  const dfResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
-  const usagePercent = parseInt(dfResult.stdout.trim(), 10);
-
-  if (isNaN(usagePercent)) {
-    logger.warn('Could not parse /home disk usage');
-    return 0;
-  }
-
-  logger.info(`reMarkable /home usage: ${usagePercent}%`);
-
-  if (!force && usagePercent < thresholdPercent) {
-    logger.info(`Disk usage ${usagePercent}% is below threshold ${thresholdPercent}%, skipping archive`);
-    return 0;
-  }
-
-  // Step 2: List all metadata files and parse lastOpened timestamps
-  const lsResult = await ssh.execute(
-    `find ${XOCHITL_DIR} -maxdepth 1 -name '*.metadata' -type f`
-  );
-
-  if (lsResult.exitCode !== 0 || !lsResult.stdout.trim()) {
-    logger.info('No metadata files found on tablet');
-    return 0;
-  }
-
-  const metadataFiles = lsResult.stdout.trim().split('\n').filter(Boolean);
-  const now = Date.now();
-  const cutoffTimestamp = now - minAgeMs;
-
-  interface DocEntry { uuid: string; lastOpened: number }
-  const eligible: DocEntry[] = [];
-
-  for (const metaPath of metadataFiles) {
-    const uuid = metaPath.replace(`${XOCHITL_DIR}/`, '').replace('.metadata', '');
-    const catResult = await ssh.execute(`cat "${metaPath}"`);
-    if (catResult.exitCode !== 0) continue;
-
-    try {
-      const meta = parseJson(catResult.stdout);
-      if (!isRecord(meta)) continue;
-      const lastOpened = parseInt(typeof meta.lastOpened === 'string' ? meta.lastOpened : '0', 10);
-      const lastModified = parseInt(typeof meta.lastModified === 'string' ? meta.lastModified : '0', 10);
-      const lastActivity = Math.max(lastOpened, lastModified);
-
-      if (lastActivity > cutoffTimestamp) continue;
-
-      if (lastOpened === 0) {
-        const created = parseInt(typeof meta.createdTime === 'string' ? meta.createdTime : '0', 10);
-        if (created > cutoffTimestamp) continue;
-      }
-
-      eligible.push({ uuid, lastOpened: lastActivity });
-    } catch {
-      continue;
-    }
-  }
-
-  if (eligible.length === 0) {
-    logger.info('No documents eligible for archiving');
-    return 0;
-  }
-
-  // Sort oldest-activity first
-  eligible.sort((a, b) => a.lastOpened - b.lastOpened);
-
-  // Step 3: Archive each eligible document
   let archivedCount = 0;
-  for (const doc of eligible) {
-    // Validate UUID before constructing any shell commands to prevent injection
-    if (!isValidUuid(doc.uuid)) {
-      logger.warn(`Skipping document with invalid UUID: ${doc.uuid}`);
-      continue;
+  try {
+    // Step 1: Check /home disk usage
+    const dfResult = await ssh.execute('df /home');
+    const usagePercent = dfResult.exitCode === 0
+      ? parseDfUsagePercent(dfResult.stdout)
+      : null;
+
+    if (usagePercent === null) {
+      logger.warn('Could not parse /home disk usage');
+      return 0;
     }
 
-    // SAFETY GATE: never delete from the tablet unless we can prove the
-    // document is already backed up locally. Applies even when force=true.
-    if (!hasLocalBackup(localSyncDir, doc.uuid)) {
-      logger.warn(
-        `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
-        `Sync this document to the vault before archiving.`,
-      );
-      continue;
+    logger.info(`reMarkable /home usage: ${usagePercent}%`);
+
+    if (!force && usagePercent < thresholdPercent) {
+      logger.info(`Disk usage ${usagePercent}% is below threshold ${thresholdPercent}%, skipping archive`);
+      return 0;
     }
 
-    // Authoritative check: the tablet's own files must all be backed up locally
-    // (e.g. a PDF's annotations), or deleting would lose un-synced content.
-    if (!(await tabletFilesBackedUpLocally(
-      ssh,
-      localSyncDir,
-      doc.uuid,
-      { allowSftpSkippedFiles },
-    ))) {
-      logger.warn(
-        `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
-        `locally (e.g. annotations). Sync it fully before archiving.`,
-      );
-      continue;
-    }
-
-    // Add to .stignore so Syncthing won't try to re-sync from vault
-    await ssh.execute(
-      `echo '${doc.uuid}*' >> ${XOCHITL_DIR}/.stignore && echo '${doc.uuid}/' >> ${XOCHITL_DIR}/.stignore`
+    // Step 2: List all metadata files and parse lastOpened timestamps
+    const lsResult = await ssh.execute(
+      `find ${XOCHITL_DIR} -maxdepth 1 -name '*.metadata' -type f`,
     );
 
-    // Delete from tablet; explicit, auditable file list (no glob).
-    // Covers every sidecar/dir xochitl creates for a document.
-    const u = doc.uuid;
-    // Only delete files we verified are backed up, plus the regenerable caches
-    // (.cache/.thumbnails). .textconversion (OCR output) is not verified, so
-    // leave it on the tablet rather than deleting unbacked-up content.
-    const targets = [
-      `${u}.metadata`, `${u}.content`, `${u}.pdf`, `${u}.epub`,
-      `${u}.pagedata`, `${u}.local`,
-      u, `${u}.cache`, `${u}.thumbnails`, `${u}.highlights`,
-    ].join(' ');
-    await ssh.execute(
-      `cd ${XOCHITL_DIR} && rm -rf ${targets} 2>/dev/null; true`
-    );
+    if (lsResult.exitCode !== 0 || !lsResult.stdout.trim()) {
+      logger.info('No metadata files found on tablet');
+      return 0;
+    }
 
-    archivedCount++;
+    const metadataFiles = lsResult.stdout.trim().split(/\r?\n/).filter(Boolean);
+    const now = Date.now();
+    const cutoffTimestamp = now - minAgeMs;
 
-    // Re-check disk usage; stop if below threshold
-    if (!force) {
-      const recheckResult = await ssh.execute("df /home | tail -1 | awk '{print $5}' | tr -d '%'");
-      const currentUsage = parseInt(recheckResult.stdout.trim(), 10);
-      if (!isNaN(currentUsage) && currentUsage < thresholdPercent) {
-        logger.info(`Disk usage now ${currentUsage}%, below threshold -- stopping`);
-        break;
+    interface DocEntry { uuid: string; lastOpened: number }
+    const eligible: DocEntry[] = [];
+
+    for (const metaPath of metadataFiles) {
+      const prefix = `${XOCHITL_DIR}/`;
+      const suffix = '.metadata';
+      if (!metaPath.startsWith(prefix) || !metaPath.endsWith(suffix)) {
+        logger.warn(`Skipping unexpected metadata path: ${metaPath}`);
+        continue;
+      }
+
+      const uuid = metaPath.slice(prefix.length, -suffix.length);
+      const canonicalPath = `${prefix}${uuid}${suffix}`;
+      if (!isValidUuid(uuid) || metaPath !== canonicalPath) {
+        logger.warn(`Skipping unexpected metadata path: ${metaPath}`);
+        continue;
+      }
+
+      const catResult = await ssh.execute(`cat ${shellQuote(canonicalPath)}`);
+      if (catResult.exitCode !== 0) continue;
+
+      try {
+        const meta = parseJson(catResult.stdout);
+        if (!isRecord(meta)) continue;
+        const lastOpened = parseInt(typeof meta.lastOpened === 'string' ? meta.lastOpened : '0', 10);
+        const lastModified = parseInt(typeof meta.lastModified === 'string' ? meta.lastModified : '0', 10);
+        const lastActivity = Math.max(lastOpened, lastModified);
+
+        if (lastActivity > cutoffTimestamp) continue;
+
+        if (lastOpened === 0) {
+          const created = parseInt(typeof meta.createdTime === 'string' ? meta.createdTime : '0', 10);
+          if (created > cutoffTimestamp) continue;
+        }
+
+        eligible.push({ uuid, lastOpened: lastActivity });
+      } catch {
+        continue;
+      }
+    }
+
+    if (eligible.length === 0) {
+      logger.info('No documents eligible for archiving');
+      return 0;
+    }
+
+    // Sort oldest-activity first
+    eligible.sort((a, b) => a.lastOpened - b.lastOpened);
+
+    // Step 3: Archive each eligible document
+    for (const doc of eligible) {
+      // Validate UUID before constructing any shell commands to prevent injection
+      if (!isValidUuid(doc.uuid)) {
+        logger.warn(`Skipping document with invalid UUID: ${doc.uuid}`);
+        continue;
+      }
+
+      // SAFETY GATE: never delete from the tablet unless we can prove the
+      // document is already backed up locally. Applies even when force=true.
+      if (!hasLocalBackup(localSyncDir, doc.uuid)) {
+        logger.warn(
+          `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
+          `Sync this document to the vault before archiving.`,
+        );
+        continue;
+      }
+
+      // Authoritative manifest: every tablet entry, including unknown sidecars,
+      // empty files, empty directories, and deeply nested data, must exist in
+      // the local backup with the same type, size, and SHA-256.
+      const manifest = await readTabletDocumentManifest(ssh, doc.uuid);
+      if (!localBackupMatchesManifest(localSyncDir, manifest)) {
+        logger.warn(
+          `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
+          `locally (e.g. annotations). Sync it fully before archiving.`,
+        );
+        continue;
+      }
+
+      // Protect against Syncthing re-delivery, re-check the snapshot, and delete
+      // only its exact entries. New children remain preserved. If deletion
+      // fails, only ignore lines added by this attempt are rolled back.
+      await deleteProtectedVerifiedTabletDocument(ssh, manifest);
+
+      archivedCount++;
+
+      // Re-check disk usage; stop if below threshold
+      if (!force) {
+        const recheckResult = await ssh.execute('df /home');
+        const currentUsage = recheckResult.exitCode === 0
+          ? parseDfUsagePercent(recheckResult.stdout)
+          : null;
+        if (currentUsage !== null && currentUsage < thresholdPercent) {
+          logger.info(`Disk usage now ${currentUsage}%, below threshold -- stopping`);
+          break;
+        }
+      }
+    }
+
+    return archivedCount;
+  } finally {
+    // A later failure must not suppress the refresh required by an earlier
+    // successful deletion. Preserve the original error while signalling once.
+    if (archivedCount > 0) {
+      logger.info(`Archived ${archivedCount} document(s), requesting xochitl restart`);
+      try {
+        onNeedsXochitlRestart?.();
+      } catch (err) {
+        logger.warn(`Could not request xochitl restart: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
-
-  // Step 4: Signal that xochitl needs a restart if we archived anything
-  if (archivedCount > 0) {
-    logger.info(`Archived ${archivedCount} document(s), requesting xochitl restart`);
-    onNeedsXochitlRestart?.();
-  }
-
-  return archivedCount;
 }

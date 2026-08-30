@@ -7,8 +7,8 @@
  * responsibility module.
  *
  * Calls the Python render_pages.py script which uses PyMuPDF to render
- * .rm stroke data as PNG images at the reMarkable's native resolution
- * (1404x1872). Returns a Map from page number to PNG filename, or null
+ * .rm stroke data as PNG images at the detected device-page resolution.
+ * Returns a Map from page number to PNG filename, or null
  * if no strokes are found.
  *
  */
@@ -105,7 +105,7 @@ export interface RenderPageOptions {
   ocrLanguage?: string;
   /** Per-page OCR time budget in seconds (0 = unlimited). Defaults to 12. */
   ocrPageTimeoutSeconds?: number;
-  /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
+  /** Directory of reMarkable PNG/SVG/.template assets for notebook backgrounds. */
   templatesDir?: string;
   /** Python executable to use (resolved managed env). Falls back to PATH detection. */
   pythonPath?: string;

@@ -18,7 +18,7 @@ import {
   ReMarkableDocument,
   ExtractionResult,
 } from './types';
-import { runExtractionPipeline } from './extraction-pipeline';
+import { mergeRendererHighlights, runExtractionPipeline } from './extraction-pipeline';
 import { renderMarkdown, mergeWithExistingNote, generateOutputFilename, DefaultMarkdownRenderer } from './markdown-renderer';
 import { discoverDocuments } from './document-discovery';
 
@@ -81,6 +81,60 @@ function createMockDeps(overrides?: Partial<PipelineDependencies>): PipelineDepe
     ...overrides,
   };
 }
+
+describe('mergeRendererHighlights', () => {
+  it('keeps extractor RGBA and bounds when renderer text is a whitespace duplicate', () => {
+    const extracted: ExtractionResult['highlights'] = [{
+      text: 'A highlighted\npassage',
+      pageNumber: 3,
+      color: '#12AB34',
+      bounds: { x: 10, y: 20, width: 30, height: 40 },
+      createdAt: null,
+    }];
+    const renderer: ExtractionResult['highlights'] = [{
+      text: '  A highlighted passage  ',
+      pageNumber: 3,
+      color: 'yellow',
+      bounds: null,
+      createdAt: null,
+    }];
+
+    const merged = mergeRendererHighlights(extracted, renderer);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(extracted[0]);
+    expect(merged[0].color).toBe('#12AB34');
+    expect(merged[0].bounds).toEqual({ x: 10, y: 20, width: 30, height: 40 });
+  });
+
+  it('retains redirect-aware renderer-only text and the same text on another page', () => {
+    const extracted: ExtractionResult['highlights'] = [{
+      text: 'same text', pageNumber: 1, color: 'green', bounds: null, createdAt: null,
+    }];
+    const renderer: ExtractionResult['highlights'] = [{
+      text: 'same text', pageNumber: 2, color: 'yellow', bounds: null, createdAt: null,
+    }, {
+      text: 'redirect-only', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }];
+
+    expect(mergeRendererHighlights(extracted, renderer).map((highlight) => (
+      [highlight.pageNumber, highlight.text]
+    ))).toEqual([
+      [1, 'same text'],
+      [2, 'same text'],
+      [4, 'redirect-only'],
+    ]);
+  });
+
+  it('deduplicates renderer fallback entries among themselves', () => {
+    const renderer: ExtractionResult['highlights'] = [{
+      text: 'redirect only', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }, {
+      text: 'redirect\nonly', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }];
+
+    expect(mergeRendererHighlights([], renderer)).toHaveLength(1);
+  });
+});
 
 describe('runExtractionPipeline with injected dependencies', () => {
   let xochitlDir: string;

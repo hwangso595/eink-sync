@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch, mock_open
 from highlight_extractor import (
     ExtractedHighlight,
     _color_id_to_name,
+    _glyph_range_to_dict,
     _extract_text_from_pdf_page,
     _extract_text_by_rectangle,
     _detect_page_gutter,
@@ -53,10 +54,21 @@ class TestColorIdToName(unittest.TestCase):
         self.assertEqual(_color_id_to_name(-1), "unknown_-1")
 
     def test_all_known_ids_are_mapped(self):
-        """Ensure no gaps in the 0-8 range."""
-        for i in range(9):
+        """Ensure no gaps in the current rmscene enum range."""
+        for i in range(14):
             result = _color_id_to_name(i)
             self.assertFalse(result.startswith("unknown_"), f"ID {i} is not mapped")
+
+    def test_rgba_overrides_shared_highlight_enum(self):
+        glyph_range = MagicMock()
+        glyph_range.start = 0
+        glyph_range.length = 4
+        glyph_range.text = "test"
+        glyph_range.color = 9
+        glyph_range.color_rgba = (242, 154, 255, 255)
+        glyph_range.rectangles = []
+
+        self.assertEqual(_glyph_range_to_dict(glyph_range)["color"], "#F29AFF")
 
 
 class TestGetBoundsFromRects(unittest.TestCase):
@@ -919,6 +931,81 @@ class TestRmToPdfCoords(unittest.TestCase):
         result = _rm_to_pdf_coords(rect, 612.0, 792.0)
         self.assertAlmostEqual(result["x"], 306.0, places=0)
         self.assertAlmostEqual(result["y"], 396.0, places=0)
+
+
+class TestRedirectedPdfPages(unittest.TestCase):
+    """Logical notebook order must be separate from backing-PDF order."""
+
+    def test_reordered_deleted_and_inserted_pages_use_the_correct_pdf_pages(self):
+        tmpdir = tempfile.mkdtemp()
+        doc_uuid = "redirected-doc"
+        page_uuids = ["logical-1", "logical-2", "inserted-3"]
+        try:
+            with open(os.path.join(tmpdir, f"{doc_uuid}.pdf"), "wb") as f:
+                f.write(b"%PDF-1.4 fake")
+            rm_dir = os.path.join(tmpdir, doc_uuid)
+            os.makedirs(rm_dir)
+            for page_uuid in page_uuids:
+                with open(os.path.join(rm_dir, f"{page_uuid}.rm"), "wb") as f:
+                    f.write(b"reMarkable .lines file, version=6")
+
+            pages = []
+            for _ in range(3):
+                page = MagicMock()
+                page.rect.width = 612.0
+                page.rect.height = 792.0
+                pages.append(page)
+            pdf_doc = MagicMock()
+            pdf_doc.__len__.return_value = 3
+            pdf_doc.__getitem__.side_effect = lambda index: pages[index]
+
+            glyph_range = {
+                "start": 0,
+                "length": 4,
+                "color": "yellow",
+                "rects": [
+                    {"x": 0.0, "y": 10.0, "width": 50.0, "height": 10.0}
+                ],
+            }
+            with patch("highlight_extractor.fitz") as mock_fitz, \
+                    patch("highlight_extractor._detect_rm_format", return_value="v6"), \
+                    patch("highlight_extractor._detect_page_gutter", return_value=None), \
+                    patch(
+                        "highlight_extractor._extract_highlights_from_rm_file",
+                        return_value=[glyph_range],
+                    ), \
+                    patch(
+                        "highlight_extractor._extract_highlighter_strokes_from_rm_file",
+                        return_value=[],
+                    ), \
+                    patch("highlight_extractor._extract_text_by_rectangle") as extract_text:
+                mock_fitz.open.return_value = pdf_doc
+                extract_text.side_effect = (
+                    lambda _doc, pdf_page_index, _rects:
+                    f"PDF page {pdf_page_index + 1}"
+                )
+
+                highlights, warnings = extract_highlights_for_document_auto(
+                    doc_uuid,
+                    page_uuids,
+                    tmpdir,
+                    # Logical pages 1 and 2 point to PDF pages 3 and 1.
+                    # PDF page 2 was deleted; logical page 3 was inserted.
+                    {0: 2, 1: 0},
+                )
+
+            self.assertEqual(
+                [(item.page_number, item.text) for item in highlights],
+                [(1, "PDF page 3"), (2, "PDF page 1")],
+            )
+            self.assertEqual(
+                [call.args[1] for call in extract_text.call_args_list],
+                [2, 0],
+            )
+            self.assertTrue(any("Page 3: inserted page" in item for item in warnings))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,10 @@ class TestExpressions(unittest.TestCase):
         self.assertEqual(evaluate("(2 + 3) * 4", {}), 20.0)
         self.assertEqual(evaluate("-5 + 1", {}), -4.0)
 
+    def test_false_left_and_still_consumes_the_right_expression(self):
+        self.assertEqual(evaluate("0 && 1", {}), 0.0)
+        self.assertEqual(evaluate("0 && 1 || 1", {}), 1.0)
+
     def test_variables_and_numbers(self):
         self.assertEqual(evaluate("w / 2", {"w": 1404}), 702.0)
         self.assertEqual(evaluate(78.7, {}), 78.7)
@@ -232,6 +236,60 @@ class TestRenderTemplateFile(unittest.TestCase):
             self.assertEqual(first, second)
             taller = render_template_cached(template_path, cache_dir, canvas_height=6182)
             self.assertNotEqual(first, taller)
+
+    def test_rasterizes_legacy_svg_at_paper_pro_size(self):
+        import fitz
+        from template_renderer import render_template_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = os.path.join(td, "P Grid medium.svg")
+            with open(svg_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    '<svg xmlns="http://www.w3.org/2000/svg" '
+                    'width="1404" height="1872" viewBox="0 0 1404 1872">'
+                    '<rect width="1404" height="1872" fill="white"/>'
+                    '<path d="M 0 100 L 1404 100" stroke="black"/>'
+                    '</svg>'
+                )
+
+            rendered = render_template_cached(
+                svg_path, os.path.join(td, ".rendered"),
+                width=1620, height=2160,
+            )
+            self.assertIsNotNone(rendered)
+            pixmap = fitz.Pixmap(rendered)
+            self.assertEqual((pixmap.width, pixmap.height), (1620, 2160))
+            self.assertIn("-svg-1620x2160-", os.path.basename(rendered))
+            # Source y=100 scales to about 115.4 on Paper Pro.
+            self.assertLess(sum(pixmap.pixel(810, 115)[:3]), 3 * 100)
+
+    def test_cache_key_changes_when_svg_bytes_change_with_preserved_mtime(self):
+        from template_renderer import render_template_cached
+
+        with tempfile.TemporaryDirectory() as td:
+            svg_path = os.path.join(td, "Grid.svg")
+            cache_dir = os.path.join(td, ".rendered")
+            first_svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">'
+                '<rect width="200" height="200" fill="white"/>'
+                '<path d="M 0 100 L 200 100" stroke="black"/></svg>'
+            )
+            second_svg = first_svg.replace('stroke="black"', 'stroke="white"')
+            with open(svg_path, "w", encoding="utf-8") as handle:
+                handle.write(first_svg)
+            source_stat = os.stat(svg_path)
+            first = render_template_cached(svg_path, cache_dir, width=200, height=200)
+
+            with open(svg_path, "w", encoding="utf-8") as handle:
+                handle.write(second_svg)
+            os.utime(svg_path, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            second = render_template_cached(svg_path, cache_dir, width=200, height=200)
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first, second)
+            self.assertTrue(os.path.isfile(first))
+            self.assertTrue(os.path.isfile(second))
 
     def test_unreadable_or_unsupported_templates_return_false(self):
         from template_renderer import render_template_file

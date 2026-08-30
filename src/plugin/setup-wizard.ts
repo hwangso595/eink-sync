@@ -172,7 +172,9 @@ export class SetupWizardModal extends Modal {
     containerEl.createEl('p', {
       text:
         'Connect your tablet via USB and enter the root password. ' +
-        'Find the password on your tablet at Settings > Help > Copyrights and licenses (scroll to the bottom). ' +
+        'Find the password on the tablet’s Copyrights and licenses screen. ' +
+        'Paper Pro, Paper Pro Move, and Paper Pure require Developer Mode before SSH is available. ' +
+        'Enabling Developer Mode factory-resets those devices, so sync or back up their files first. ' +
         'After connecting, the plugin will auto-detect your tablet\'s WiFi IP for wireless syncing.',
     });
 
@@ -379,11 +381,40 @@ export class SetupWizardModal extends Modal {
   // -------------------------------------------------------------------
   private renderStep3(containerEl: HTMLElement): void {
     new Setting(containerEl).setName('Step 3: Install Syncthing').setHeading();
+
+    // The bundled Entware path is ARMv7-only. Keep current AArch64 devices on
+    // the supported SFTP path instead of presenting an install button that is
+    // guaranteed to fail (or accepting an unsafe copied legacy installation).
+    if (this.deviceInfo?.architecture !== 'armv7') {
+      const architecture = this.deviceInfo?.architecture ?? 'unknown';
+      containerEl.createEl('p', {
+        text:
+          `Automatic Syncthing installation is unavailable for ${architecture} tablets. ` +
+          'SFTP provides the supported sync path and does not install software on the tablet.',
+        cls: 'remarkable-wizard-warning',
+      });
+
+      new Setting(containerEl)
+        .addButton((button) =>
+          button
+            .setButtonText('Use SFTP instead')
+            .setCta()
+            .onClick(async () => {
+              this.plugin.settings.syncMethod = 'sftp';
+              await this.plugin.saveSettings();
+              this.currentStep = 2;
+              this.renderCurrentStep();
+            }),
+        );
+      return;
+    }
+
     containerEl.createEl('p', {
       text:
         'Syncthing provides automatic background sync between your reMarkable ' +
         'and this computer. It requires installing Entware and Syncthing on the tablet. ' +
-        'All files go to /home/root/.entware (safe, reversible with rm -rf /home/root/.entware).',
+        'Package data is stored in /home/root/.entware; the legacy installer also creates ' +
+        'an /opt bind mount and /etc/systemd/system/opt.mount.',
     });
 
     const state = this.stepStates.get(3)!;
