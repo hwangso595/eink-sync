@@ -102,6 +102,69 @@ export function mergeRendererHighlights(
   return merged;
 }
 
+const EXTRACTION_WARNING_HEADING = '> [!warning] Extraction warnings';
+const EXTRACTION_WARNING_START = '<!-- eink-sync:extraction-warnings:start -->';
+const EXTRACTION_WARNING_END = '<!-- eink-sync:extraction-warnings:end -->';
+
+/**
+ * Replace the plugin-owned warning callout without moving YAML frontmatter off
+ * the first line. This also repairs notes written by older versions, which
+ * prepended the callout before the opening `---` and then left it stale.
+ */
+export function applyExtractionWarnings(
+  markdown: string,
+  warnings: string[],
+): string {
+  const eol = markdown.includes('\r\n') ? '\r\n' : '\n';
+  const bom = markdown.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const lines = markdown.slice(bom.length).split(/\r?\n/);
+  const cleaned: string[] = [];
+
+  for (let i = 0; i < lines.length;) {
+    if (lines[i] === EXTRACTION_WARNING_START) {
+      const end = lines.indexOf(EXTRACTION_WARNING_END, i + 1);
+      if (end !== -1) {
+        i = end + 1;
+        if (lines[i] === '') i++;
+        continue;
+      }
+    }
+    cleaned.push(lines[i]);
+    i++;
+  }
+
+  // Older versions put this unmarked callout at byte zero, before frontmatter.
+  if (cleaned[0] === EXTRACTION_WARNING_HEADING) {
+    let end = 1;
+    while (cleaned[end]?.startsWith('>')) end++;
+    if (cleaned[end] === '') end++;
+    cleaned.splice(0, end);
+  }
+
+  if (warnings.length === 0) return bom + cleaned.join(eol);
+
+  let insertAt = 0;
+  if (cleaned[0]?.replace(/^\uFEFF/u, '') === '---') {
+    const closingFence = cleaned.findIndex((line, index) => index > 0 && line === '---');
+    if (closingFence !== -1) insertAt = closingFence + 1;
+  }
+
+  const before = cleaned.slice(0, insertAt);
+  const after = cleaned.slice(insertAt);
+  while (after[0] === '') after.shift();
+
+  const warningLines = [EXTRACTION_WARNING_START, EXTRACTION_WARNING_HEADING];
+  for (const warning of warnings) {
+    const [first = '', ...continuation] = warning.split(/\r?\n/);
+    warningLines.push(`> - ${first}`);
+    warningLines.push(...continuation.map((line) => `>   ${line}`));
+  }
+  warningLines.push(EXTRACTION_WARNING_END);
+
+  if (before.length > 0 && before[before.length - 1] !== '') before.push('');
+  return bom + [...before, ...warningLines, '', ...after].join(eol);
+}
+
 /** Callback for reporting pipeline progress. */
 export type PipelineProgressCallback = (
   stage: 'discovery' | 'extraction' | 'rendering' | 'writing',
@@ -608,17 +671,9 @@ export async function runExtractionPipeline(
         markdownContent = preserveTypedNotes(existingContent, markdownContent);
       }
 
-      // If there are warnings, prepend a warning callout to the content
-      if (docResult.warnings.length > 0) {
-        const warningBlock =
-          '> [!warning] Extraction warnings\n' +
-          docResult.warnings.map((w) => `> - ${w}`).join('\n') +
-          '\n\n';
-        // Only add if not already present (avoid duplicates on re-run)
-        if (!markdownContent.includes('[!warning] Extraction warnings')) {
-          markdownContent = warningBlock + markdownContent;
-        }
-      }
+      // Replace stale generated warnings on every run. The callout belongs
+      // after YAML frontmatter so Obsidian continues to recognize Properties.
+      markdownContent = applyExtractionWarnings(markdownContent, docResult.warnings);
 
       // Write atomically
       progress?.('writing', i, total, doc.visibleName);

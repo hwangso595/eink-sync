@@ -18,7 +18,11 @@ import {
   ReMarkableDocument,
   ExtractionResult,
 } from './types';
-import { mergeRendererHighlights, runExtractionPipeline } from './extraction-pipeline';
+import {
+  applyExtractionWarnings,
+  mergeRendererHighlights,
+  runExtractionPipeline,
+} from './extraction-pipeline';
 import { renderMarkdown, mergeWithExistingNote, generateOutputFilename, DefaultMarkdownRenderer } from './markdown-renderer';
 import { discoverDocuments } from './document-discovery';
 
@@ -133,6 +137,98 @@ describe('mergeRendererHighlights', () => {
     }];
 
     expect(mergeRendererHighlights([], renderer)).toHaveLength(1);
+  });
+});
+
+describe('applyExtractionWarnings', () => {
+  it('keeps YAML frontmatter first and quotes multiline warning continuations', () => {
+    const markdown = [
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      '<!-- eink-sync:start -->',
+      'Body',
+      '<!-- eink-sync:end -->',
+    ].join('\n');
+
+    const updated = applyExtractionWarnings(markdown, ['first line\nsecond line']);
+
+    expect(updated.startsWith('---\n')).toBe(true);
+    expect(updated.indexOf('---\n\n<!-- eink-sync:extraction-warnings:start -->'))
+      .toBeGreaterThan(updated.indexOf('title: "Paper"'));
+    expect(updated).toContain('> - first line\n>   second line');
+  });
+
+  it('repairs, replaces, and later removes a legacy leading warning', () => {
+    const legacy = [
+      '> [!warning] Extraction warnings',
+      '> - stale warning',
+      '',
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      'Body',
+    ].join('\n');
+
+    const replaced = applyExtractionWarnings(legacy, ['current warning']);
+    expect(replaced.startsWith('---\n')).toBe(true);
+    expect(replaced).not.toContain('stale warning');
+    expect(replaced.match(/Extraction warnings/g)).toHaveLength(1);
+    expect(replaced).toContain('> - current warning');
+
+    const cleared = applyExtractionWarnings(replaced, []);
+    expect(cleared.startsWith('---\n')).toBe(true);
+    expect(cleared).not.toContain('Extraction warnings');
+    expect(cleared).not.toContain('current warning');
+  });
+
+  it('prepends the callout when a custom template has no frontmatter', () => {
+    const updated = applyExtractionWarnings('# Paper\n\nBody', ['warning']);
+    expect(updated).toBe(
+      '<!-- eink-sync:extraction-warnings:start -->\n' +
+      '> [!warning] Extraction warnings\n' +
+      '> - warning\n' +
+      '<!-- eink-sync:extraction-warnings:end -->\n\n' +
+      '# Paper\n\nBody',
+    );
+  });
+
+  it('does not remove a same-named user callout in the note body', () => {
+    const markdown = [
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      '# User notes',
+      '> [!warning] Extraction warnings',
+      '> This belongs to the user.',
+    ].join('\n');
+
+    const updated = applyExtractionWarnings(markdown, []);
+    expect(updated).toContain('> [!warning] Extraction warnings');
+    expect(updated).toContain('> This belongs to the user.');
+  });
+
+  it('does not remove a same-named user section after managed highlights', () => {
+    const markdown = [
+      '<!-- eink-sync:start -->',
+      'Body',
+      '<!-- eink-sync:end -->',
+      '',
+      '## Extraction Notes',
+      '',
+      '- This belongs to the user.',
+    ].join('\n');
+
+    expect(applyExtractionWarnings(markdown, [])).toBe(markdown);
+  });
+
+  it('keeps a BOM first for a custom template without frontmatter', () => {
+    const updated = applyExtractionWarnings('\uFEFF# Paper\r\n\r\nBody', ['warning']);
+    expect(updated.startsWith('\uFEFF<!-- eink-sync:extraction-warnings:start -->\r\n')).toBe(true);
+    expect(updated).toContain('\r\n\r\n# Paper\r\n\r\nBody');
   });
 });
 
@@ -298,7 +394,7 @@ describe('runExtractionPipeline with injected dependencies', () => {
       discovery: { discoverDocuments: async () => [doc] },
       extractor: { extractHighlights: async () => [extraction] },
       renderer: {
-        render: () => '# Test\n\n> Partial highlight\n',
+        render: () => '---\ntitle: "Test"\n---\n\n# Test\n\n> Partial highlight\n',
         mergeWithExisting: (existing) => existing,
       },
     });
@@ -314,6 +410,7 @@ describe('runExtractionPipeline with injected dependencies', () => {
     // Output file should be written with warning marker
     expect(result.outputFiles).toHaveLength(1);
     const content = fs.readFileSync(result.outputFiles[0], 'utf-8');
+    expect(content.startsWith('---\n')).toBe(true);
     expect(content).toContain('[!warning] Extraction warnings');
   });
 

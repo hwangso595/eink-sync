@@ -711,10 +711,9 @@ def extract_highlights_for_document(
 
             pdf_page_index = _backing_pdf_page_index(page_index, page_redir)
             if pdf_page_index is None:
-                warnings.append(
-                    f"Page {page_index + 1}: inserted page has no backing PDF; "
-                    "skipping PDF highlight extraction"
-                )
+                # Inserted notebook pages intentionally have no PDF text layer.
+                # Their ink is still handled by the page renderer, so this is
+                # a normal document state rather than an extraction warning.
                 continue
 
             if 0 <= pdf_page_index < len(pdf_doc):
@@ -828,10 +827,9 @@ def extract_highlights_for_document_auto(
 
             pdf_page_index = _backing_pdf_page_index(page_index, page_redir)
             if pdf_page_index is None:
-                warnings.append(
-                    f"Page {page_index + 1}: inserted page has no backing PDF; "
-                    "skipping PDF highlight extraction"
-                )
+                # Inserted notebook pages intentionally have no PDF text layer.
+                # Their ink is still handled by the page renderer, so this is
+                # a normal document state rather than an extraction warning.
                 continue
 
             fmt = _detect_rm_format(rm_path)

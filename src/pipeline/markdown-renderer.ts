@@ -352,16 +352,6 @@ export function renderMarkdown(
   ));
   sections.push('');
 
-  // Warnings section (if any)
-  if (result.warnings.length > 0) {
-    sections.push('## Extraction Notes');
-    sections.push('');
-    for (const warning of result.warnings) {
-      sections.push(`- ${warning}`);
-    }
-    sections.push('');
-  }
-
   return sections.join('\n');
 }
 

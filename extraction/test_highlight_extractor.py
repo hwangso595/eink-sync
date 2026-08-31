@@ -993,6 +993,14 @@ class TestRedirectedPdfPages(unittest.TestCase):
                     # PDF page 2 was deleted; logical page 3 was inserted.
                     {0: 2, 1: 0},
                 )
+                invalid_highlights, invalid_warnings = (
+                    extract_highlights_for_document_auto(
+                        doc_uuid,
+                        [page_uuids[0]],
+                        tmpdir,
+                        {0: 99},
+                    )
+                )
 
             self.assertEqual(
                 [(item.page_number, item.text) for item in highlights],
@@ -1002,7 +1010,12 @@ class TestRedirectedPdfPages(unittest.TestCase):
                 [call.args[1] for call in extract_text.call_args_list],
                 [2, 0],
             )
-            self.assertTrue(any("Page 3: inserted page" in item for item in warnings))
+            self.assertEqual(warnings, [])
+            self.assertEqual(invalid_highlights, [])
+            self.assertEqual(
+                invalid_warnings,
+                ["Page 1: page index out of range in PDF"],
+            )
         finally:
             import shutil
             shutil.rmtree(tmpdir)
