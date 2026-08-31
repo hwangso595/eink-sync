@@ -384,6 +384,8 @@ export async function runExtractionPipeline(
         success: true,
         error: null,
         extractedAt: new Date().toISOString(),
+        tags: doc.tags ?? [],
+        pageTags: doc.pageTags ?? {},
       });
     }
   }

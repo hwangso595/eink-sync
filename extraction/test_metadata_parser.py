@@ -171,6 +171,47 @@ class TestParseContentFile(unittest.TestCase):
         self.assertEqual(result.page_uuids, ["page-1"])
         self.assertIsNone(result.page_redir)
 
+    def test_parses_document_tags_from_tablet_content(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".content", delete=False
+        ) as f:
+            json.dump({
+                "fileType": "pdf",
+                "pages": [],
+                "tags": [
+                    {"name": " Research "},
+                    "Review later",
+                    {"name": ""},
+                    {"unexpected": "ignored"},
+                    42,
+                ],
+                "pageTags": [
+                    {"pageId": " page-1 ", "name": " Calculus "},
+                    {"pageId": "page-1", "name": "Exam"},
+                    {"pageId": "", "name": "ignored"},
+                    {"pageId": "page-2", "name": 42},
+                ],
+            }, f)
+            f.flush()
+            result = parse_content_file(f.name)
+
+        os.unlink(f.name)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.tags, ["Research", "Review later"])
+        self.assertEqual(result.page_tags, {"page-1": ["Calculus", "Exam"]})
+
+    def test_ignores_non_list_document_tags(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".content", delete=False
+        ) as f:
+            json.dump({"fileType": "pdf", "pages": [], "tags": None}, f)
+            f.flush()
+            result = parse_content_file(f.name)
+
+        os.unlink(f.name)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.tags, [])
+
     def test_returns_none_for_missing_file(self):
         result = parse_content_file("/nonexistent/path.content")
         self.assertIsNone(result)

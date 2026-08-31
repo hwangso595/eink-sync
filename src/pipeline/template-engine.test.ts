@@ -188,6 +188,27 @@ describe('renderTemplate', () => {
     const result = renderTemplate(template, ctx);
     expect(result).toBe('#remarkable #highlights');
   });
+
+  it('should render {{tags}} as valid Obsidian hashtags', () => {
+    const template = '{{tags}}';
+    const ctx = makeContext({
+      tags: [' Follow up ', '#Research', '2026', '!!!', 'follow-up', '👨‍💻'],
+    });
+
+    expect(renderTemplate(template, ctx)).toBe(
+      '#Follow-up #Research #_2026 #👨‍💻',
+    );
+  });
+
+  it('should render empty {{tags}} as empty text', () => {
+    expect(renderTemplate('before{{tags}}after', makeContext({ tags: [] })))
+      .toBe('beforeafter');
+  });
+
+  it('should not emit hashtags when the template omits {{tags}}', () => {
+    expect(renderTemplate('No tag placeholder', makeContext()))
+      .toBe('No tag placeholder');
+  });
 });
 
 // -------------------------------------------------------------------
@@ -360,6 +381,53 @@ describe('TemplateMarkdownRenderer - OCR in note templates', () => {
 });
 
 describe('TemplateMarkdownRenderer', () => {
+  it('places configured and reMarkable tags only at {{tags}}', () => {
+    const template = [
+      'Outside',
+      '<!-- eink-sync:start -->',
+      '{{tags}}',
+      '<!-- eink-sync:end -->',
+    ].join('\n');
+    const renderer = new TemplateMarkdownRenderer(
+      template,
+      'pdfpp',
+      ['inbox', 'follow-up'],
+    );
+    const result = makeExtractionResult([]);
+    result.tags = ['Follow up', 'Research', 'Research'];
+    result.pageTags = { pageOne: ['Linear algebra', 'Research'] };
+
+    const output = renderer.render(result, 'Test Document.pdf');
+
+    expect(output).toContain('#inbox #follow-up #Research #Linear-algebra');
+    expect(output.indexOf('#inbox')).toBeGreaterThan(output.indexOf('eink-sync:start'));
+    expect(output.indexOf('#inbox')).toBeLessThan(output.indexOf('eink-sync:end'));
+  });
+
+  it('refreshes {{tags}} inside the managed section on merge', () => {
+    const template = [
+      '# {{title}}',
+      '<!-- eink-sync:start -->',
+      '{{tags}}',
+      '<!-- eink-sync:end -->',
+    ].join('\n');
+    const renderer = new TemplateMarkdownRenderer(template);
+    const oldResult = makeExtractionResult([]);
+    oldResult.tags = ['Old tag'];
+    const existing = renderer.render(oldResult, 'Test Document.pdf');
+    const newResult = makeExtractionResult([]);
+    newResult.tags = ['New tag'];
+
+    const merged = renderer.mergeWithExisting(
+      existing,
+      newResult,
+      'Test Document.pdf',
+    );
+
+    expect(merged).toContain('#New-tag');
+    expect(merged).not.toContain('#Old-tag');
+  });
+
   it('should render a complete note from the default template', () => {
     const renderer = new TemplateMarkdownRenderer(DEFAULT_TEMPLATE, 'pdfpp', ['test']);
     const result = makeExtractionResult([

@@ -8,7 +8,9 @@
  *   {{date}}        -- Date of extraction (YYYY-MM-DD)
  *   {{source_pdf}}  -- Source PDF filename
  *   {{page}}        -- Page number (within highlight iteration)
- *   {{tags}}        -- Tags as YAML list or inline
+ *   {{tags}}        -- Document and page tags as Obsidian hashtags
+ *   {{tags_yaml}}   -- Document and page tags as a YAML list
+ *   {{tags_inline}} -- Document and page tags as comma-separated text
  *   {{uuid}}        -- Document UUID
  *   {{highlight_count}} -- Total number of highlights
  *
@@ -64,6 +66,32 @@ function formatOcrCallout(text: string): string {
  */
 function neutralizeTemplateTokens(text: string): string {
   return text.replace(/\{\{/g, '{ {').replace(/\}\}/g, '} }');
+}
+
+/** Convert tablet/default tag names into valid, deduplicated Obsidian hashtags. */
+function formatObsidianTags(tags: string[]): string {
+  const formatted: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawTag of tags) {
+    let tag = rawTag
+      .normalize('NFKC')
+      .trim()
+      .replace(/^#+/u, '')
+      .replace(/\s+/gu, '-')
+      .replace(/[^\p{L}\p{N}\p{M}\p{S}_/\-\u200D]+/gu, '-')
+      .replace(/-+/g, '-')
+      .replace(/^[-/]+|[-/]+$/g, '');
+    if (!tag) continue;
+    if (/^\p{N}+$/u.test(tag)) tag = `_${tag}`;
+
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    formatted.push(`#${tag}`);
+  }
+
+  return formatted.join(' ');
 }
 
 /** Variables available in the template context. */
@@ -139,8 +167,7 @@ export function buildTemplateContext(
  * 1. {{#each highlights}} ... {{/each}} blocks
  * 2. {{#if variable}} ... {{/if}} conditionals
  * 3. Simple {{variable}} substitution
- * 4. {{tags_yaml}} -- tags as YAML list lines
- * 5. {{tags_inline}} -- tags as comma-separated string
+ * 4. Tag placeholders in YAML, plain-text, or Obsidian hashtag form
  */
 export function renderTemplate(
   template: string,
@@ -305,9 +332,11 @@ function substituteVariables(template: string, context: TemplateContext): string
   output = output.replace(/\{\{tags_inline\}\}/g, context.tags.join(', '));
 
   // Tags as hashtags
+  const obsidianTags = formatObsidianTags(context.tags);
   output = output.replace(/\{\{tags_hashtags\}\}/g, () => {
-    return context.tags.map((t) => `#${t}`).join(' ');
+    return obsidianTags;
   });
+  output = output.replace(/\{\{tags\}\}/g, obsidianTags);
 
   return output;
 }
@@ -429,8 +458,13 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     pageOcr?: PageOcr | null,
   ): string {
     const pdfName = sourcePdfName ?? `${result.document.visibleName}.pdf`;
-    // Merge default tags with document-level tags, deduplicating
-    const allTags = [...new Set([...this.tags, ...(result.tags ?? [])])];
+    // An Obsidian note represents the whole tablet document, so expose both
+    // document tags and tags attached to individual pages at the note level.
+    const tabletTags = [
+      ...(result.tags ?? []),
+      ...Object.values(result.pageTags ?? {}).flat(),
+    ];
+    const allTags = [...new Set([...this.tags, ...tabletTags])];
     const context = buildTemplateContext(
       result,
       pdfName,

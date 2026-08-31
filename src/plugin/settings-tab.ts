@@ -1023,7 +1023,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     // ----- Template -----
     new Setting(containerEl)
       .setName('Template file')
-      .setDesc('Vault path for the highlight-note template. A default template is created when needed.')
+      .setDesc('Vault path for the highlight-note template. Add {{tags}} inside its managed section to show reMarkable tags as Obsidian tags; remove it to hide them.')
       .addText((text) =>
         text
           .setPlaceholder('reMarkable/template.md')
@@ -1172,7 +1172,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
     new Setting(advancedEl)
       .setName('Tags (optional)')
-      .setDesc('Comma-separated tags added to notes. Leave empty for no tags.')
+      .setDesc('Extra comma-separated tags available to template tag variables alongside reMarkable tags.')
       .addText((text) =>
         text
           .setPlaceholder('remarkable, highlights')

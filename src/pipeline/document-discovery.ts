@@ -34,6 +34,36 @@ interface ParsedContent {
   fileType: string;
   pageCount: number;
   pageUuids: string[];
+  tags: string[];
+  pageTags: Record<string, string[]>;
+}
+
+function parseDocumentTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry): string[] => {
+    const name = typeof entry === 'string'
+      ? entry
+      : isRecord(entry) && typeof entry.name === 'string'
+        ? entry.name
+        : '';
+    const trimmed = name.trim();
+    return trimmed ? [trimmed] : [];
+  });
+}
+
+function parsePageTags(value: unknown): Record<string, string[]> {
+  if (!Array.isArray(value)) return {};
+  const pageTags: Record<string, string[]> = {};
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.pageId !== 'string' || typeof entry.name !== 'string') {
+      continue;
+    }
+    const pageId = entry.pageId.trim();
+    const name = entry.name.trim();
+    if (!pageId || !name) continue;
+    (pageTags[pageId] ??= []).push(name);
+  }
+  return pageTags;
 }
 
 /**
@@ -95,6 +125,8 @@ function parseContentFile(filePath: string): ParsedContent | null {
       fileType: typeof data.fileType === 'string' ? data.fileType : '',
       pageCount: typeof data.pageCount === 'number' ? data.pageCount : pageUuids.length,
       pageUuids,
+      tags: parseDocumentTags(data.tags),
+      pageTags: parsePageTags(data.pageTags),
     };
   } catch {
     logger.warn(`Failed to parse content: ${filePath}`);
@@ -261,6 +293,8 @@ export function discoverDocumentsWithStatus(xochitlPath: string): DiscoveryResul
       pageCount: content.pageCount,
       pageUuids: content.pageUuids,
       hasPdf,
+      tags: content.tags,
+      pageTags: content.pageTags,
     });
 
     logger.debug(

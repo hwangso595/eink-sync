@@ -167,11 +167,16 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
 
         # Parse document-level tags
         doc_tags: list[str] = []
-        for tag in data.get("tags", []):
+        raw_tags = data.get("tags", [])
+        if not isinstance(raw_tags, list):
+            raw_tags = []
+        for tag in raw_tags:
             if isinstance(tag, dict):
-                doc_tags.append(tag.get("name", ""))
+                name = tag.get("name", "")
+                if isinstance(name, str):
+                    doc_tags.append(name.strip())
             elif isinstance(tag, str):
-                doc_tags.append(tag)
+                doc_tags.append(tag.strip())
         doc_tags = [t for t in doc_tags if t]
 
         # Parse page-level tags
@@ -180,6 +185,14 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
             if isinstance(pt, dict):
                 page_id = pt.get("pageId", "")
                 tag_name = pt.get("name", "")
+                if isinstance(page_id, str):
+                    page_id = page_id.strip()
+                else:
+                    page_id = ""
+                if isinstance(tag_name, str):
+                    tag_name = tag_name.strip()
+                else:
+                    tag_name = ""
                 if page_id and tag_name:
                     if page_id not in page_tags_map:
                         page_tags_map[page_id] = []

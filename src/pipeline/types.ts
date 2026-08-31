@@ -31,6 +31,10 @@ export interface ReMarkableDocument {
   pageUuids: string[];
   /** Whether the source PDF is present (for PDF documents). */
   hasPdf: boolean;
+  /** Document-level tags read from the tablet's .content file. */
+  tags?: string[];
+  /** Page-level tags keyed by tablet page UUID. */
+  pageTags?: Record<string, string[]>;
 }
 
 /** A single highlight extracted from a PDF annotation. */

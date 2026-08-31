@@ -212,6 +212,38 @@ describe('runExtractionPipeline with injected dependencies', () => {
     expect(writtenContent).toContain('Important finding');
   });
 
+  it('preserves discovered notebook tags in the renderer input', async () => {
+    const doc = createMockDocument({
+      type: 'notebook',
+      hasPdf: false,
+      pageCount: 0,
+      pageUuids: [],
+      tags: ['Research', 'Review later'],
+      pageTags: { pageOne: ['Calculus'] },
+    });
+    let renderedTags: string[] | undefined;
+    let renderedPageTags: Record<string, string[]> | undefined;
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: { extractHighlights: async () => [] },
+      renderer: {
+        render: (result) => {
+          renderedTags = result.tags;
+          renderedPageTags = result.pageTags;
+          return `Tags: ${(result.tags ?? []).join(', ')}`;
+        },
+        mergeWithExisting: (existing) => existing,
+      },
+    });
+
+    const run = await runExtractionPipeline(makeConfig(), deps);
+
+    expect(renderedTags).toEqual(['Research', 'Review later']);
+    expect(renderedPageTags).toEqual({ pageOne: ['Calculus'] });
+    expect(fs.readFileSync(run.outputFiles[0], 'utf-8'))
+      .toContain('Tags: Research, Review later');
+  });
+
   it('handles extraction error gracefully', async () => {
     const doc = createMockDocument();
     const extraction = createMockExtractionResult(doc, [], {

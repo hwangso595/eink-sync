@@ -56,6 +56,20 @@ describe('computeTrashedUuids', () => {
   });
 });
 
+describe('captured tablet tag fixture', () => {
+  it('reads real page tags from a firmware 3.x .content file', () => {
+    const fixtureDir = path.resolve(__dirname, '../../test-data/xochitl');
+    const doc = discoverDocuments(fixtureDir).find(
+      (entry) => entry.uuid === 'a9f3e41f-1c5c-4bf8-87cd-1b6764a9e9db',
+    );
+
+    expect(doc).toBeDefined();
+    expect(doc?.pageTags).toEqual({
+      '696087c1-fdc5-4bf8-8564-6984811de4c2': ['ml', 'rl'],
+    });
+  });
+});
+
 describe('discoverDocuments', () => {
   let tmpDir: string;
 
@@ -143,6 +157,32 @@ describe('discoverDocuments', () => {
     expect(docs).toHaveLength(1);
     expect(docs[0].type).toBe('notebook');
     expect(docs[0].visibleName).toBe('My Notes');
+  });
+
+  it('reads document tags for notebooks as strings and tag objects', () => {
+    writeJson(tmpDir, 'tagged-notebook.metadata', {
+      visibleName: 'Tagged Notes',
+      parent: '',
+      type: 'DocumentType',
+      lastModified: '1700000000000',
+      deleted: false,
+    });
+    writeJson(tmpDir, 'tagged-notebook.content', {
+      fileType: '',
+      pages: ['n1'],
+      tags: [' Review ', { name: 'Machine learning' }, { name: '' }, 7],
+      pageTags: [
+        { pageId: 'n1', name: ' Calculus ' },
+        { pageId: 'n1', name: 'Exam' },
+        { pageId: '', name: 'ignored' },
+      ],
+    });
+
+    const docs = discoverDocuments(tmpDir);
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0].tags).toEqual(['Review', 'Machine learning']);
+    expect(docs[0].pageTags).toEqual({ n1: ['Calculus', 'Exam'] });
   });
 
   it('excludes folder entries (CollectionType)', () => {

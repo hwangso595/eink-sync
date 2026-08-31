@@ -225,6 +225,10 @@ OCR is **off by default** and requires Tesseract (see Prerequisites). Recognitio
 
 Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) normally render on plain white, because the template art lives on the tablet at `/usr/share/remarkable/templates/` and isn't part of the synced document data. With **Render page templates** on (the default), the plugin fetches that art from the tablet over SFTP during sync and draws each page's template behind its strokes. `Blank` pages are unaffected, and until the art has been fetched (or for Syncthing-only setups) pages simply render on white as before. Planner text labels may be omitted, and fixed PNG/SVG art does not repeat below its native height on vertically scrolled pages. Toggle it in **Settings → Extraction**.
 
+### reMarkable tags
+
+Document and page tags can be placed in generated notes by adding `{{tags}}` inside the template's managed `eink-sync` section. It renders space-separated Obsidian hashtags at that exact location (for example, `linear algebra` becomes `#linear-algebra`). Remove the placeholder to disable tag output.
+
 ---
 
 ## How sync works
