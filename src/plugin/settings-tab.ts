@@ -26,6 +26,7 @@ import { collisionKey } from './vault-isolation';
 import { isUsableWifiAddress, isValidIpv4 } from './net-utils';
 import { confirmAction } from './confirmation-modal';
 import { BridgeError } from '../types/errors';
+import { blurFocusedDescendant, commitTextOnBlurOrEnter } from './text-input-commit';
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -47,6 +48,9 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
 
   display(): void {
     const { containerEl } = this;
+    // Async settings actions may re-render while the user is editing a path.
+    // Flush that draft before removing its input from the DOM.
+    blurFocusedDescendant(containerEl);
     containerEl.empty();
 
     // ===== Collision / Outside-vault Warnings =====
@@ -64,6 +68,11 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     this.renderActionsSection(containerEl);
 
     this.renderAdvancedSection(containerEl);
+  }
+
+  hide(): void {
+    blurFocusedDescendant(this.containerEl);
+    super.hide();
   }
 
   // -------------------------------------------------------------------
@@ -730,16 +739,16 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     new Setting(sourceEl)
       .setName('Sync folder')
       .setDesc('Path to the synced xochitl directory')
-      .addText((text) =>
+      .addText((text) => {
         text
           .setPlaceholder('reMarkable/Sync')
-          .setValue(source.syncFolder)
-          .onChange((value) => {
-            const trimmed = value.trim();
-            if (!trimmed || trimmed === source.syncFolder) return;
-            this.handleSourceFolderChange(source, trimmed, text.inputEl);
-          }),
-      );
+          .setValue(source.syncFolder);
+        commitTextOnBlurOrEnter(
+          text,
+          () => source.syncFolder,
+          (value) => this.handleSourceFolderChange(source, value, text.inputEl),
+        );
+      });
 
     // Syncthing folder ID; only shown when using Syncthing
     if ((this.plugin.settings.syncMethod ?? 'sftp') === 'syncthing') {
@@ -993,49 +1002,49 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName('Highlights folder')
       .setDesc('Extracted highlight notes are saved here.')
-      .addText((text) =>
+      .addText((text) => {
         text
           .setPlaceholder('reMarkable/Highlights')
-          .setValue(this.plugin.settings.highlightsFolder)
-          .onChange((value) => {
-            const trimmed = value.trim();
-            if (!trimmed || trimmed === this.plugin.settings.highlightsFolder) return;
-
-            this.handleFolderChange('highlightsFolder', trimmed, text.inputEl);
-          }),
-      );
+          .setValue(this.plugin.settings.highlightsFolder);
+        commitTextOnBlurOrEnter(
+          text,
+          () => this.plugin.settings.highlightsFolder,
+          (value) => this.handleFolderChange('highlightsFolder', value, text.inputEl),
+        );
+      });
 
     new Setting(containerEl)
       .setName('Archive folder')
       .setDesc('Archived documents are moved here.')
-      .addText((text) =>
+      .addText((text) => {
         text
           .setPlaceholder('reMarkable/Archive')
-          .setValue(this.plugin.settings.archiveFolder)
-          .onChange((value) => {
-            const trimmed = value.trim();
-            if (!trimmed || trimmed === this.plugin.settings.archiveFolder) return;
-
-            this.handleFolderChange('archiveFolder', trimmed, text.inputEl);
-          }),
-      );
+          .setValue(this.plugin.settings.archiveFolder);
+        commitTextOnBlurOrEnter(
+          text,
+          () => this.plugin.settings.archiveFolder,
+          (value) => this.handleFolderChange('archiveFolder', value, text.inputEl),
+        );
+      });
 
     // ----- Template -----
     new Setting(containerEl)
       .setName('Template file')
-      .setDesc('Vault path for the highlight-note template. Add {{tags}} inside its managed section to show reMarkable tags as Obsidian tags; remove it to hide them.')
-      .addText((text) =>
+      .setDesc('Vault path for the highlight-note template. Changes apply after Enter or when you leave the field. Add {{tags}} inside its managed section to show reMarkable tags as Obsidian tags; remove it to hide them.')
+      .addText((text) => {
         text
           .setPlaceholder('reMarkable/template.md')
-          .setValue(this.plugin.settings.templatePath)
-          .onChange(async (value) => {
-            const trimmed = value.trim();
-            if (!trimmed) return;
-            this.plugin.settings.templatePath = trimmed;
+          .setValue(this.plugin.settings.templatePath);
+        commitTextOnBlurOrEnter(
+          text,
+          () => this.plugin.settings.templatePath,
+          async (value) => {
+            this.plugin.settings.templatePath = value;
             await this.plugin.saveSettings();
             await this.plugin.ensureDefaultTemplate();
-          }),
-      );
+          },
+        );
+      });
   }
 
   /**
