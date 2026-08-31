@@ -55,6 +55,7 @@ import { parseGlobalIpv4, parseRouteSourceIpv4, USB_TABLET_IP } from './net-util
 import {
   commitUsbConnection,
   enableVerifyAndCommitWifiConnection,
+  verifyAndCommitUsbConnection,
   verifyAndCommitWifiConnection,
   type WifiTransitionResult,
 } from './wifi-setup';
@@ -668,13 +669,16 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async connectAndVerifyUsb(
     onProgress?: ProgressCallback,
   ): Promise<ConnectionResult> {
-    return connectAndVerify(
-      {
-        ...this.buildSSHConfig(),
-        host: USB_TABLET_IP,
-        method: 'usb',
-      },
-      onProgress,
+    const config = {
+      ...this.buildSSHConfig(),
+      host: USB_TABLET_IP,
+      method: 'usb' as const,
+    };
+    return verifyAndCommitUsbConnection(
+      this.settings,
+      () => connectAndVerify(config, onProgress),
+      () => this.saveSettings(),
+      (result) => result.success,
     );
   }
 

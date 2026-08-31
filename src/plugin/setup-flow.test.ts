@@ -3,6 +3,7 @@ import type { DeviceArchitecture, DeviceInfo, DeviceModel } from '../types/devic
 import { BridgeError, ErrorCode } from '../types/errors';
 import type { SyncMethodSetting } from './settings';
 import {
+  resolveWizardConnectionTarget,
   SetupFlowController,
   supportsAutomaticSyncthingInstall,
 } from './setup-flow';
@@ -22,6 +23,7 @@ function device(model: DeviceModel, architecture: DeviceArchitecture): DeviceInf
 function connection(
   info: DeviceInfo | null,
   preflightPassed = true,
+  automaticSyncthingInstallReady = true,
 ): ConnectionResult {
   return {
     success: info !== null && preflightPassed,
@@ -37,6 +39,7 @@ function connection(
         minFreeMemoryMB: 100,
         minFreeStorageMB: 50,
       },
+      automaticSyncthingInstallReady,
       timestamp: '2026-08-30T00:00:00.000Z',
     },
     summary: info ? 'Detected' : 'SSH failed',
@@ -56,6 +59,34 @@ function flow(initialMethod: SyncMethodSetting) {
   const persist = jest.fn(async () => undefined);
   return { settings, persist, controller: new SetupFlowController(settings, persist) };
 }
+
+describe('setup connection routing', () => {
+  it('reuses the selected verified WiFi endpoint', () => {
+    expect(resolveWizardConnectionTarget('wifi', '192.168.1.44', '')).toEqual({
+      method: 'wifi',
+      host: '192.168.1.44',
+      requiresWifiSelection: false,
+    });
+  });
+
+  it('keeps USB as the default', () => {
+    expect(resolveWizardConnectionTarget('usb', '10.11.99.1', '')).toEqual({
+      method: 'usb',
+      host: '10.11.99.1',
+      requiresWifiSelection: false,
+    });
+  });
+
+  it('routes an explicit manual IPv4 fallback through verification', () => {
+    expect(resolveWizardConnectionTarget('usb', '10.11.99.1', ' 192.168.1.55 ')).toEqual({
+      method: 'wifi',
+      host: '192.168.1.55',
+      requiresWifiSelection: true,
+    });
+    expect(() => resolveWizardConnectionTarget('usb', '10.11.99.1', 'tablet.local'))
+      .toThrow('not a usable WiFi IPv4 address');
+  });
+});
 
 describe('SetupFlowController device route integration', () => {
   it.each<[DeviceModel, DeviceArchitecture, boolean]>([
@@ -107,6 +138,46 @@ describe('SetupFlowController device route integration', () => {
     expect(controller.stepStates.get(1)?.verified).toBe(true);
     expect(controller.stepStates.get(2)?.verified).toBe(false);
     expect(controller.stepStates.get(2)?.message).toContain('required pre-flight checks failed');
+  });
+
+  it('completes low-resource rM2 detection for the SFTP route', async () => {
+    const { controller } = flow('sftp');
+    await controller.recordConnection(connection(device('reMarkable2', 'armv7'), true, false));
+
+    expect(controller.stepStates.get(1)?.verified).toBe(true);
+    expect(controller.stepStates.get(2)).toMatchObject({
+      verified: true,
+      message: 'Device detected and all required pre-flight checks passed.',
+    });
+  });
+
+  it('fails low-resource Syncthing readiness before invoking the installer', async () => {
+    const { controller } = flow('syncthing');
+    await controller.recordConnection(connection(device('reMarkable2', 'armv7'), true, false));
+    const install = jest.fn(async () => undefined);
+
+    expect(controller.stepStates.get(2)).toMatchObject({
+      verified: false,
+      message: expect.stringContaining('resource checks'),
+    });
+    await expect(controller.installLegacySyncStack(install)).rejects.toThrow(
+      'pre-flight resource checks',
+    );
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it('blocks switching a low-resource SFTP detection to Syncthing', async () => {
+    const { controller, settings, persist } = flow('sftp');
+    await controller.recordConnection(connection(device('reMarkable2', 'armv7'), true, false));
+
+    await expect(controller.selectSyncMethod('syncthing')).rejects.toThrow(
+      'pre-flight resource checks',
+    );
+
+    expect(settings.syncMethod).toBe('sftp');
+    expect(controller.stepStates.get(2)?.verified).toBe(true);
+    expect(controller.activeSteps).toEqual([1, 2, 5]);
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it('keeps a transport/detection failure on the connection step', async () => {
@@ -182,6 +253,27 @@ describe('SetupFlowController device route integration', () => {
 
     expect(settings.syncMethod).toBe('syncthing');
     expect(settings.setupComplete).toBe(false);
+  });
+
+  it('preserves completed SFTP until Syncthing is explicitly selected in the wizard', async () => {
+    const settings = {
+      syncMethod: 'sftp' as SyncMethodSetting,
+      setupComplete: true,
+      syncFolder: 'reMarkable/Sync',
+      syncthingApiKey: 'api-key',
+      syncthingUrl: 'http://127.0.0.1:8384',
+      syncthingFolderId: 'remarkable-xochitl',
+    };
+    const persist = jest.fn(async () => undefined);
+    const controller = new SetupFlowController(settings, persist);
+
+    await controller.recordConnection(connection(device('reMarkable2', 'armv7')));
+    expect(settings).toMatchObject({ syncMethod: 'sftp', setupComplete: true });
+    expect(persist).not.toHaveBeenCalled();
+
+    await controller.selectSyncMethod('syncthing');
+    expect(settings).toMatchObject({ syncMethod: 'syncthing', setupComplete: false });
+    expect(persist).toHaveBeenCalledTimes(1);
   });
 
   it('verifies Syncthing pairing through its API even when the library is empty', async () => {

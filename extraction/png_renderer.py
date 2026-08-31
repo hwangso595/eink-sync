@@ -44,7 +44,7 @@ from stroke_renderer import (
 
 # Bump whenever pixel-affecting renderer behavior changes. render_pages.py
 # includes this in its cache settings so stale images are regenerated.
-PNG_RENDERER_VERSION = 2
+PNG_RENDERER_VERSION = 3
 
 
 def _require_fitz() -> None:

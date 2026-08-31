@@ -57,6 +57,18 @@ def test_reads_scene_info_paper_size(tmp_path, monkeypatch):
     assert geometry.cache_key == "1620x2160"
 
 
+def test_last_valid_scene_info_is_current_state(tmp_path, monkeypatch):
+    rm_path = tmp_path / "page.rm"
+    rm_path.write_bytes(b"fixture")
+    first = type("SceneInfo", (), {"paper_size": (1404, 1872)})()
+    invalid = type("SceneInfo", (), {"paper_size": (0, 0)})()
+    latest = type("SceneInfo", (), {"paper_size": (1620, 2160)})()
+    monkeypatch.setattr(pg, "SceneInfo", None)
+    monkeypatch.setattr(pg, "read_blocks", lambda _: [first, invalid, latest])
+
+    assert pg.read_page_geometry(str(rm_path)).cache_key == "1620x2160"
+
+
 def test_missing_scene_info_uses_legacy_fallback(tmp_path, monkeypatch):
     rm_path = tmp_path / "page.rm"
     rm_path.write_bytes(b"fixture")

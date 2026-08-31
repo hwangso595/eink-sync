@@ -20,6 +20,7 @@ import * as path from 'path';
 import type ReMarkableBridgePlugin from './plugin';
 import { BridgeError } from '../types/errors';
 import {
+  resolveWizardConnectionTarget,
   SetupFlowController,
   supportsAutomaticSyncthingInstall,
   type StepState,
@@ -28,6 +29,7 @@ import {
 
 export class SetupWizardModal extends Modal {
   private readonly flow: SetupFlowController;
+  private manualWifiAddress = '';
 
   constructor(
     app: App,
@@ -162,18 +164,26 @@ export class SetupWizardModal extends Modal {
     new Setting(containerEl).setName('Step 1: Connect to your reMarkable').setHeading();
     containerEl.createEl('p', {
       text:
-        'Connect your tablet via USB and enter the root password. ' +
+        'Enter the root password and connect your tablet. USB is the default. ' +
+        'If you already selected a verified WiFi address in settings, this wizard reuses it. ' +
         'Find the password on the tablet’s Copyrights and licenses screen. ' +
         'Paper Pro, Paper Pro Move, and Paper Pure require Developer Mode before SSH is available. ' +
         'Enabling Developer Mode factory-resets those devices, so sync or back up their files first. ' +
-        'The plugin verifies USB first; enabling WiFi afterward is a separate explicit action.',
+        'The plugin verifies the selected connection before continuing.',
     });
 
     const settings = this.plugin.settings;
     const state = this.stepStates.get(1)!;
 
+    const selectedTarget = resolveWizardConnectionTarget(
+      settings.connectionMethod,
+      settings.tabletIp,
+      '',
+    );
     containerEl.createEl('p', {
-      text: 'Plug in your reMarkable via USB cable, then enter the root password below.',
+      text: selectedTarget.method === 'wifi'
+        ? `The wizard will use the verified WiFi address ${selectedTarget.host}.`
+        : 'Plug in your reMarkable via USB cable, then enter the root password below.',
       cls: 'remarkable-wizard-hint',
     });
 
@@ -191,6 +201,23 @@ export class SetupWizardModal extends Modal {
         text.inputEl.type = 'password';
         text.inputEl.autocomplete = 'off';
       });
+
+    new Setting(containerEl)
+      .setName('Manual WiFi address (optional)')
+      .setDesc(
+        'Use this IPv4 fallback only when USB networking is unavailable. ' +
+        'The plugin tests it before saving or switching connections.',
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder('192.168.1.42')
+          .setValue(this.manualWifiAddress)
+          .onChange((value) => {
+            this.manualWifiAddress = value;
+            state.verified = false;
+            state.message = '';
+          }),
+      );
 
     // Verify button and status
     const verifyContainer = containerEl.createDiv({ cls: 'remarkable-wizard-verify' });
@@ -217,14 +244,21 @@ export class SetupWizardModal extends Modal {
             statusEl.setText('Establishing SSH connection...');
 
             try {
-              // Setup always starts from the fixed USB endpoint. This avoids a
-              // stale saved WiFi address changing which tablet is detected.
-              await this.plugin.useUsbConnection();
-              const result = await this.plugin.connectAndVerifyUsb(
-                (step: string, detail: string) => {
-                  statusEl.setText(`${step}: ${detail}`);
-                },
+              const target = resolveWizardConnectionTarget(
+                settings.connectionMethod,
+                settings.tabletIp,
+                this.manualWifiAddress,
               );
+              const onProgress = (step: string, detail: string): void => {
+                statusEl.setText(`${step}: ${detail}`);
+              };
+
+              if (target.method === 'wifi' && target.requiresWifiSelection) {
+                await this.plugin.useVerifiedWifiAddress(target.host);
+              }
+              const result = target.method === 'wifi'
+                ? await this.plugin.connectAndVerify(onProgress)
+                : await this.plugin.connectAndVerifyUsb(onProgress);
               const routing = await this.flow.recordConnection(result);
               if (routing.changed) {
                 new Notice(routing.message ?? 'SFTP selected for this tablet.');
@@ -384,9 +418,9 @@ export class SetupWizardModal extends Modal {
     } else {
       statusEl.addClass('is-error');
       statusEl.setText(
-        report?.passed === false
+        state.message || (report?.passed === false
           ? 'Required pre-flight checks failed. Resolve the failed checks, then go back and verify again.'
-          : 'Detection incomplete.',
+          : 'Detection incomplete.'),
       );
     }
   }

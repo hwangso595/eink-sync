@@ -324,8 +324,42 @@ export async function verifyAndCommitWifiConnection(
   persist: () => Promise<void>,
   dependencies: WifiSetupDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<void> {
-  await verifyWifiEndpoint(baseConfig, host, undefined, dependencies);
+  const endpointFingerprint = dependencies.getPinnedFingerprint(host);
+  const usbFingerprint = dependencies.getPinnedFingerprint(USB_TABLET_IP);
+  // The authenticated USB identity is authoritative when available. This also
+  // prevents a stale TOFU pin from an earlier failed password attempt from
+  // overriding the exact device key.
+  const expectedFingerprint = usbFingerprint ?? endpointFingerprint ?? undefined;
+
+  await verifyWifiEndpoint(baseConfig, host, expectedFingerprint, dependencies);
+
+  // A new manual address verified against the authenticated USB identity must
+  // become a remembered endpoint. Exact verification deliberately does not
+  // TOFU-pin by itself.
+  if (usbFingerprint && endpointFingerprint !== usbFingerprint) {
+    if (!dependencies.rememberAlias(USB_TABLET_IP, host)) {
+      throw new BridgeError(
+        ErrorCode.SSH_COMMAND_FAILED,
+        'The verified WiFi endpoint could not be linked to the USB tablet identity.',
+        'Keep using USB and retry WiFi setup.',
+      );
+    }
+  }
   await commitVerifiedWifiConnection(settings, host, persist);
+}
+
+/** Verify the fixed USB endpoint before committing it as the selected transport. */
+export async function verifyAndCommitUsbConnection<T>(
+  settings: MutableConnectionSettings,
+  verify: () => Promise<T>,
+  persist: () => Promise<void>,
+  isVerified: (result: T) => boolean = () => true,
+): Promise<T> {
+  const result = await verify();
+  if (isVerified(result)) {
+    await commitUsbConnection(settings, persist);
+  }
+  return result;
 }
 
 /** Select the fixed USB endpoint while retaining the last verified WiFi IP. */
@@ -339,6 +373,5 @@ export async function commitUsbConnection(
   }
   settings.tabletIp = USB_TABLET_IP;
   settings.connectionMethod = 'usb';
-  settings.autoSyncEnabled = false;
   await persistWithRollback(settings, previous, persist);
 }

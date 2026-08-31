@@ -122,11 +122,17 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
         page_templates: list[str] = []
         page_redir: dict[int, int] = {}
         c_pages = data.get("cPages", None)
+        has_v6_pages = (
+            isinstance(c_pages, dict)
+            and isinstance(c_pages.get("pages"), list)
+        )
 
         # v6 format uses cPages.pages[].id
-        if c_pages and "pages" in c_pages:
+        if has_v6_pages:
             live_idx = 0
             for page in c_pages["pages"]:
+                if not isinstance(page, dict):
+                    continue
                 # Skip deleted/tombstoned pages
                 if page.get("deleted", False):
                     continue
@@ -187,7 +193,7 @@ def parse_content_file(filepath: str) -> Optional[DocumentContent]:
         resolved_page_redir: Optional[dict[int, int]] = (
             page_redir
             if page_redir
-            else {} if c_pages is not None and file_type in ("pdf", "epub") else None
+            else {} if has_v6_pages and file_type in ("pdf", "epub") else None
         )
 
         return DocumentContent(

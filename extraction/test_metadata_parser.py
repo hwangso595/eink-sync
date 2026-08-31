@@ -143,6 +143,34 @@ class TestParseContentFile(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.page_redir, {})
 
+    def test_empty_cpages_uses_legacy_pdf_backing(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".content", delete=False
+        ) as f:
+            json.dump({"fileType": "pdf", "pages": ["page-1"], "cPages": {}}, f)
+            f.flush()
+            result = parse_content_file(f.name)
+
+        os.unlink(f.name)
+        self.assertEqual(result.page_uuids, ["page-1"])
+        self.assertIsNone(result.page_redir)
+
+    def test_unknown_cpages_schema_uses_legacy_pdf_backing(self):
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".content", delete=False
+        ) as f:
+            json.dump({
+                "fileType": "pdf",
+                "pages": ["page-1"],
+                "cPages": {"unknownPages": []},
+            }, f)
+            f.flush()
+            result = parse_content_file(f.name)
+
+        os.unlink(f.name)
+        self.assertEqual(result.page_uuids, ["page-1"])
+        self.assertIsNone(result.page_redir)
+
     def test_returns_none_for_missing_file(self):
         result = parse_content_file("/nonexistent/path.content")
         self.assertIsNone(result)

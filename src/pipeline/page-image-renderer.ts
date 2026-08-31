@@ -29,9 +29,10 @@ interface RenderedPage {
   ocr_text?: string;
 }
 
-interface RenderOutput {
+export interface RenderOutput {
   success: boolean;
   pages: RenderedPage[];
+  failed_pages: number[];
   errors?: string[];
 }
 
@@ -75,16 +76,27 @@ function parseRenderOutput(json: string): RenderOutput {
     throw new Error('Invalid render_pages output structure');
   }
   const pages = value.pages;
+  const failedPages = value.failed_pages;
   const errors = value.errors;
   if (!Array.isArray(pages) || !pages.every(isRenderedPage)) {
     throw new Error('Invalid render_pages page data');
+  }
+  if (!Array.isArray(failedPages) || !failedPages.every(
+    (page) => typeof page === 'number' && Number.isInteger(page) && page > 0,
+  )) {
+    throw new Error('Invalid render_pages failed page data');
   }
   if (errors !== undefined && (
     !Array.isArray(errors) || !errors.every((error) => typeof error === 'string')
   )) {
     throw new Error('Invalid render_pages error data');
   }
-  return { success: value.success, pages, errors };
+  const uniqueFailedPages = [...new Set(failedPages)];
+  const renderedPageNumbers = new Set(pages.map((page) => page.page_number));
+  if (uniqueFailedPages.some((page) => renderedPageNumbers.has(page))) {
+    throw new Error('Invalid render_pages output: page both rendered and failed');
+  }
+  return { success: value.success, pages, failed_pages: uniqueFailedPages, errors };
 }
 
 /** Result of renderPageImages: page drawings, renderer highlights, and OCR text. */
@@ -93,6 +105,46 @@ export interface PageImageResult {
   rendererHighlights: ExtractedHighlight[];
   /** Map of page number to OCR'd handwriting text (empty unless OCR is enabled). */
   pageOcr: PageOcr;
+  /** Non-fatal per-page render errors when other pages succeeded. */
+  warnings: string[];
+  /** Page numbers that failed while other pages rendered successfully. */
+  failedPageNumbers: number[];
+}
+
+/** Convert a validated Python result while preserving usable partial output. */
+export function pageImageResultFromRenderOutput(parsed: RenderOutput): PageImageResult {
+  if (!parsed.success && parsed.pages.length === 0) {
+    throw new Error(parsed.errors?.join('; ') || 'render_pages failed');
+  }
+
+  const pageDrawings: PageDrawings = new Map();
+  const rendererHighlights: ExtractedHighlight[] = [];
+  const pageOcr: PageOcr = new Map();
+  for (const page of parsed.pages) {
+    if (page.has_strokes) {
+      pageDrawings.set(page.page_number, page.filename);
+    }
+    for (const text of page.highlight_texts ?? []) {
+      rendererHighlights.push({
+        text,
+        pageNumber: page.page_number,
+        color: 'yellow',
+        bounds: null,
+        createdAt: null,
+      });
+    }
+    const ocrText = page.ocr_text?.trim();
+    if (ocrText) {
+      pageOcr.set(page.page_number, ocrText);
+    }
+  }
+  return {
+    pageDrawings,
+    rendererHighlights,
+    pageOcr,
+    warnings: parsed.errors ?? [],
+    failedPageNumbers: parsed.failed_pages,
+  };
 }
 
 /** Rendering options forwarded to render_pages.py as CLI flags. */
@@ -275,32 +327,7 @@ export async function renderPageImages(
               parsed = parseRenderOutput(jsonLine);
             }
 
-            if (parsed.success) {
-              const map: PageDrawings = new Map();
-              const rendererHighlights: ExtractedHighlight[] = [];
-              const pageOcr: PageOcr = new Map();
-              for (const page of parsed.pages) {
-                if (page.has_strokes) {
-                  map.set(page.page_number, page.filename);
-                }
-                for (const text of page.highlight_texts ?? []) {
-                  rendererHighlights.push({
-                    text,
-                    pageNumber: page.page_number,
-                    color: 'yellow',
-                    bounds: null,
-                    createdAt: null,
-                  });
-                }
-                const ocrText = page.ocr_text?.trim();
-                if (ocrText) {
-                  pageOcr.set(page.page_number, ocrText);
-                }
-              }
-              resolve({ pageDrawings: map, rendererHighlights, pageOcr });
-            } else {
-              reject(new Error(parsed.errors?.join('; ') || 'render_pages failed'));
-            }
+            resolve(pageImageResultFromRenderOutput(parsed));
           } catch (e) {
             reject(new Error(`Failed to parse render_pages output: ${String(e)}`));
           }
@@ -316,8 +343,18 @@ export async function renderPageImages(
     });
 
     logger.info(`Page images rendered: ${pageMap.pageDrawings.size} page(s) with strokes, ${pageMap.rendererHighlights.length} renderer highlight(s)`);
-    // A successful render that produced nothing is a legitimate empty result.
-    return pageMap.pageDrawings.size > 0 || pageMap.rendererHighlights.length > 0 ? pageMap : null;
+    for (const warning of pageMap.warnings) {
+      logger.warn(`${doc.visibleName}: page rendering warning: ${warning}`);
+    }
+    // Keep partial-failure metadata even when the successful pages only
+    // produced OCR (or no visible artifact), so the pipeline can preserve the
+    // failed pages from an existing note.
+    return pageMap.pageDrawings.size > 0
+      || pageMap.rendererHighlights.length > 0
+      || pageMap.pageOcr.size > 0
+      || pageMap.failedPageNumbers.length > 0
+      ? pageMap
+      : null;
   } catch (err) {
     // A genuine render failure (spawn/timeout/exit/parse) on a document that we
     // already confirmed HAS strokes. Propagate it so the pipeline preserves any

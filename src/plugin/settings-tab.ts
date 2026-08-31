@@ -9,7 +9,14 @@
 import * as path from 'path';
 import { App, PluginSettingTab, Setting, Notice, Modal } from 'obsidian';
 import type ReMarkableBridgePlugin from './plugin';
-import { generateSourceId, getSourceTimestamp, type PdfLinkFormat, type SyncMethodSetting, type SyncSource } from './settings';
+import {
+  generateSourceId,
+  getSourceTimestamp,
+  resolveSftpSwitchProbe,
+  type PdfLinkFormat,
+  type SyncMethodSetting,
+  type SyncSource,
+} from './settings';
 import { ensureFolders, updateSyncthingFolderPath, getVaultBasePath, formatRelativeTime } from './helpers';
 import {
   FolderMigrationModal,
@@ -161,7 +168,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
                 const remembered = this.plugin.settings.wifiTabletIp.trim();
                 if (!isUsableWifiAddress(remembered)) {
                   throw new Error(
-                    'No verified WiFi address is saved. Use “Enable & verify WiFi over USB” first.',
+                    'No verified WiFi address is saved. Use automatic USB detection or enter and test a manual WiFi address below.',
                   );
                 }
                 new Notice(`E-Ink Sync: verifying ${remembered} before switching...`);
@@ -212,7 +219,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName('Wireless connection')
         .setDesc(
-          'Connect by USB first. The plugin will explicitly enable WiFi SSH when ' +
+          'For automatic setup, connect by USB first. The plugin will explicitly enable WiFi SSH when ' +
           'supported, discover the tablet address without assuming an interface name, ' +
           'and switch only after verifying it is the same tablet.',
         )
@@ -231,87 +238,100 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
         );
     }
 
-    // 2. Tablet IP; only shown when WiFi selected (USB is always 10.11.99.1)
-    if (isWifi) {
-      let candidateIp = this.plugin.settings.tabletIp;
-      const ipWarnEl = containerEl.createDiv({
-        cls: 'setting-item-description remarkable-field-warning',
-      });
+    // 2. WiFi address. In USB mode this remains available as a manual fallback
+    // when automatic address discovery cannot identify the tablet's route.
+    let candidateIp = isWifi
+      ? this.plugin.settings.tabletIp
+      : this.plugin.settings.wifiTabletIp;
+    const ipWarnEl = containerEl.createDiv({
+      cls: 'setting-item-description remarkable-field-warning',
+    });
+    ipWarnEl.hide();
+
+    // Validate syntax without enumerating host network interfaces. An empty
+    // manual fallback is not an error while USB remains selected.
+    const refreshIpWarnings = (value: string, requireValue = isWifi): void => {
+      const ip = value.trim();
+      if (ip.length === 0) {
+        if (!requireValue) {
+          ipWarnEl.hide();
+          return;
+        }
+        ipWarnEl.setText('Enter the tablet WiFi address, or use the USB detection button.');
+        ipWarnEl.show();
+        return;
+      }
+      if (!isValidIpv4(ip)) {
+        ipWarnEl.setText(`"${ip}" is not a valid IPv4 address (expected e.g. 192.168.1.42).`);
+        ipWarnEl.show();
+        return;
+      }
+      if (!isUsableWifiAddress(ip)) {
+        ipWarnEl.setText(`"${ip}" is not a usable WiFi endpoint.`);
+        ipWarnEl.show();
+        return;
+      }
       ipWarnEl.hide();
+    };
 
-      // Validate syntax without enumerating host network interfaces.
-      const refreshIpWarnings = (value: string): void => {
-        const ip = value.trim();
-        if (ip.length === 0) {
-          ipWarnEl.setText('Enter the tablet WiFi address, or use the USB detection button.');
-          ipWarnEl.show();
-          return;
-        }
-        if (!isValidIpv4(ip)) {
-          ipWarnEl.setText(`"${ip}" is not a valid IPv4 address (expected e.g. 192.168.1.42).`);
-          ipWarnEl.show();
-          return;
-        }
-        if (!isUsableWifiAddress(ip)) {
-          ipWarnEl.setText(`"${ip}" is not a usable WiFi endpoint.`);
-          ipWarnEl.show();
-          return;
-        }
-        ipWarnEl.hide();
-      };
+    const ipSetting = new Setting(containerEl)
+      .setName(isWifi ? 'Tablet IP address' : 'Manual WiFi address')
+      .setDesc(
+        isWifi
+          ? 'Check your tablet\'s network settings for the WiFi IP address.'
+          : 'If USB discovery cannot find the address, enter the IPv4 address shown in the tablet network settings. The plugin verifies SSH and the host key before saving or switching.',
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder('192.168.1.42')
+          .setValue(candidateIp)
+          .onChange((value) => {
+            candidateIp = value.trim();
+            refreshIpWarnings(value);
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('Test & use')
+          .onClick(async () => {
+            const host = candidateIp.trim();
+            if (!isUsableWifiAddress(host)) {
+              refreshIpWarnings(host, true);
+              new Notice('E-Ink Sync: enter a usable WiFi IPv4 address.', 5000);
+              return;
+            }
+            button.setDisabled(true);
+            button.setButtonText('Testing...');
+            try {
+              await this.plugin.useVerifiedWifiAddress(host);
+              new Notice(`E-Ink Sync: verified and saved ${host}.`, 6000);
+            } catch (err) {
+              const message = err instanceof BridgeError
+                ? err.toUserMessage()
+                : err instanceof Error ? err.message : String(err);
+              new Notice(`E-Ink Sync: address not saved. ${message}`, 8000);
+            } finally {
+              button.setDisabled(false);
+              button.setButtonText('Test & use');
+            }
+            this.display();
+          }),
+      );
 
-      new Setting(containerEl)
-        .setName('Tablet IP address')
-        .setDesc('Check your tablet\'s network settings for the WiFi IP address.')
-        .addText((text) =>
-          text
-            .setPlaceholder('192.168.1.42')
-            .setValue(this.plugin.settings.tabletIp)
-            .onChange((value) => {
-              candidateIp = value.trim();
-              refreshIpWarnings(value);
-            }),
-        )
-        .addButton((button) =>
-          button
-            .setButtonText('Test & use')
-            .onClick(async () => {
-              const host = candidateIp.trim();
-              if (!isUsableWifiAddress(host)) {
-                refreshIpWarnings(host);
-                new Notice('E-Ink Sync: enter a usable WiFi IPv4 address.', 5000);
-                return;
-              }
-              button.setDisabled(true);
-              button.setButtonText('Testing...');
-              try {
-                await this.plugin.useVerifiedWifiAddress(host);
-                new Notice(`E-Ink Sync: verified and saved ${host}.`, 6000);
-              } catch (err) {
-                const message = err instanceof BridgeError
-                  ? err.toUserMessage()
-                  : err instanceof Error ? err.message : String(err);
-                new Notice(`E-Ink Sync: address not saved. ${message}`, 8000);
-              } finally {
-                button.setDisabled(false);
-                button.setButtonText('Test & use');
-              }
-              this.display();
-            }),
-        )
-        .addExtraButton((btn) =>
-          btn
-            .setIcon('usb')
-            .setTooltip('Enable and re-detect the tablet WiFi connection over USB')
-            .onClick(async () => {
-              await enableWifiViaUsb();
-            }),
-        );
-
-      // Move the warning element to directly follow the IP setting row.
-      containerEl.append(ipWarnEl);
-      refreshIpWarnings(this.plugin.settings.tabletIp);
+    if (isWifi) {
+      ipSetting.addExtraButton((btn) =>
+        btn
+          .setIcon('usb')
+          .setTooltip('Enable and re-detect the tablet WiFi connection over USB')
+          .onClick(async () => {
+            await enableWifiViaUsb();
+          }),
+      );
     }
+
+    // Move the warning element to directly follow the IP setting row.
+    containerEl.append(ipWarnEl);
+    refreshIpWarnings(candidateIp);
 
     // 3. Root password; always shown (needed for both modes)
     new Setting(containerEl)
@@ -347,6 +367,7 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
             if (newMethod === oldMethod) return;
 
             if (newMethod === 'sftp' && oldMethod === 'syncthing') {
+              const previousSetupComplete = this.plugin.settings.setupComplete;
               // Switching to SFTP; use the old Syncthing provider to clean up
               const oldProvider = this.plugin.getSyncProvider();
 
@@ -383,27 +404,37 @@ export class ReMarkableBridgeSettingTab extends PluginSettingTab {
               // itself works. For SFTP this probes the SFTP subsystem, not just
               // a shell command over SSH.
               const sftpAvailable = await this.plugin.getSyncProvider().isAvailable();
-              this.plugin.settings.setupComplete = sftpAvailable;
+              const probe = resolveSftpSwitchProbe(previousSetupComplete, sftpAvailable);
+              this.plugin.settings.setupComplete = probe.setupComplete;
               await this.plugin.saveSettings();
               this.plugin.toggleAutoSyncTimer();
-              if (sftpAvailable) {
+              if (probe.status === 'reachable' && probe.setupComplete) {
                 new Notice('E-Ink Sync: Switched to SFTP mode.');
+              } else if (probe.status === 'reachable') {
+                new Notice(
+                  'E-Ink Sync: SFTP is reachable, but setup is incomplete. Opening setup to finish configuration.',
+                );
+                this.plugin.openSetupWizard();
+              } else if (probe.status === 'configured-offline') {
+                new Notice(
+                  'E-Ink Sync: Switched to SFTP, but the tablet is not reachable. ' +
+                  'Wake or connect it, then use “Test connection”; existing setup remains configured.',
+                  9000,
+                );
               } else {
                 new Notice(
-                  'E-Ink Sync: SFTP is not ready. Opening setup to verify the tablet connection.',
+                  'E-Ink Sync: SFTP could not be verified. Wake or connect the tablet, then complete setup.',
                 );
                 this.plugin.openSetupWizard();
               }
               this.display();
             } else if (newMethod === 'syncthing' && oldMethod === 'sftp') {
               // Device/architecture information is deliberately not trusted
-              // from an earlier session. The wizard re-detects over USB and
-              // permits installation only for known rM1/rM2 ARMv7 hardware.
-              this.plugin.settings.syncMethod = 'syncthing';
-              this.plugin.settings.setupComplete = false;
-              await this.plugin.saveSettings();
+              // from an earlier session. Leave the working SFTP configuration
+              // intact until the wizard verifies the tablet and the user makes
+              // the explicit Syncthing selection on its detection step.
               new Notice(
-                'E-Ink Sync: opening setup to verify this tablet supports the legacy Syncthing installer.',
+                'E-Ink Sync: SFTP remains active. Verify the tablet, then select Syncthing in setup.',
               );
               this.plugin.openSetupWizard();
               this.display();

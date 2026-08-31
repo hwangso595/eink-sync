@@ -47,8 +47,15 @@ export interface PreflightReport {
   usesV6Format: boolean;
   /** Resource budget for this device model. */
   resourceBudget: ResourceBudget;
+  /** Whether the bundled Entware/Syncthing installer may run on this device now. */
+  automaticSyncthingInstallReady: boolean;
   /** ISO timestamp of when the check was performed. */
   timestamp: string;
+}
+
+interface InstallationBudgetCheck {
+  result: CheckResult;
+  meetsInstallationBudget: boolean;
 }
 
 /**
@@ -69,22 +76,8 @@ export async function runPreflightChecks(
   // 1. Firmware compatibility
   checks.push(checkFirmwareCompatibility(deviceInfo));
 
-  // 2. Available memory
-  checks.push(checkAvailableMemory(deviceInfo, budget));
-
-  // 3. Storage on /home partition
-  checks.push(checkHomeStorage(deviceInfo, budget));
-
-  // 4. Root partition safety (must not be nearly full)
-  checks.push(checkRootPartition(deviceInfo));
-
-  // 5. xochitl data directory exists
-  checks.push(await checkXochitlDirectory(ssh));
-
-  // 6. Device model identification
-  checks.push(checkDeviceModel(deviceInfo));
-
-  // Determine installation path (may throw for truly unsupported firmware)
+  // Determine whether this hardware has a supported installer route. Resource
+  // checks remain non-fatal for SFTP and expose separate installer readiness.
   let installationPath: InstallationPath;
   try {
     installationPath = getInstallationPath(deviceInfo.firmware, deviceInfo.architecture);
@@ -103,6 +96,23 @@ export async function runPreflightChecks(
       severity: 'error',
     });
   }
+  // 2. Available memory
+  const memoryCheck = checkAvailableMemory(deviceInfo, budget);
+  checks.push(memoryCheck.result);
+
+  // 3. Storage on /home partition
+  const homeStorageCheck = checkHomeStorage(deviceInfo, budget);
+  checks.push(homeStorageCheck.result);
+
+  // 4. Root partition safety (must not be nearly full)
+  const rootPartitionCheck = checkRootPartition(deviceInfo);
+  checks.push(rootPartitionCheck.result);
+
+  // 5. xochitl data directory exists
+  checks.push(await checkXochitlDirectory(ssh));
+
+  // 6. Device model identification
+  checks.push(checkDeviceModel(deviceInfo));
 
   if (installationPath === 'sftp-only') {
     checks.push({
@@ -114,6 +124,12 @@ export async function runPreflightChecks(
   }
 
   const passed = checks.every(c => c.severity !== 'error' || c.passed);
+  const automaticSyncthingInstallReady =
+    passed
+    && installationPath === 'entware'
+    && memoryCheck.meetsInstallationBudget
+    && homeStorageCheck.meetsInstallationBudget
+    && rootPartitionCheck.meetsInstallationBudget;
 
   const report: PreflightReport = {
     passed,
@@ -122,6 +138,7 @@ export async function runPreflightChecks(
     installationPath,
     usesV6Format: usesV6FileFormat(deviceInfo.firmware),
     resourceBudget: budget,
+    automaticSyncthingInstallReady,
     timestamp: new Date().toISOString(),
   };
 
@@ -159,77 +176,104 @@ function checkFirmwareCompatibility(deviceInfo: DeviceInfo): CheckResult {
   };
 }
 
-function checkAvailableMemory(deviceInfo: DeviceInfo, budget: ResourceBudget): CheckResult {
+function checkAvailableMemory(
+  deviceInfo: DeviceInfo,
+  budget: ResourceBudget,
+): InstallationBudgetCheck {
   const available = deviceInfo.memory.availableMB;
   const required = budget.minFreeMemoryMB + budget.syncthingMaxMemoryMB;
 
   if (available < budget.minFreeMemoryMB) {
     return {
-      name: 'Available Memory',
-      passed: false,
-      message: `Only ${available}MB RAM available. The tablet needs at least ${budget.minFreeMemoryMB}MB free to operate safely. ` +
-        'Close any open documents on the tablet and try again.',
-      severity: 'error',
+      result: {
+        name: 'Available Memory',
+        passed: true,
+        message: `Only ${available}MB RAM available, below the ${budget.minFreeMemoryMB}MB legacy installation safety budget. ` +
+          'SFTP-only setup can continue because it does not install or run Syncthing on the tablet; close open documents if the tablet becomes unstable.',
+        severity: 'warning',
+      },
+      meetsInstallationBudget: false,
     };
   }
 
   if (available < required) {
     return {
-      name: 'Available Memory',
-      passed: true,
-      message: `${available}MB RAM available. This is enough for basic operation, but Syncthing may need to be tightly constrained ` +
-        `(budgeted ${budget.syncthingMaxMemoryMB}MB for sync). Memory will be monitored at runtime.`,
-      severity: 'warning',
+      result: {
+        name: 'Available Memory',
+        passed: true,
+        message: `${available}MB RAM available. This is enough for basic operation, but Syncthing may need to be tightly constrained ` +
+          `(budgeted ${budget.syncthingMaxMemoryMB}MB for sync). Memory will be monitored at runtime.`,
+        severity: 'warning',
+      },
+      meetsInstallationBudget: true,
     };
   }
 
   return {
-    name: 'Available Memory',
-    passed: true,
-    message: `${available}MB RAM available (${deviceInfo.memory.totalMB}MB total). Sufficient for sync operations.`,
-    severity: 'info',
+    result: {
+      name: 'Available Memory',
+      passed: true,
+      message: `${available}MB RAM available (${deviceInfo.memory.totalMB}MB total). Sufficient for sync operations.`,
+      severity: 'info',
+    },
+    meetsInstallationBudget: true,
   };
 }
 
-function checkHomeStorage(deviceInfo: DeviceInfo, budget: ResourceBudget): CheckResult {
+function checkHomeStorage(
+  deviceInfo: DeviceInfo,
+  budget: ResourceBudget,
+): InstallationBudgetCheck {
   const homePartition = deviceInfo.storage.find(s => s.mountPoint === '/home');
 
   if (!homePartition) {
     return {
-      name: '/home Storage',
-      passed: false,
-      message: 'Could not find /home partition. Tablet documents and legacy package data are expected under /home.',
-      severity: 'error',
+      result: {
+        name: '/home Storage',
+        passed: false,
+        message: 'Could not find /home partition. Tablet documents and legacy package data are expected under /home.',
+        severity: 'error',
+      },
+      meetsInstallationBudget: false,
     };
   }
 
   if (homePartition.availableMB < budget.minFreeStorageMB) {
     return {
-      name: '/home Storage',
-      passed: false,
-      message: `Only ${homePartition.availableMB}MB free on /home (need at least ${budget.minFreeStorageMB}MB). ` +
-        'Remove unused documents from the tablet to free space.',
-      severity: 'error',
+      result: {
+        name: '/home Storage',
+        passed: true,
+        message: `Only ${homePartition.availableMB}MB free on /home, below the ${budget.minFreeStorageMB}MB legacy installation budget. ` +
+          'SFTP-only setup can continue because it installs no tablet packages, but free space before adding or syncing more documents.',
+        severity: 'warning',
+      },
+      meetsInstallationBudget: false,
     };
   }
 
   return {
-    name: '/home Storage',
-    passed: true,
-    message: `${homePartition.availableMB}MB free on /home (${homePartition.usagePercent}% used). Sufficient for sync operations.`,
-    severity: 'info',
+    result: {
+      name: '/home Storage',
+      passed: true,
+      message: `${homePartition.availableMB}MB free on /home (${homePartition.usagePercent}% used). Sufficient for sync operations.`,
+      severity: 'info',
+    },
+    meetsInstallationBudget: true,
   };
 }
 
-function checkRootPartition(deviceInfo: DeviceInfo): CheckResult {
+function checkRootPartition(deviceInfo: DeviceInfo): InstallationBudgetCheck {
   const rootPartition = deviceInfo.storage.find(s => s.mountPoint === '/');
 
   if (!rootPartition) {
     return {
-      name: 'Root Partition',
-      passed: true,
-      message: 'Could not read root partition info. This is non-critical for SFTP; the legacy Entware installer does create root-filesystem mount configuration.',
-      severity: 'warning',
+      result: {
+        name: 'Root Partition',
+        passed: true,
+        message: 'Could not read root partition info. This is non-critical for SFTP; the legacy Entware installer does create root-filesystem mount configuration.',
+        severity: 'warning',
+      },
+      meetsInstallationBudget: false,
     };
   }
 
@@ -237,19 +281,25 @@ function checkRootPartition(deviceInfo: DeviceInfo): CheckResult {
   // small mount configuration on root and should not run when it is full.
   if (rootPartition.usagePercent > 95) {
     return {
-      name: 'Root Partition',
-      passed: true,
-      message: `Root partition is ${rootPartition.usagePercent}% full (${rootPartition.availableMB}MB free). ` +
-        'SFTP can still operate, but do not run the legacy Entware installer until space is available.',
-      severity: 'warning',
+      result: {
+        name: 'Root Partition',
+        passed: true,
+        message: `Root partition is ${rootPartition.usagePercent}% full (${rootPartition.availableMB}MB free). ` +
+          'SFTP can still operate, but do not run the legacy Entware installer until space is available.',
+        severity: 'warning',
+      },
+      meetsInstallationBudget: false,
     };
   }
 
   return {
-    name: 'Root Partition',
-    passed: true,
-    message: `Root partition: ${rootPartition.availableMB}MB free (${rootPartition.usagePercent}% used).`,
-    severity: 'info',
+    result: {
+      name: 'Root Partition',
+      passed: true,
+      message: `Root partition: ${rootPartition.availableMB}MB free (${rootPartition.usagePercent}% used).`,
+      severity: 'info',
+    },
+    meetsInstallationBudget: true,
   };
 }
 
@@ -318,6 +368,7 @@ export function formatPreflightReport(report: PreflightReport): string {
   lines.push(`Firmware: ${report.deviceInfo.firmware.raw}`);
   lines.push(`File Format: ${report.usesV6Format ? 'v6 (rmscene)' : 'Legacy (v3/v5)'}`);
   lines.push(`Installation Path: ${report.installationPath}`);
+  lines.push(`Automatic Syncthing Install: ${report.automaticSyncthingInstallReady ? 'READY' : 'BLOCKED'}`);
   lines.push(`Kernel: ${report.deviceInfo.kernelVersion}`);
   lines.push('');
 

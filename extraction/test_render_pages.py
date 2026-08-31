@@ -23,6 +23,22 @@ from metadata_parser import parse_metadata_file, parse_content_file
 class TestRenderPagesHelpers(unittest.TestCase):
     """Test helper functions and data structures used by render_pages."""
 
+    def test_partial_render_succeeds_but_all_failed_does_not(self):
+        from render_pages import _render_succeeded
+
+        self.assertTrue(_render_succeeded([{"page_number": 1}], ["Page 2: bad scene"]))
+        self.assertFalse(_render_succeeded([], ["Page 1: bad scene"]))
+
+    def test_missing_pdf_backing_still_uses_pdf_coordinates(self):
+        from render_pages import _page_has_pdf_backing
+
+        self.assertTrue(_page_has_pdf_backing(False, None, 0))
+
+    def test_inserted_redirect_page_uses_notebook_coordinates(self):
+        from render_pages import _page_has_pdf_backing
+
+        self.assertFalse(_page_has_pdf_backing(False, {0: 3}, 1))
+
     def test_notebook_detection_from_content_file(self):
         """Notebooks have empty or 'notebook' fileType in .content."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -613,6 +629,18 @@ class TestRenderCache(unittest.TestCase):
             _cleanup_page_images_after_success(rendered, [])
             self.assertFalse(os.path.exists(old_path))
             self.assertTrue(os.path.isfile(new_path))
+
+    def test_case_only_keep_alias_is_not_deleted(self):
+        from unittest.mock import patch
+        from render_pages import _cleanup_old_page_images
+
+        removed = []
+        with patch("render_pages.glob.glob", return_value=["doc_p1_hash.png"]), \
+                patch("render_pages.os.path.samefile", return_value=True), \
+                patch("render_pages.os.remove", side_effect=removed.append):
+            _cleanup_old_page_images(".", "Doc", 1, "Doc_p1_hash.png")
+
+        self.assertEqual(removed, [])
 
     def test_cached_ocr_is_withheld_while_ocr_is_off(self):
         """Turning OCR off must stop cached text from being reported again.

@@ -3,6 +3,7 @@ import type { CommandResult, SSHExecutor } from '../ssh/ssh-client';
 import {
   commitUsbConnection,
   enableVerifyAndCommitWifiConnection,
+  verifyAndCommitUsbConnection,
   verifyAndCommitWifiConnection,
   type MutableConnectionSettings,
   type WifiSetupDependencies,
@@ -301,6 +302,55 @@ describe('USB-to-WiFi setup', () => {
 });
 
 describe('manual connection changes', () => {
+  it('preserves WiFi and auto-sync when USB detects a device but preflight fails', async () => {
+    const settings: MutableConnectionSettings = {
+      tabletIp: '192.168.1.44',
+      wifiTabletIp: '192.168.1.44',
+      connectionMethod: 'wifi',
+      autoSyncEnabled: true,
+    };
+    const before = { ...settings };
+    const persist = jest.fn(async () => {});
+
+    const result = await verifyAndCommitUsbConnection(
+      settings,
+      async () => ({ success: false, deviceInfo: { model: 'paperPro' } }),
+      persist,
+      value => value.success,
+    );
+
+    expect(result).toEqual({ success: false, deviceInfo: { model: 'paperPro' } });
+    expect(settings).toEqual(before);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('preserves auto-sync through verified USB setup and a successful WiFi handoff', async () => {
+    const settings: MutableConnectionSettings = {
+      tabletIp: '192.168.1.44',
+      wifiTabletIp: '192.168.1.44',
+      connectionMethod: 'wifi',
+      autoSyncEnabled: true,
+    };
+    const persist = jest.fn(async () => {});
+
+    await verifyAndCommitUsbConnection(settings, async () => 'verified', persist);
+    expect(settings).toMatchObject({
+      tabletIp: '10.11.99.1',
+      connectionMethod: 'usb',
+      autoSyncEnabled: true,
+    });
+
+    const fixture = dependencies({ commands: CURRENT_USB_COMMANDS });
+    await enableVerifyAndCommitWifiConnection(BASE_CONFIG, settings, persist, fixture.deps);
+
+    expect(settings).toMatchObject({
+      tabletIp: '192.168.50.42',
+      wifiTabletIp: '192.168.50.42',
+      connectionMethod: 'wifi',
+      autoSyncEnabled: true,
+    });
+  });
+
   it('tests a remembered WiFi endpoint before changing or saving settings', async () => {
     const settings = connectionSettings();
     settings.wifiTabletIp = '192.168.1.44';
@@ -320,6 +370,85 @@ describe('manual connection changes', () => {
     expect(persist).not.toHaveBeenCalled();
   });
 
+  it('requires the USB device fingerprint for a new WiFi host before authentication', async () => {
+    const settings = connectionSettings();
+    const fixture = dependencies({}, { connectError: new Error('host key mismatch') });
+    const persist = jest.fn(async () => {});
+
+    await expect(verifyAndCommitWifiConnection(
+      BASE_CONFIG,
+      settings,
+      '192.168.1.99',
+      persist,
+      fixture.deps,
+    )).rejects.toThrow('host key mismatch');
+
+    expect(fixture.configs[0]).toMatchObject({
+      host: '192.168.1.99',
+      method: 'wifi',
+      expectedHostKeyFingerprint: 'usb-fingerprint',
+    });
+    expect(fixture.rememberAlias).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('uses an explicitly remembered endpoint fingerprint when no USB pin is available', async () => {
+    const settings = connectionSettings();
+    const fixture = dependencies({}, {});
+    fixture.deps.getPinnedFingerprint = (host) => host === '192.168.1.44'
+      ? 'remembered-fingerprint'
+      : null;
+
+    await verifyAndCommitWifiConnection(
+      BASE_CONFIG,
+      settings,
+      '192.168.1.44',
+      jest.fn(async () => {}),
+      fixture.deps,
+    );
+
+    expect(fixture.configs[0].expectedHostKeyFingerprint).toBe('remembered-fingerprint');
+    expect(fixture.rememberAlias).not.toHaveBeenCalled();
+    expect(settings.connectionMethod).toBe('wifi');
+  });
+
+  it('supports a fresh USB-mode manual address with TOFU only when no identity is pinned', async () => {
+    const settings = connectionSettings();
+    const fixture = dependencies({}, {});
+    fixture.deps.getPinnedFingerprint = () => null;
+    const events: string[] = [];
+    const originalCreate = fixture.deps.createClient;
+    fixture.deps.createClient = (config) => {
+      events.push('verify');
+      return originalCreate(config);
+    };
+    const persist = jest.fn(async () => {
+      events.push('persist');
+    });
+
+    await verifyAndCommitWifiConnection(
+      BASE_CONFIG,
+      settings,
+      '192.168.1.55',
+      persist,
+      fixture.deps,
+    );
+
+    expect(fixture.configs[0]).toMatchObject({
+      host: '192.168.1.55',
+      method: 'wifi',
+      expectedHostKeyFingerprint: undefined,
+    });
+    expect(events).toEqual(['verify', 'persist']);
+    expect(fixture.rememberAlias).not.toHaveBeenCalled();
+    expect(settings).toMatchObject({
+      tabletIp: '192.168.1.55',
+      wifiTabletIp: '192.168.1.55',
+      connectionMethod: 'wifi',
+    });
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
   it('selects USB while retaining the last verified WiFi address', async () => {
     const settings: MutableConnectionSettings = {
       tabletIp: '192.168.1.44',
@@ -332,7 +461,7 @@ describe('manual connection changes', () => {
       tabletIp: '10.11.99.1',
       wifiTabletIp: '192.168.1.44',
       connectionMethod: 'usb',
-      autoSyncEnabled: false,
+      autoSyncEnabled: true,
     });
   });
 });

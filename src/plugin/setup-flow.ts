@@ -12,6 +12,7 @@ import type {
 import type { DeviceInfo } from '../types/device';
 import type { SyncMethodSetting } from './settings';
 import { isKnownLegacyInstallerTarget } from '../device/firmware';
+import { isUsableWifiAddress, USB_TABLET_IP } from './net-utils';
 
 export type WizardStep = 1 | 2 | 3 | 4 | 5;
 
@@ -49,6 +50,32 @@ export interface SyncthingPairingOperations {
   syncFolderIsDirectory(): boolean;
   persistProviderConfiguration(): Promise<void>;
   isSyncProviderAvailable(): Promise<boolean>;
+}
+
+export type WizardConnectionTarget =
+  | { method: 'usb'; host: typeof USB_TABLET_IP; requiresWifiSelection: false }
+  | { method: 'wifi'; host: string; requiresWifiSelection: boolean };
+
+/** Select WiFi only when it is already verified or explicitly supplied for verification. */
+export function resolveWizardConnectionTarget(
+  connectionMethod: 'usb' | 'wifi',
+  tabletIp: string,
+  manualWifiAddress: string,
+): WizardConnectionTarget {
+  const manualHost = manualWifiAddress.trim();
+  if (manualHost) {
+    if (!isUsableWifiAddress(manualHost)) {
+      throw new Error(`"${manualHost}" is not a usable WiFi IPv4 address.`);
+    }
+    return { method: 'wifi', host: manualHost, requiresWifiSelection: true };
+  }
+
+  const selectedHost = tabletIp.trim();
+  if (connectionMethod === 'wifi' && isUsableWifiAddress(selectedHost)) {
+    return { method: 'wifi', host: selectedHost, requiresWifiSelection: false };
+  }
+
+  return { method: 'usb', host: USB_TABLET_IP, requiresWifiSelection: false };
 }
 
 /** Only legacy ARMv7 tablets can use the bundled Entware installer. */
@@ -100,6 +127,23 @@ export class SetupFlowController {
     return this.currentStep === this.activeSteps[this.activeSteps.length - 1];
   }
 
+  /** Apply the stored preflight capabilities to the currently selected route. */
+  private refreshDetectionReadiness(): void {
+    const state = this.stepStates.get(2)!;
+    const report = this.connectionResult?.preflightReport;
+    const commonChecksPassed = report?.passed === true;
+    const selectedRouteReady = commonChecksPassed && (
+      this.isSftpMode || report.automaticSyncthingInstallReady
+    );
+
+    state.verified = selectedRouteReady;
+    state.message = selectedRouteReady
+      ? 'Device detected and all required pre-flight checks passed.'
+      : commonChecksPassed && !this.isSftpMode
+        ? 'Device detected, but automatic Syncthing installation is blocked by the pre-flight resource checks.'
+        : 'Device detected, but one or more required pre-flight checks failed.';
+  }
+
   /**
    * Record the real connection/detection result and reconcile its sync route.
    *
@@ -133,12 +177,8 @@ export class SetupFlowController {
       deviceInfo: result.deviceInfo,
       preflightReport: result.preflightReport,
     };
-    detectionState.verified = result.preflightReport?.passed === true;
-    detectionState.message = detectionState.verified
-      ? 'Device detected and all required pre-flight checks passed.'
-      : 'Device detected, but one or more required pre-flight checks failed.';
-
     const routing = await this.reconcileDeviceRoute();
+    this.refreshDetectionReadiness();
     if (routing.message) connectionState.message += ` | ${routing.message}`;
     return routing;
   }
@@ -176,6 +216,14 @@ export class SetupFlowController {
         'Automatic Syncthing installation is unavailable for this tablet architecture. Use SFTP.',
       );
     }
+    if (
+      method === 'syncthing'
+      && this.connectionResult?.preflightReport?.automaticSyncthingInstallReady !== true
+    ) {
+      throw new Error(
+        'Automatic Syncthing installation is blocked by the pre-flight resource checks. Free RAM and /home storage, then verify again.',
+      );
+    }
     if (this.settings.syncMethod === method) return;
 
     const previousMethod = this.settings.syncMethod;
@@ -189,6 +237,7 @@ export class SetupFlowController {
       this.settings.setupComplete = previousComplete;
       throw err;
     }
+    this.refreshDetectionReadiness();
     if (method === 'sftp') {
       this.stepStates.get(3)!.verified = false;
       this.stepStates.get(4)!.verified = false;
@@ -199,6 +248,11 @@ export class SetupFlowController {
   async installLegacySyncStack(install: () => Promise<void>): Promise<void> {
     if (this.settings.syncMethod !== 'syncthing' || !supportsAutomaticSyncthingInstall(this.deviceInfo)) {
       throw new Error('Refusing automatic Syncthing installation on an unsupported tablet.');
+    }
+    if (this.connectionResult?.preflightReport?.automaticSyncthingInstallReady !== true) {
+      throw new Error(
+        'Refusing automatic Syncthing installation until the pre-flight resource checks pass.',
+      );
     }
 
     await install();

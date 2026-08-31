@@ -141,6 +141,14 @@ export interface DocumentResyncProtection {
   addedLines: string[];
 }
 
+/** Failure raised while deletion is still known not to have started. */
+class PreDeleteVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PreDeleteVerificationError';
+  }
+}
+
 function archiveIgnoreLines(uuid: string): string[] {
   if (!isValidUuid(uuid)) throw new Error('Refusing to modify ignore rules for an invalid UUID.');
   // Leading slashes anchor at the xochitl root. A wildcard only after the
@@ -188,9 +196,13 @@ async function removeDocumentIgnoreLines(
 
   const condition = lines.map((line) => `$0 != "${line}"`).join(' && ');
   const temporary = `.stignore.eink-sync-${uuid}.tmp`;
+  const original = `.stignore.eink-sync-${uuid}.orig`;
   const result = await ssh.execute(
     `cd ${XOCHITL_DIR} && if [ -f .stignore ]; then ` +
-    `awk '${condition} { print }' .stignore > ${temporary} && mv ${temporary} .stignore; fi`,
+    `cp .stignore ${original} && ` +
+    `awk '${condition} { print }' ${original} > ${temporary} && ` +
+    `cmp -s ${original} .stignore && mv ${temporary} .stignore; ` +
+    `status=$?; rm -f ${original} ${temporary}; exit $status; fi`,
   );
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim();
@@ -218,12 +230,16 @@ async function deleteProtectedVerifiedTabletDocument(
   try {
     await deleteVerifiedTabletDocument(ssh, manifest);
   } catch (err) {
-    try {
-      await removeDocumentIgnoreLines(ssh, manifest.uuid, protection.addedLines);
-    } catch (rollbackErr) {
-      const original = err instanceof Error ? err.message : String(err);
-      const rollback = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
-      throw new Error(`${original} Ignore-rule rollback also failed: ${rollback}`);
+    // Once a delete command may have run, keep Syncthing protection: a failed
+    // batch can leave only part of the collection on the tablet.
+    if (err instanceof PreDeleteVerificationError) {
+      try {
+        await removeDocumentIgnoreLines(ssh, manifest.uuid, protection.addedLines);
+      } catch (rollbackErr) {
+        const original = err instanceof Error ? err.message : String(err);
+        const rollback = rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+        throw new Error(`${original} Ignore-rule rollback also failed: ${rollback}`);
+      }
     }
     throw err;
   }
@@ -356,6 +372,16 @@ export function localBackupMatchesManifest(
   return true;
 }
 
+/** Empty remote state is safe only when the complete local document remains. */
+function verifiedLocalBackupCoversManifest(
+  localSyncDir: string,
+  manifest: TabletDocumentManifest,
+): boolean {
+  return manifest.entries.length === 0
+    ? hasLocalBackup(localSyncDir, manifest.uuid)
+    : localBackupMatchesManifest(localSyncDir, manifest);
+}
+
 /** Compare two snapshots immediately before deletion to close common races. */
 function manifestsMatch(a: TabletDocumentManifest, b: TabletDocumentManifest): boolean {
   if (a.uuid !== b.uuid || a.entries.length !== b.entries.length) return false;
@@ -398,9 +424,16 @@ export async function deleteVerifiedTabletDocument(
   ssh: SSHExecutor,
   manifest: TabletDocumentManifest,
 ): Promise<void> {
-  const current = await readTabletDocumentManifest(ssh, manifest.uuid);
+  let current: TabletDocumentManifest;
+  try {
+    current = await readTabletDocumentManifest(ssh, manifest.uuid);
+  } catch (err) {
+    throw new PreDeleteVerificationError(err instanceof Error ? err.message : String(err));
+  }
   if (!manifestsMatch(manifest, current)) {
-    throw new Error('Tablet document changed during archive; sync it again before retrying.');
+    throw new PreDeleteVerificationError(
+      'Tablet document changed during archive; sync it again before retrying.',
+    );
   }
 
   const commitRank = (relativePath: string): number => {
@@ -446,7 +479,7 @@ export async function tabletFilesBackedUpLocally(
 ): Promise<boolean> {
   try {
     const manifest = await readTabletDocumentManifest(ssh, uuid);
-    return localBackupMatchesManifest(localSyncDir, manifest);
+    return verifiedLocalBackupCoversManifest(localSyncDir, manifest);
   } catch {
     return false;
   }
@@ -462,7 +495,7 @@ export async function archiveVerifiedTabletDocument(
     throw new Error('The local backup is incomplete; the tablet copy was not deleted.');
   }
   const manifest = await readTabletDocumentManifest(ssh, uuid);
-  if (!localBackupMatchesManifest(localSyncDir, manifest)) {
+  if (!verifiedLocalBackupCoversManifest(localSyncDir, manifest)) {
     throw new Error('The tablet has document files that are not completely backed up locally.');
   }
   await deleteProtectedVerifiedTabletDocument(ssh, manifest);
@@ -501,6 +534,7 @@ export async function archiveOldDocuments(
   }
 
   let archivedCount = 0;
+  const archiveFailures: string[] = [];
   try {
     // Step 1: Check /home disk usage
     const dfResult = await ssh.execute('df /home');
@@ -552,7 +586,15 @@ export async function archiveOldDocuments(
         continue;
       }
 
-      const catResult = await ssh.execute(`cat ${shellQuote(canonicalPath)}`);
+      let catResult;
+      try {
+        catResult = await ssh.execute(`cat ${shellQuote(canonicalPath)}`);
+      } catch (err) {
+        logger.warn(
+          `Could not read archive metadata for ${uuid}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        continue;
+      }
       if (catResult.exitCode !== 0) continue;
 
       try {
@@ -585,52 +627,77 @@ export async function archiveOldDocuments(
 
     // Step 3: Archive each eligible document
     for (const doc of eligible) {
-      // Validate UUID before constructing any shell commands to prevent injection
-      if (!isValidUuid(doc.uuid)) {
-        logger.warn(`Skipping document with invalid UUID: ${doc.uuid}`);
-        continue;
-      }
+      try {
+        // Validate UUID before constructing any shell commands to prevent injection
+        if (!isValidUuid(doc.uuid)) {
+          logger.warn(`Skipping document with invalid UUID: ${doc.uuid}`);
+          continue;
+        }
 
-      // SAFETY GATE: never delete from the tablet unless we can prove the
-      // document is already backed up locally. Applies even when force=true.
-      if (!hasLocalBackup(localSyncDir, doc.uuid)) {
-        logger.warn(
-          `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
-          `Sync this document to the vault before archiving.`,
+        // SAFETY GATE: never delete from the tablet unless we can prove the
+        // document is already backed up locally. Applies even when force=true.
+        if (!hasLocalBackup(localSyncDir, doc.uuid)) {
+          logger.warn(
+            `Skipping archive of ${doc.uuid}: no confirmed local backup in ${localSyncDir}. ` +
+            `Sync this document to the vault before archiving.`,
+          );
+          continue;
+        }
+
+        // Authoritative manifest: every tablet entry, including unknown sidecars,
+        // empty files, empty directories, and deeply nested data, must exist in
+        // the local backup with the same type, size, and SHA-256. An already
+        // absent collection is idempotent only because hasLocalBackup passed.
+        const manifest = await readTabletDocumentManifest(ssh, doc.uuid);
+        if (!verifiedLocalBackupCoversManifest(localSyncDir, manifest)) {
+          logger.warn(
+            `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
+            `locally (e.g. annotations). Sync it fully before archiving.`,
+          );
+          continue;
+        }
+
+        // Protect against Syncthing re-delivery, re-check the snapshot, and delete
+        // only its exact entries. New children remain preserved.
+        await deleteProtectedVerifiedTabletDocument(ssh, manifest);
+        archivedCount++;
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        archiveFailures.push(`${doc.uuid}: ${detail}`);
+        logger.error(
+          `Could not archive ${doc.uuid}: ${detail}`,
         );
         continue;
       }
-
-      // Authoritative manifest: every tablet entry, including unknown sidecars,
-      // empty files, empty directories, and deeply nested data, must exist in
-      // the local backup with the same type, size, and SHA-256.
-      const manifest = await readTabletDocumentManifest(ssh, doc.uuid);
-      if (!localBackupMatchesManifest(localSyncDir, manifest)) {
-        logger.warn(
-          `Skipping archive of ${doc.uuid}: the tablet has files not yet backed up ` +
-          `locally (e.g. annotations). Sync it fully before archiving.`,
-        );
-        continue;
-      }
-
-      // Protect against Syncthing re-delivery, re-check the snapshot, and delete
-      // only its exact entries. New children remain preserved. If deletion
-      // fails, only ignore lines added by this attempt are rolled back.
-      await deleteProtectedVerifiedTabletDocument(ssh, manifest);
-
-      archivedCount++;
 
       // Re-check disk usage; stop if below threshold
       if (!force) {
-        const recheckResult = await ssh.execute('df /home');
-        const currentUsage = recheckResult.exitCode === 0
-          ? parseDfUsagePercent(recheckResult.stdout)
-          : null;
-        if (currentUsage !== null && currentUsage < thresholdPercent) {
-          logger.info(`Disk usage now ${currentUsage}%, below threshold -- stopping`);
-          break;
+        try {
+          const recheckResult = await ssh.execute('df /home');
+          const currentUsage = recheckResult.exitCode === 0
+            ? parseDfUsagePercent(recheckResult.stdout)
+            : null;
+          if (currentUsage !== null && currentUsage < thresholdPercent) {
+            logger.info(`Disk usage now ${currentUsage}%, below threshold -- stopping`);
+            break;
+          }
+        } catch (err) {
+          logger.warn(
+            `Could not re-check disk usage after archiving ${doc.uuid}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
+    }
+
+    if (archivedCount === 0 && archiveFailures.length > 0) {
+      throw new Error(`Could not archive any eligible documents: ${archiveFailures.join('; ')}`);
+    }
+
+    if (archiveFailures.length > 0) {
+      logger.warn(
+        `Archived ${archivedCount} document(s), but ${archiveFailures.length} archive attempt(s) failed`,
+      );
     }
 
     return archivedCount;

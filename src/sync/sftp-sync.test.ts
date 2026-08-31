@@ -503,7 +503,7 @@ describe('SftpSyncEngine', () => {
       expect(files.every((entry) => entry.documentUuid === UUID)).toBe(true);
     });
 
-    it('rejects top-level symlinks in a document collection', async () => {
+    it('retains top-level special entries for document-scoped failure handling', async () => {
       const engine = new SftpSyncEngine(defaultOptions(tempDir));
       const sftp = {
         readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
@@ -511,7 +511,100 @@ describe('SftpSyncEngine', () => {
         ])),
       } as any;
 
-      await expect(engine.listRemoteFiles(sftp)).rejects.toThrow('Unsupported symlink');
+      const files = await engine.listRemoteFiles(sftp);
+      expect(files).toMatchObject([{
+        filename: `${UUID}.metadata`,
+        documentUuid: UUID,
+        entryType: 'symlink',
+      }]);
+    });
+
+    it('fails one top-level special collection entry while downloading unrelated documents', async () => {
+      const otherUuid = '73d2d6c2-9b39-4f07-8cda-194440dbdfb7';
+      const end = jest.fn();
+      const sftp = {
+        readdir: jest.fn((_remotePath: string, callback: Function) => callback(undefined, [
+          sftpEntry(`${UUID}.metadata`, 0o120777, 4),
+          sftpEntry(`${UUID}.content`, 0o100644, 4),
+          sftpEntry(`${otherUuid}.metadata`, 0o100644, 4),
+        ])),
+        fastGet: jest.fn((remotePath: string, localPath: string, callback: Function) => {
+          fs.writeFileSync(localPath, 'data');
+          callback(undefined);
+        }),
+      } as any;
+      mockedConnectSftp.mockResolvedValueOnce({ conn: { end } as any, sftp });
+
+      const result = await new SftpSyncEngine(defaultOptions(tempDir)).sync();
+
+      expect(result.success).toBe(false);
+      expect(result.errors.join('\n')).toContain(`Unsupported symlink`);
+      expect(result.filesDownloaded).toBe(1);
+      expect(fs.readFileSync(path.join(tempDir, `${otherUuid}.metadata`), 'utf-8')).toBe('data');
+      expect(fs.existsSync(path.join(tempDir, `${UUID}.content`))).toBe(false);
+      expect(sftp.fastGet).not.toHaveBeenCalledWith(
+        expect.stringContaining(`${UUID}.metadata`),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(end).toHaveBeenCalled();
+    });
+
+    it('downloads core sidecars when a regenerable cache directory fails', async () => {
+      const end = jest.fn();
+      const cachePath = `/home/root/.local/share/remarkable/xochitl/${UUID}.cache`;
+      const sftp = {
+        readdir: jest.fn((remotePath: string, callback: Function) => {
+          if (remotePath === cachePath) {
+            callback(new Error('cache unavailable'));
+            return;
+          }
+          callback(undefined, [
+            sftpEntry(`${UUID}.cache`, 0o040755),
+            sftpEntry(`${UUID}.metadata`, 0o100644, 4),
+            sftpEntry(`${UUID}.content`, 0o100644, 4),
+          ]);
+        }),
+        fastGet: jest.fn((_remotePath: string, localPath: string, callback: Function) => {
+          fs.writeFileSync(localPath, 'data');
+          callback(undefined);
+        }),
+      } as any;
+      mockedConnectSftp.mockResolvedValueOnce({ conn: { end } as any, sftp });
+
+      const result = await new SftpSyncEngine(defaultOptions(tempDir)).sync();
+
+      expect(result.success).toBe(false);
+      expect(result.errors.join('\n')).toContain('cache unavailable');
+      expect(result.filesDownloaded).toBe(2);
+      expect(fs.existsSync(path.join(tempDir, `${UUID}.metadata`))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, `${UUID}.content`))).toBe(true);
+      expect(end).toHaveBeenCalled();
+    });
+
+    it('still withholds core sidecars when an unknown sidecar directory fails', async () => {
+      const assetsPath = `/home/root/.local/share/remarkable/xochitl/${UUID}.assets`;
+      const sftp = {
+        readdir: jest.fn((remotePath: string, callback: Function) => {
+          if (remotePath === assetsPath) {
+            callback(new Error('assets unavailable'));
+            return;
+          }
+          callback(undefined, [
+            sftpEntry(`${UUID}.assets`, 0o040755),
+            sftpEntry(`${UUID}.metadata`, 0o100644, 4),
+            sftpEntry(`${UUID}.content`, 0o100644, 4),
+          ]);
+        }),
+        fastGet: jest.fn(),
+      } as any;
+      mockedConnectSftp.mockResolvedValueOnce({ conn: { end: jest.fn() } as any, sftp });
+
+      const result = await new SftpSyncEngine(defaultOptions(tempDir)).sync();
+
+      expect(result.errors.join('\n')).toContain('assets unavailable');
+      expect(result.filesDownloaded).toBe(0);
+      expect(sftp.fastGet).not.toHaveBeenCalled();
     });
 
     it('downloads zero-byte files and recursively nested unknown directories', async () => {

@@ -134,6 +134,10 @@ function entryTypeFromMode(mode: number): RemoteFileInfo['entryType'] {
   }
 }
 
+function isRegenerableCollectionEntry(filename: string, uuid: string): boolean {
+  return filename === `${uuid}.cache` || filename === `${uuid}.thumbnails`;
+}
+
 /** Template asset formats shipped by supported firmware generations. */
 export function isSupportedTemplateAsset(filename: string): boolean {
   const lower = filename.toLowerCase();
@@ -414,19 +418,34 @@ export class SftpSyncEngine {
         .filter((uuid): uuid is string => uuid !== null && uuid !== undefined),
     );
 
+    // Quarantine discovery sidecars for a document before transfer ordering
+    // can expose them. The special entry itself is still visited and reported.
+    for (const entry of toDownload) {
+      const entryType = entry.entryType ?? (entry.isDirectory ? 'directory' : 'file');
+      if (entryType === 'file' || entryType === 'directory') continue;
+      const uuid = entry.documentUuid ?? documentUuidForCollectionEntry(entry.filename);
+      if (uuid && !isRegenerableCollectionEntry(entry.filename, uuid)) failedDocs.add(uuid);
+    }
+
     for (let i = 0; i < toDownload.length; i++) {
       const file = toDownload[i];
       const verb = file.isDirectory ? 'Syncing' : 'Downloading';
       progress('downloading', `${verb} ${file.filename}`, i + 1, toDownload.length);
 
       try {
+        const entryType = file.entryType ?? (file.isDirectory ? 'directory' : 'file');
+        if (entryType !== 'file' && entryType !== 'directory') {
+          throw new Error(
+            `Unsupported ${entryType} in tablet document collection: ${file.filename}`,
+          );
+        }
         if (file.isDirectory) {
           const dirResult = await this.downloadDirectory(sftp, file);
           filesDownloaded += dirResult.filesDownloaded;
           bytesDownloaded += dirResult.bytesDownloaded;
           if (dirResult.errors.length > 0) {
             const uuid = file.documentUuid ?? documentUuidForCollectionEntry(file.filename);
-            if (uuid) failedDocs.add(uuid);
+            if (uuid && !isRegenerableCollectionEntry(file.filename, uuid)) failedDocs.add(uuid);
           }
           errors.push(...dirResult.errors);
         } else {
@@ -448,7 +467,7 @@ export class SftpSyncEngine {
         logger.warn(`SFTP sync: failed to download ${file.filename}: ${msg}`);
         errors.push(`${file.filename}: ${msg}`);
         const uuid = file.documentUuid ?? documentUuidForCollectionEntry(file.filename);
-        if (uuid) failedDocs.add(uuid);
+        if (uuid && !isRegenerableCollectionEntry(file.filename, uuid)) failedDocs.add(uuid);
       }
     }
 
@@ -495,11 +514,6 @@ export class SftpSyncEngine {
 
       assertSafeRemotePathSegment(entry.filename);
       const entryType = entry.entryType ?? (entry.isDirectory ? 'directory' : 'file');
-      if (entryType !== 'file' && entryType !== 'directory') {
-        throw new Error(
-          `Unsupported ${entryType} in tablet document collection: ${entry.filename}`,
-        );
-      }
       relevant.push({ ...entry, documentUuid, entryType });
     }
 
@@ -544,6 +558,13 @@ export class SftpSyncEngine {
     const files: RemoteFileInfo[] = [];
 
     for (const remote of remoteFiles) {
+      const entryType = remote.entryType ?? (remote.isDirectory ? 'directory' : 'file');
+      if (entryType !== 'file' && entryType !== 'directory') {
+        // Never let a pre-existing local path make an unsupported remote entry
+        // appear up to date. downloadAll() records this as a document failure.
+        files.push(remote);
+        continue;
+      }
       if (remote.isDirectory) {
         // Recursively inventory every collection directory. A nested sidecar
         // can change without metadata or the parent directory mtime changing.
@@ -556,8 +577,9 @@ export class SftpSyncEngine {
       }
     }
 
-    // Commit metadata/content last. If any earlier collection member fails,
-    // downloadAll() holds these mutable discovery sidecars back.
+    // Commit metadata/content last. If any earlier authoritative collection
+    // member fails, downloadAll() holds these mutable discovery sidecars back.
+    // Regenerable cache/thumbnail failures are reported but do not gate them.
     files.sort((a, b) => {
       const aExt = path.extname(a.filename).toLowerCase();
       const bExt = path.extname(b.filename).toLowerCase();

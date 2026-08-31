@@ -390,6 +390,10 @@ export function validateTemplate(template: string): { valid: boolean; warnings: 
  * template is provided in settings.
  */
 export class TemplateMarkdownRenderer implements MarkdownRenderer {
+  // Custom templates may emit raw {{ocr}} or place artifacts without stable
+  // page markers, so partial renders must leave the existing note unchanged.
+  readonly supportsPartialPageArtifactRecovery = false;
+
   private template: string;
   private pdfLinkFormat: PdfLinkFormat;
   private tags: string[];

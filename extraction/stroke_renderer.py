@@ -80,10 +80,10 @@ COLOR_ID_TO_NAME = {
     7: "red",
     8: "gray_overlap",
     9: "yellow",  # highlighter default
-    10: "green",
-    11: "cyan",
-    12: "magenta",
-    13: "yellow",
+    10: "#A1D87D",
+    11: "#8BD0E5",
+    12: "#B782CD",
+    13: "#F7E851",
 }
 
 # Pen type -> default stroke width multiplier
@@ -177,15 +177,19 @@ def _rgba_to_hex(color_rgba: object) -> Optional[str]:
     return "#%02X%02X%02X" % channels
 
 
-def _color_from_v6(color_val: object, color_rgba: object = None) -> str:
+def _color_from_v6(
+    color_val: object, color_rgba: object = None, highlighter: bool = False,
+) -> str:
     """Convert a v6 color value to a name/hex value, preferring exact RGBA."""
     rgba_hex = _rgba_to_hex(color_rgba)
     if rgba_hex is not None:
         return rgba_hex
     raw = color_val.value if hasattr(color_val, "value") else color_val
     if isinstance(raw, int):
-        return COLOR_ID_TO_NAME.get(raw, "black")
-    return "black"
+        if highlighter and raw == 0:
+            return "yellow"
+        return COLOR_ID_TO_NAME.get(raw, "yellow" if highlighter else "black")
+    return "yellow" if highlighter else "black"
 
 
 def extract_strokes_v6(rm_path: str) -> list[Stroke]:
@@ -261,14 +265,14 @@ def _line_to_stroke(line: object) -> Optional[Stroke]:
     if not points_data:
         return None
 
-    color_name = _color_from_v6(
-        getattr(line, "color", 0),
-        getattr(line, "color_rgba", None),
-    )
-
     # Tool/pen type
     tool = getattr(line, "tool", None)
     pen_type = tool.value if hasattr(tool, "value") else 0
+    color_name = _color_from_v6(
+        getattr(line, "color", 0),
+        getattr(line, "color_rgba", None),
+        pen_type in HIGHLIGHTER_PEN_TYPES,
+    )
 
     # Thickness scale
     thickness = getattr(line, "thickness_scale", 1.0)
@@ -414,7 +418,12 @@ def extract_strokes_legacy(rm_path: str) -> list[Stroke]:
             if not points:
                 continue
 
-            color_name = COLOR_ID_TO_NAME.get(color_id, "black")
+            color_name = COLOR_ID_TO_NAME.get(
+                color_id,
+                "yellow" if pen_type in HIGHLIGHTER_PEN_TYPES else "black",
+            )
+            if pen_type in HIGHLIGHTER_PEN_TYPES and color_id == 0:
+                color_name = "yellow"
             base_width = PEN_WIDTH_FACTOR.get(pen_type, 1.0)
 
             strokes.append(Stroke(
@@ -530,6 +539,7 @@ def extract_glyph_highlights(rm_path: str) -> list[GlyphHighlight]:
                 color=_color_from_v6(
                     getattr(val, "color", 9),
                     getattr(val, "color_rgba", None),
+                    True,
                 ),
             ))
 

@@ -106,6 +106,29 @@ def test_v6_invalid_rgba_falls_back_to_enum_color():
     assert _color_from_v6(3, (999, 34, 56, 255)) == "yellow"
 
 
+@pytest.mark.parametrize("color_id, expected", [
+    (10, "#A1D87D"),
+    (11, "#8BD0E5"),
+    (12, "#B782CD"),
+    (13, "#F7E851"),
+])
+def test_v6_extended_palette_without_rgba(color_id, expected):
+    assert _color_from_v6(color_id) == expected
+
+
+def test_unknown_highlighter_color_uses_gold_fallback():
+    assert _color_from_v6(99, None, True) == "yellow"
+
+
+def test_legacy_zero_highlighter_color_uses_gold_fallback():
+    assert _color_from_v6(0, None, True) == "yellow"
+
+
+def test_explicit_highlighter_color_overrides_gold_fallback():
+    assert _color_from_v6(6, None, True) == "blue"
+    assert _color_from_v6(99, (12, 34, 56, 255), True) == "#0C2238"
+
+
 class TestStrokeToSvgPath:
     def test_empty_stroke(self):
         stroke = Stroke(pen_type=2, color="black", stroke_width=1.0, points=[])
@@ -312,6 +335,34 @@ class TestExtractStrokesLegacy:
             assert len(strokes) == 1
             assert strokes[0].is_highlighter
             assert strokes[0].color == "yellow"
+        finally:
+            os.unlink(path)
+
+    def test_unknown_highlighter_color_id_uses_gold(self):
+        data = _build_legacy_v5_file([{
+            "pen_type": 18,
+            "color_id": 99,
+            "stroke_width": 15.0,
+            "points": [(100.0, 200.0, 0.5, 0.0, 1.0, 0.5)],
+        }])
+        path = _write_temp_rm(data)
+        try:
+            strokes = extract_strokes_legacy(path)
+            assert strokes[0].hex_color == "#FFD700"
+        finally:
+            os.unlink(path)
+
+    def test_zero_highlighter_color_id_uses_gold(self):
+        data = _build_legacy_v5_file([{
+            "pen_type": 5,
+            "color_id": 0,
+            "stroke_width": 15.0,
+            "points": [(100.0, 200.0, 0.5, 0.0, 1.0, 0.5)],
+        }])
+        path = _write_temp_rm(data)
+        try:
+            strokes = extract_strokes_legacy(path)
+            assert strokes[0].hex_color == "#FFD700"
         finally:
             os.unlink(path)
 

@@ -18,6 +18,7 @@ import {
   unprotectDocumentFromResync,
 } from './archive-manager';
 import type { SSHExecutor } from '../ssh/ssh-client';
+import { logger } from '../utils/logger';
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'archive-test-'));
@@ -243,7 +244,7 @@ describe('archive ignore protection', () => {
     expect(command).toContain(`$0 != "${uuid}*"`);
   });
 
-  it('rolls back only newly-added rules when verified deletion fails', async () => {
+  it('rolls back only newly-added rules when the manifest changes before deletion', async () => {
     const dir = tmpDir();
     write(dir, `${uuid}.metadata`);
     write(dir, `${uuid}.content`);
@@ -252,12 +253,15 @@ describe('archive ignore protection', () => {
       manifestFile(`${uuid}.metadata`, 'data') +
       manifestFile(`${uuid}.content`, 'data') +
       manifestFile(`${uuid}.pdf`, 'PDFDATA');
+    const changedManifest =
+      manifestFile(`${uuid}.metadata`, 'data') +
+      manifestFile(`${uuid}.content`, 'changed') +
+      manifestFile(`${uuid}.pdf`, 'PDFDATA');
     const commands: string[] = [];
     const responses = [
       { stdout: manifest, stderr: '', exitCode: 0 },
       { stdout: `/${uuid}.*\n`, stderr: '', exitCode: 0 },
-      { stdout: manifest, stderr: '', exitCode: 0 },
-      { stdout: '', stderr: 'checksum changed', exitCode: 1 },
+      { stdout: changedManifest, stderr: '', exitCode: 0 },
       { stdout: '', stderr: '', exitCode: 0 },
     ];
     const ssh = {
@@ -269,12 +273,44 @@ describe('archive ignore protection', () => {
     } as unknown as SSHExecutor;
 
     await expect(archiveVerifiedTabletDocument(ssh, dir, uuid))
-      .rejects.toThrow('checksum changed');
+      .rejects.toThrow('changed during archive');
     expect(commands[1]).toContain('grep -Fqx');
-    expect(commands[3]).toContain(sha256('PDFDATA'));
-    expect(commands[3]).toContain('&& rm -f');
-    expect(commands[4]).toContain(`$0 != "/${uuid}.*"`);
-    expect(commands[4]).not.toContain(`$0 != "/${uuid}"`);
+    expect(commands.some((command) => command.includes(`rm -f './${uuid}.`))).toBe(false);
+    expect(commands[3]).toContain(`$0 != "/${uuid}.*"`);
+    expect(commands[3]).not.toContain(`$0 != "/${uuid}"`);
+    expect(commands[3]).toContain('cmp -s');
+  });
+
+  it('keeps new ignore rules when post-delete verification finds a partial collection', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`);
+    write(dir, `${uuid}.content`);
+    write(dir, `${uuid}.pdf`, 'PDFDATA');
+    const manifest =
+      manifestFile(`${uuid}.metadata`, 'data') +
+      manifestFile(`${uuid}.content`, 'data') +
+      manifestFile(`${uuid}.pdf`, 'PDFDATA');
+    const partial = manifestFile(`${uuid}.metadata`, 'data');
+    const commands: string[] = [];
+    const responses = [
+      { stdout: manifest, stderr: '', exitCode: 0 },
+      { stdout: `/${uuid}\n/${uuid}.*\n`, stderr: '', exitCode: 0 },
+      { stdout: manifest, stderr: '', exitCode: 0 },
+      { stdout: '', stderr: '', exitCode: 0 },
+      { stdout: partial, stderr: '', exitCode: 0 },
+    ];
+    const ssh = {
+      connect: jest.fn(), disconnect: jest.fn(), ping: jest.fn(), isConnected: jest.fn(),
+      execute: jest.fn(async (command: string) => {
+        commands.push(command);
+        return responses.shift()!;
+      }),
+    } as unknown as SSHExecutor;
+
+    await expect(archiveVerifiedTabletDocument(ssh, dir, uuid))
+      .rejects.toThrow('deletion could not be verified');
+    expect(commands.some((command) => command.includes(`rm -f './${uuid}.pdf'`))).toBe(true);
+    expect(commands.some((command) => command.includes('cmp -s'))).toBe(false);
   });
 });
 
@@ -468,7 +504,7 @@ describe('archiveOldDocuments sync-method verification', () => {
     expect(ssh.execute).not.toHaveBeenCalledWith(expect.stringContaining('rm -f'));
   });
 
-  it('propagates deletion failures and does not request a successful refresh', async () => {
+  it('throws when every actual archive attempt fails', async () => {
     const dir = tmpDir();
     write(dir, `${uuid}.metadata`);
     write(dir, `${uuid}.content`);
@@ -482,13 +518,30 @@ describe('archiveOldDocuments sync-method verification', () => {
       minAgeDays: 1,
       force: true,
       localSyncDir: dir,
-    }, restart)).rejects.toThrow('checksum mismatch');
+    }, restart)).rejects.toThrow(
+      `Could not archive any eligible documents: ${uuid}: ` +
+      'Tablet rejected archive deletion: checksum mismatch',
+    );
     expect(restart).not.toHaveBeenCalled();
     const deleteCommand = (ssh.execute as jest.Mock).mock.calls
       .map((call) => call[0] as string)
       .find((command) => command.includes('rm -f'));
     expect(deleteCommand).toContain(sha256('PDFDATA'));
-    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining('.stignore.eink-sync'));
+    expect(ssh.execute).not.toHaveBeenCalledWith(expect.stringContaining('cmp -s'));
+  });
+
+  it('returns zero when an eligible document has no local backup', async () => {
+    const dir = tmpDir();
+    const ssh = archiveSsh();
+
+    await expect(archiveOldDocuments(ssh, {
+      thresholdPercent: 80,
+      minAgeDays: 1,
+      force: true,
+      localSyncDir: dir,
+    })).resolves.toBe(0);
+    expect(ssh.execute).not.toHaveBeenCalledWith(expect.stringContaining('for root in'));
+    expect(ssh.execute).not.toHaveBeenCalledWith(expect.stringContaining('rm -f'));
   });
 
   it('requests one refresh when a later document fails after an earlier deletion', async () => {
@@ -542,8 +595,65 @@ describe('archiveOldDocuments sync-method verification', () => {
       minAgeDays: 1,
       force: true,
       localSyncDir: dir,
-    }, restart)).rejects.toThrow('inventory failed');
+    }, restart)).resolves.toBe(1);
     expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues after one document fails and returns only later successes', async () => {
+    const secondUuid = '73d2d6c2-9b39-4f07-8cda-194440dbdfb7';
+    const dir = tmpDir();
+    for (const id of [uuid, secondUuid]) {
+      write(dir, `${id}.metadata`);
+      write(dir, `${id}.content`);
+      write(dir, `${id}.pdf`, 'PDFDATA');
+    }
+    const secondManifest =
+      manifestFile(`${secondUuid}.metadata`, 'data') +
+      manifestFile(`${secondUuid}.content`, 'data') +
+      manifestFile(`${secondUuid}.pdf`, 'PDFDATA');
+    let secondReads = 0;
+    const ssh = {
+      connect: jest.fn(), disconnect: jest.fn(), ping: jest.fn(), isConnected: jest.fn(),
+      execute: jest.fn(async (command: string) => {
+        if (command.startsWith('df ')) return { stdout: dfOutput(90), stderr: '', exitCode: 0 };
+        if (command.includes("-name '*.metadata'")) {
+          return {
+            stdout:
+              `/home/root/.local/share/remarkable/xochitl/${uuid}.metadata\n` +
+              `/home/root/.local/share/remarkable/xochitl/${secondUuid}.metadata\n`,
+            stderr: '', exitCode: 0,
+          };
+        }
+        if (command.startsWith('cat ')) {
+          return {
+            stdout: JSON.stringify({ lastOpened: '1', lastModified: '1', createdTime: '1' }),
+            stderr: '', exitCode: 0,
+          };
+        }
+        if (command.includes(`for root in './${uuid}'`)) {
+          return { stdout: '', stderr: 'inventory failed', exitCode: 1 };
+        }
+        if (command.includes(`for root in './${secondUuid}'`)) {
+          secondReads++;
+          return { stdout: secondReads <= 2 ? secondManifest : '', stderr: '', exitCode: 0 };
+        }
+        if (command.includes('grep -Fqx')) {
+          return { stdout: `/${secondUuid}\n/${secondUuid}.*\n`, stderr: '', exitCode: 0 };
+        }
+        return { stdout: '', stderr: '', exitCode: 0 };
+      }),
+    } as unknown as SSHExecutor;
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+    await expect(archiveOldDocuments(ssh, {
+      thresholdPercent: 80,
+      minAgeDays: 1,
+      force: true,
+      localSyncDir: dir,
+    })).resolves.toBe(1);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining(`${uuid}: Could not inventory`));
+    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining(`${secondUuid}.pdf`));
+    error.mockRestore();
   });
 });
 
@@ -565,5 +675,24 @@ describe('manual verified archive helper', () => {
     await expect(archiveVerifiedTabletDocument(ssh, dir, uuid))
       .rejects.toThrow('not completely backed up');
     expect(ssh.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('idempotently archives an already-absent collection with a valid local backup', async () => {
+    const dir = tmpDir();
+    write(dir, `${uuid}.metadata`);
+    write(dir, `${uuid}.content`);
+    write(dir, `${uuid}.pdf`, 'PDFDATA');
+    const ssh = {
+      connect: jest.fn(), disconnect: jest.fn(), ping: jest.fn(), isConnected: jest.fn(),
+      execute: jest.fn(async (command: string) => ({
+        stdout: command.includes('grep -Fqx') ? `/${uuid}\n/${uuid}.*\n` : '',
+        stderr: '',
+        exitCode: 0,
+      })),
+    } as unknown as SSHExecutor;
+
+    await expect(archiveVerifiedTabletDocument(ssh, dir, uuid)).resolves.toBeUndefined();
+    expect(ssh.execute).toHaveBeenCalledWith(expect.stringContaining('grep -Fqx'));
+    expect(ssh.execute).not.toHaveBeenCalledWith(expect.stringContaining('rm -f'));
   });
 });

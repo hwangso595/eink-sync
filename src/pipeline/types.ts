@@ -121,6 +121,12 @@ export type PageOcr = Map<number, string>;
 
 export interface MarkdownRenderer {
   /**
+   * Whether generated page drawing/OCR artifacts can be recovered safely from
+   * this renderer's managed section after only some pages fail to render.
+   */
+  readonly supportsPartialPageArtifactRecovery?: boolean;
+
+  /**
    * Render extraction results as a markdown string.
    *
    * @param result - Extraction result for a single document.

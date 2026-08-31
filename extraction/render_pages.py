@@ -23,6 +23,7 @@ Output format (JSON on stdout):
         ],
         "doc_type": "pdf",
         "visible_name": "My Document",
+        "failed_pages": [],
         "errors": []
     }
 """
@@ -251,11 +252,21 @@ def _cleanup_old_page_images(output_dir: str, doc_name: str, page_number: int, k
         output_dir, f"{glob.escape(doc_name)}_p{page_number}_*.png",
     )
     for old_file in glob.glob(pattern):
-        if old_file != keep:
+        if not _paths_refer_to_same_file(old_file, keep):
             try:
                 os.remove(old_file)
             except OSError:
                 pass
+
+
+def _paths_refer_to_same_file(left: str, right: str) -> bool:
+    """Compare paths without deleting a case-only alias on Windows."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(
+            os.path.realpath(right)
+        )
 
 
 def _cleanup_page_images_after_success(
@@ -266,6 +277,16 @@ def _cleanup_page_images_after_success(
         return
     for output_dir, doc_name, page_number, keep in rendered_pages:
         _cleanup_old_page_images(output_dir, doc_name, page_number, keep)
+
+
+def _page_has_pdf_backing(is_notebook: bool, page_redir, page_idx: int) -> bool:
+    """True for original PDF pages, even when the source PDF is unavailable."""
+    return not is_notebook and (page_redir is None or page_idx in page_redir)
+
+
+def _render_succeeded(pages: list[dict], errors: list[str]) -> bool:
+    """A mixed render is usable; an all-failed render remains fatal."""
+    return bool(pages) or not errors
 
 
 def _save_render_cache(cache_path: str, settings: dict, pages: dict) -> None:
@@ -350,6 +371,7 @@ def main() -> None:
         "pages": [],
         "doc_type": "unknown",
         "visible_name": "Unknown",
+        "failed_pages": [],
         "errors": [],
     }
 
@@ -457,9 +479,12 @@ def main() -> None:
             # A page with no redirect is an inserted notebook page.
             page_pdf = None
             pdf_page_idx = 0
+            has_pdf_backing = _page_has_pdf_backing(
+                is_notebook, content.page_redir, page_idx,
+            )
             if source_pdf:
                 if content.page_redir is not None:
-                    if page_idx in content.page_redir:
+                    if has_pdf_backing:
                         page_pdf = source_pdf
                         pdf_page_idx = content.page_redir[page_idx]
                 else:
@@ -515,7 +540,7 @@ def main() -> None:
             # PDF annotations use a shared logical grid; SceneInfo determines
             # how that grid maps onto each device's canvas. Notebook and
             # inserted pages are already stored in page pixels.
-            doc_coord_scale = geometry.pdf_coord_scale if page_pdf else 1.0
+            doc_coord_scale = geometry.pdf_coord_scale if has_pdf_backing else 1.0
 
             strokes = extract_strokes(rm_path)
             glyph_hls = extract_glyph_highlights(rm_path)
@@ -584,10 +609,11 @@ def main() -> None:
                         (args.output_dir, doc_name, page_number, out_path),
                     )
         except Exception as e:
+            output["failed_pages"].append(page_number)
             output["errors"].append(f"Page {page_number}: {e}")
             print(f"Page {page_number} error: {e}", file=sys.stderr, flush=True)
 
-    output["success"] = not output["errors"]
+    output["success"] = _render_succeeded(output["pages"], output["errors"])
     _cleanup_page_images_after_success(rendered_page_images, output["errors"])
     _save_render_cache(render_cache_path, cache_settings, new_cache)
     print(

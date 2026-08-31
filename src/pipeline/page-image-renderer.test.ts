@@ -6,7 +6,10 @@
  * would blow the fixed 120s and fail the whole (otherwise fine) render.
  */
 
-import { computeRenderTimeoutMs } from './page-image-renderer';
+import {
+  computeRenderTimeoutMs,
+  pageImageResultFromRenderOutput,
+} from './page-image-renderer';
 
 describe('computeRenderTimeoutMs', () => {
   it('uses the fixed 120s budget when OCR is off, regardless of page count', () => {
@@ -29,5 +32,29 @@ describe('computeRenderTimeoutMs', () => {
 
   it('never returns less than the base budget for odd inputs', () => {
     expect(computeRenderTimeoutMs(-5, true)).toBe(120_000);
+  });
+});
+
+describe('pageImageResultFromRenderOutput', () => {
+  it('preserves successful pages and exposes per-page errors', () => {
+    const result = pageImageResultFromRenderOutput({
+      success: true,
+      pages: [{ page_number: 1, filename: 'Doc_p1_new.png', has_strokes: true }],
+      failed_pages: [2],
+      errors: ['Page 2: malformed scene'],
+    });
+
+    expect(result.pageDrawings).toEqual(new Map([[1, 'Doc_p1_new.png']]));
+    expect(result.failedPageNumbers).toEqual([2]);
+    expect(result.warnings).toEqual(['Page 2: malformed scene']);
+  });
+
+  it('throws when every page failed so an existing note is preserved', () => {
+    expect(() => pageImageResultFromRenderOutput({
+      success: false,
+      pages: [],
+      failed_pages: [1],
+      errors: ['Page 1: malformed scene'],
+    })).toThrow('Page 1: malformed scene');
   });
 });

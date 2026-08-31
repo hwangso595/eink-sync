@@ -94,6 +94,7 @@ def read_page_geometry(rm_path: str) -> PageGeometry:
     """Read SceneInfo.paper_size, falling back safely for legacy/malformed files."""
     if read_blocks is None:
         return LEGACY_PAGE_GEOMETRY
+    latest_geometry = None
     try:
         with open(rm_path, "rb") as handle:
             for block in read_blocks(handle):
@@ -101,10 +102,12 @@ def read_page_geometry(rm_path: str) -> PageGeometry:
                 if is_scene_info or block.__class__.__name__ == "SceneInfo":
                     geometry = geometry_from_paper_size(getattr(block, "paper_size", None))
                     if geometry is not None:
-                        return geometry
+                        latest_geometry = geometry
     # A malformed or newer scene stream must never make extraction fail.  The
     # parser can surface several exception types (including EOFError), so keep
     # geometry detection fail-safe and use the legacy canvas below.
     except Exception:
         pass
+    if latest_geometry is not None:
+        return latest_geometry
     return LEGACY_PAGE_GEOMETRY

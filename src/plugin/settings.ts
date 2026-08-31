@@ -200,6 +200,22 @@ export interface ExtractionPreferences {
 /** Which method to use for syncing files from the tablet. */
 export type SyncMethodSetting = 'sftp' | 'syncthing';
 
+export type SftpSwitchProbeStatus = 'reachable' | 'configured-offline' | 'needs-setup';
+
+/** Keep a valid setup configured when an immediate SFTP probe is only transiently unavailable. */
+export function resolveSftpSwitchProbe(
+  previousSetupComplete: boolean,
+  sftpAvailable: boolean,
+): { status: SftpSwitchProbeStatus; setupComplete: boolean } {
+  if (sftpAvailable) {
+    return { status: 'reachable', setupComplete: previousSetupComplete };
+  }
+  if (previousSetupComplete) {
+    return { status: 'configured-offline', setupComplete: true };
+  }
+  return { status: 'needs-setup', setupComplete: false };
+}
+
 /** Full plugin settings persisted to data.json. */
 export interface ReMarkableBridgeSettings {
   tabletIp: string;
