@@ -31,6 +31,10 @@ export interface ReMarkableDocument {
   pageUuids: string[];
   /** Whether the source PDF is present (for PDF documents). */
   hasPdf: boolean;
+  /** Document-level tags read from the tablet's .content file. */
+  tags?: string[];
+  /** Page-level tags keyed by tablet page UUID. */
+  pageTags?: Record<string, string[]>;
 }
 
 /** A single highlight extracted from a PDF annotation. */
@@ -120,6 +124,12 @@ export type PageDrawings = Map<number, string>;
 export type PageOcr = Map<number, string>;
 
 export interface MarkdownRenderer {
+  /**
+   * Whether generated page drawing/OCR artifacts can be recovered safely from
+   * this renderer's managed section after only some pages fail to render.
+   */
+  readonly supportsPartialPageArtifactRecovery?: boolean;
+
   /**
    * Render extraction results as a markdown string.
    *
@@ -211,7 +221,7 @@ export interface PipelineConfig {
   ocrEnabled?: boolean;
   /** Tesseract language code(s) for OCR (default: 'eng'). */
   ocrLanguage?: string;
-  /** Directory of reMarkable page-template PNGs to draw behind notebook strokes. */
+  /** Directory of reMarkable PNG/SVG/.template assets for notebook backgrounds. */
   templatesDir?: string;
   /** Python executable to use (resolved managed env). Falls back to PATH detection. */
   pythonPath?: string;

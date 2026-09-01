@@ -12,7 +12,7 @@ import tempfile
 import fitz  # PyMuPDF
 
 from metadata_parser import parse_content_file
-from render_pages import _load_template_map, _resolve_template_png
+from render_pages import _load_template_map, _resolve_template_png, _resolve_template_source
 from png_renderer import render_strokes_to_png
 from stroke_renderer import Stroke, StrokePoint
 
@@ -64,6 +64,61 @@ def test_resolver_maps_name_to_png_and_skips_blank():
         assert _resolve_template_png(d, "Dots large", name_map) is None
         # No templates dir -> None.
         assert _resolve_template_png(None, "P Lines medium", name_map) is None
+
+
+def test_resolver_accepts_legacy_svg_template_art():
+    with tempfile.TemporaryDirectory() as d:
+        svg = os.path.join(d, "P Grid medium.svg")
+        with open(svg, "w", encoding="utf-8") as handle:
+            handle.write('<svg xmlns="http://www.w3.org/2000/svg" width="1404" height="1872"/>')
+
+        assert _resolve_template_source(d, "P Grid medium", {}) == (None, svg)
+
+
+def test_resolver_rejects_traversal_and_unsafe_names():
+    with tempfile.TemporaryDirectory() as parent:
+        templates = os.path.join(parent, "templates")
+        os.mkdir(templates)
+        outside = os.path.join(parent, "outside.svg")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write('<svg xmlns="http://www.w3.org/2000/svg"/>')
+
+        assert _resolve_template_source(
+            templates, "Mapped", {"Mapped": "../outside"},
+        ) == (None, None)
+        assert _resolve_template_source(templates, "..\\outside", {}) == (None, None)
+
+
+def test_resolver_rejects_template_symlinks():
+    with tempfile.TemporaryDirectory() as parent:
+        templates = os.path.join(parent, "templates")
+        os.mkdir(templates)
+        outside = os.path.join(parent, "outside.svg")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write('<svg xmlns="http://www.w3.org/2000/svg"/>')
+        link = os.path.join(templates, "Linked.svg")
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            return
+
+        assert _resolve_template_source(templates, "Linked", {}) == (None, None)
+
+
+def test_template_map_rejects_symlink_outside_root():
+    with tempfile.TemporaryDirectory() as parent:
+        templates = os.path.join(parent, "templates")
+        os.mkdir(templates)
+        outside = os.path.join(parent, "outside.json")
+        with open(outside, "w", encoding="utf-8") as handle:
+            json.dump({"templates": [{"name": "Unsafe", "filename": "Unsafe"}]}, handle)
+        link = os.path.join(templates, "templates.json")
+        try:
+            os.symlink(outside, link)
+        except (OSError, NotImplementedError):
+            return
+
+        assert _load_template_map(templates) == {}
 
 
 # --------------------------------------------------------------------------

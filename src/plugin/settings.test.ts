@@ -10,6 +10,7 @@ import {
   DEFAULT_SETTINGS,
   getDrawingsFolder,
   ReMarkableBridgeSettings,
+  resolveSftpSwitchProbe,
 } from './settings';
 
 // -------------------------------------------------------------------
@@ -134,6 +135,36 @@ describe('Empty settings fallback', () => {
   it('does not treat the USB address as a remembered WiFi address', () => {
     const settings = simulateLoadSettings({ tabletIp: '10.11.99.1' });
     expect(settings.wifiTabletIp).toBe('');
+  });
+});
+
+describe('SFTP switch readiness', () => {
+  it('keeps a completed setup configured when the tablet is temporarily offline', () => {
+    expect(resolveSftpSwitchProbe(true, false)).toEqual({
+      status: 'configured-offline',
+      setupComplete: true,
+    });
+  });
+
+  it('reports SFTP reachable without completing a previously incomplete setup', () => {
+    expect(resolveSftpSwitchProbe(false, true)).toEqual({
+      status: 'reachable',
+      setupComplete: false,
+    });
+  });
+
+  it('preserves a completed setup when its live SFTP probe succeeds', () => {
+    expect(resolveSftpSwitchProbe(true, true)).toEqual({
+      status: 'reachable',
+      setupComplete: true,
+    });
+  });
+
+  it('requires setup only when neither prior setup nor a live probe verifies SFTP', () => {
+    expect(resolveSftpSwitchProbe(false, false)).toEqual({
+      status: 'needs-setup',
+      setupComplete: false,
+    });
   });
 });
 

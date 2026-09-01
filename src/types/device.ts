@@ -6,7 +6,16 @@
  */
 
 /** Supported reMarkable hardware generations. */
-export type DeviceModel = 'reMarkable1' | 'reMarkable2' | 'unknown';
+export type DeviceModel =
+  | 'reMarkable1'
+  | 'reMarkable2'
+  | 'paperPro'
+  | 'paperProMove'
+  | 'paperPure'
+  | 'unknown';
+
+/** Normalized CPU architecture reported by the tablet kernel. */
+export type DeviceArchitecture = 'armv7' | 'aarch64' | 'unknown';
 
 /** Parsed semantic firmware version. */
 export interface FirmwareVersion {
@@ -49,6 +58,7 @@ export interface StorageInfo {
 /** Aggregated device information gathered during connection. */
 export interface DeviceInfo {
   model: DeviceModel;
+  architecture: DeviceArchitecture;
   firmware: FirmwareVersion;
   memory: MemoryInfo;
   /** Storage info for relevant partitions (root and /home). */
@@ -84,6 +94,21 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<DeviceModel, ResourceBudget> = {
     syncthingMaxMemoryMB: 128,
     minFreeMemoryMB: 200,
     minFreeStorageMB: 50,
+  },
+  paperPro: {
+    syncthingMaxMemoryMB: 192,
+    minFreeMemoryMB: 256,
+    minFreeStorageMB: 100,
+  },
+  paperProMove: {
+    syncthingMaxMemoryMB: 192,
+    minFreeMemoryMB: 256,
+    minFreeStorageMB: 100,
+  },
+  paperPure: {
+    syncthingMaxMemoryMB: 192,
+    minFreeMemoryMB: 256,
+    minFreeStorageMB: 100,
   },
   unknown: {
     syncthingMaxMemoryMB: 64,

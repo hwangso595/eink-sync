@@ -1,5 +1,6 @@
 export type {
   DeviceModel,
+  DeviceArchitecture,
   FirmwareVersion,
   MemoryInfo,
   StorageInfo,

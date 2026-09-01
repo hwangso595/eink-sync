@@ -13,8 +13,8 @@ here are the things the agz_unformatted_nature debugging surfaced:
     taps.
   - Bounds are stored in RM coords so the merger sorts strokes and
     GlyphRanges consistently within a page.
-  - rm-to-PDF coordinate conversion uses the 300/226 logical-DPI scale,
-    verified against page 26 of the AlphaGo Zero paper.
+  - rm-to-PDF conversion is the inverse of the renderer's calibrated,
+    width-fit transform, verified against page 26 of the AlphaGo Zero paper.
 """
 
 import unittest
@@ -27,6 +27,7 @@ from highlight_extractor import (
     _process_highlighter_strokes,
     ExtractedHighlight,
 )
+from page_geometry import geometry_from_paper_size
 
 
 @dataclass
@@ -73,6 +74,23 @@ class CoordinateConversionTest(unittest.TestCase):
         # PDF lines on real documents.
         pdf = _v6_rm_rect_to_pdf_rect(-243, 437, 100, 35, pdf_w=612, pdf_h=792)
         self.assertAlmostEqual(pdf["y"], 139.3, delta=2.0)
+
+    def test_current_portrait_models_match_fit_width_renderer_transform(self):
+        # The renderer fits a PDF to canvas width and uses the same measured
+        # logical grid on each portrait model. Height/aspect ratio must not
+        # introduce an independent y scale (notably on Paper Pro Move).
+        legacy = _v6_rm_rect_to_pdf_rect(
+            -243, 437, 100, 35, pdf_w=612, pdf_h=792,
+        )
+        for paper_size in ((1620, 2160), (954, 1696)):
+            geometry = geometry_from_paper_size(paper_size)
+            self.assertIsNotNone(geometry)
+            actual = _v6_rm_rect_to_pdf_rect(
+                -243, 437, 100, 35, pdf_w=612, pdf_h=792,
+                geometry=geometry,
+            )
+            for key in ("x", "y", "width", "height"):
+                self.assertAlmostEqual(actual[key], legacy[key], places=6)
 
 
 class FilteringTest(unittest.TestCase):
@@ -186,8 +204,8 @@ class IntegrationWithFakePdfTest(unittest.TestCase):
         self.assertIn("PUCT", highlights[0].text)
         self.assertNotIn("ignored", highlights[0].text)
         # Bounds are normalized to PDF coordinates for reading-order logic.
-        self.assertAlmostEqual(highlights[0].bounds["x"], 65.0, places=1)
-        self.assertAlmostEqual(highlights[0].bounds["y"], 161.8, places=1)
+        self.assertAlmostEqual(highlights[0].bounds["x"], 72.4, places=1)
+        self.assertAlmostEqual(highlights[0].bounds["y"], 161.5, places=1)
 
     def test_stroke_with_no_overlapping_text_warns(self):
         # Stroke in blank space → no text, warning generated, no highlight added

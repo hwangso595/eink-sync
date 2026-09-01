@@ -6,17 +6,22 @@
  * - Detect when Syncthing service was wiped by OTA update
  * - Guide user through re-enabling the service
  * - Verify Entware is installed to /home partition (persists across updates)
- * - Post-update health check for the full pipeline
+ * - Post-update health check for the supported sync path
  */
 
 import { SSHExecutor } from '../ssh/ssh-client';
-import { FirmwareVersion } from '../types/device';
+import { DeviceArchitecture, DeviceModel, FirmwareVersion } from '../types/device';
 import { logger } from '../utils/logger';
 import {
   getInstallationPath,
+  isKnownLegacyInstallerTarget,
   type InstallationPath,
 } from './firmware';
-import { detectFirmwareVersion } from './detector';
+import {
+  detectDeviceArchitecture,
+  detectDeviceModelIdentity,
+  detectFirmwareVersion,
+} from './detector';
 
 /** Paths where Entware should be installed (on /home, survives OTA). */
 const ENTWARE_HOME_PATH = '/home/root/.entware';
@@ -47,6 +52,8 @@ export interface HealthCheckResult {
   checks: HealthCheckItem[];
   /** Detected firmware version. */
   firmwareVersion: FirmwareVersion | null;
+  /** Detected device CPU architecture. */
+  architecture: DeviceArchitecture;
   /** Installation path for this firmware. */
   installPath: InstallationPath | null;
   /** Whether a firmware update was detected (service missing but binaries present). */
@@ -246,13 +253,9 @@ async function checkXochitlData(ssh: SSHExecutor): Promise<HealthCheckItem> {
 /**
  * Run a full post-update health check.
  *
- * Verifies the complete pipeline is functional after a firmware update:
- * 1. Firmware version detected
- * 2. Entware installed on /home (persistent)
- * 3. Syncthing binary present
- * 4. Syncthing service active
- * 5. Syncthing config present
- * 6. xochitl data accessible
+ * Verifies the applicable sync path after a firmware update. Only identified
+ * reMarkable 1/2 ARMv7 devices receive legacy Entware/Syncthing checks. Every
+ * other model/architecture uses the SFTP-only path.
  *
  * If the service was wiped by a firmware update, provides recovery steps.
  */
@@ -265,16 +268,65 @@ export async function runPostUpdateHealthCheck(
     healthy: true,
     checks: [],
     firmwareVersion: null,
+    architecture: 'unknown',
     installPath: null,
     firmwareUpdateDetected: false,
     recoverySteps: [],
   };
 
+  // Both architecture and explicit model identity determine whether the
+  // root-modifying legacy package stack applies. Either unknown fails closed.
+  try {
+    result.architecture = await detectDeviceArchitecture(ssh);
+  } catch (err) {
+    logger.warn(
+      `Could not detect device architecture: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  let deviceModel: DeviceModel = 'unknown';
+  try {
+    deviceModel = await detectDeviceModelIdentity(ssh);
+  } catch (err) {
+    logger.warn(
+      `Could not detect device model: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const usesLegacyPackageStack = isKnownLegacyInstallerTarget(
+    deviceModel,
+    result.architecture,
+  );
+  if (!usesLegacyPackageStack) {
+    result.installPath = 'sftp-only';
+  }
+
+  result.checks.push({
+    name: 'Device architecture',
+    status: result.architecture === 'unknown' ? 'warn' : 'pass',
+    message: result.architecture === 'unknown'
+      ? 'Architecture could not be identified; using the safe SFTP-only path'
+      : `Architecture ${result.architecture} detected`,
+  });
+  result.checks.push({
+    name: 'Device model',
+    status: deviceModel === 'unknown' ? 'warn' : 'pass',
+    message: deviceModel === 'unknown'
+      ? 'Model could not be verified; using the safe SFTP-only path'
+      : `Model ${deviceModel} detected`,
+  });
+
   // Check firmware version -- /etc/version alone is a build timestamp on 3.x,
   // so go through the same multi-source detection the setup wizard uses.
   try {
     result.firmwareVersion = await detectFirmwareVersion(ssh);
-    result.installPath = getInstallationPath(result.firmwareVersion);
+    const architecturePath = getInstallationPath(
+      result.firmwareVersion,
+      result.architecture,
+    );
+    result.installPath = usesLegacyPackageStack
+      ? architecturePath
+      : 'sftp-only';
 
     result.checks.push({
       name: 'Firmware version',
@@ -289,7 +341,30 @@ export async function runPostUpdateHealthCheck(
     });
   }
 
-  // Run all component checks
+  // Keep unknown/current devices read-only and limited to SFTP-accessible data.
+  if (!usesLegacyPackageStack) {
+    result.checks.push({
+      name: 'Sync mode',
+      status: result.architecture === 'unknown' || deviceModel === 'unknown'
+        ? 'warn'
+        : 'pass',
+      message: 'SFTP-only mode; legacy Entware and Syncthing service checks were skipped',
+    });
+    result.checks.push(await checkXochitlData(ssh));
+
+    result.healthy = result.checks.every(
+      (c) => c.status === 'pass' || c.status === 'warn',
+    );
+
+    logger.info(
+      `Health check complete: ${result.healthy ? 'HEALTHY' : 'ISSUES FOUND'} ` +
+      `(${result.checks.filter(c => c.status === 'pass').length}/${result.checks.length} passed)`,
+    );
+
+    return result;
+  }
+
+  // Run legacy ARMv7 component checks.
   const entwareCheck = await checkEntwareInstallation(ssh);
   const binaryCheck = await checkSyncthingBinary(ssh);
   const serviceCheck = await checkSyncthingService(ssh);
@@ -363,12 +438,13 @@ export function formatHealthCheckReport(result: HealthCheckResult): string {
 
   lines.push('=== Post-Update Health Check ===');
   lines.push('');
+  lines.push(`Architecture: ${result.architecture}`);
 
   if (result.firmwareVersion) {
     lines.push(`Firmware: ${result.firmwareVersion.raw}`);
     lines.push(`Install path: ${result.installPath}`);
-    lines.push('');
   }
+  lines.push('');
 
   for (const check of result.checks) {
     const icon = check.status === 'pass' ? 'OK' : check.status === 'warn' ? 'WARN' : 'FAIL';

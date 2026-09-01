@@ -10,6 +10,11 @@
 import type { SSHExecutor } from '../ssh/ssh-client';
 import { deleteDocumentFromTablet } from '../plugin/document-deletion';
 import {
+  archiveVerifiedTabletDocument,
+  protectDocumentFromResync,
+  unprotectDocumentFromResync,
+} from '../plugin/archive-manager';
+import {
   uploadDocumentCollection,
   type SftpUploadOptions,
   type SftpUploadProgressCallback,
@@ -42,11 +47,17 @@ interface TabletDocumentAdapterDependencies {
     onProgress?: SftpUploadProgressCallback,
   ) => Promise<SftpUploadResult>;
   deleteRemote: typeof deleteDocumentFromTablet;
+  archiveRemote: typeof archiveVerifiedTabletDocument;
+  protectRemote: typeof protectDocumentFromResync;
+  unprotectRemote: typeof unprotectDocumentFromResync;
 }
 
 const DEFAULT_DEPENDENCIES: TabletDocumentAdapterDependencies = {
   upload: uploadDocumentCollection,
   deleteRemote: deleteDocumentFromTablet,
+  archiveRemote: archiveVerifiedTabletDocument,
+  protectRemote: protectDocumentFromResync,
+  unprotectRemote: unprotectDocumentFromResync,
 };
 
 export class TabletDocumentAdapter {
@@ -96,9 +107,30 @@ export class TabletDocumentAdapter {
   ): Promise<TabletDocumentResult> {
     restoreLocal();
     try {
+      // Archived UUID patterns must be removed before upload or Syncthing can
+      // immediately hide/delete the restored collection again.
+      await this.withSSH((ssh) => this.dependencies.unprotectRemote(ssh, uuid));
       return await this.sendDocument(uuid, localSyncDir, onProgress);
     } catch (err) {
-      rollbackLocal();
+      let recoveryError: unknown;
+      try {
+        rollbackLocal();
+      } catch (rollbackErr) {
+        recoveryError = rollbackErr;
+      }
+      try {
+        // The local collection is back in Archive, so restore its protection.
+        await this.withSSH((ssh) => this.dependencies.protectRemote(ssh, uuid));
+      } catch (protectErr) {
+        recoveryError = recoveryError ?? protectErr;
+      }
+      if (recoveryError) {
+        const original = err instanceof Error ? err.message : String(err);
+        const recovery = recoveryError instanceof Error
+          ? recoveryError.message
+          : typeof recoveryError === 'string' ? recoveryError : 'Unknown rollback error';
+        throw new Error(`${original} Restore rollback also failed: ${recovery}`);
+      }
       throw err;
     }
   }
@@ -126,8 +158,17 @@ export class TabletDocumentAdapter {
   /** Delete the tablet copy, archive the existing local copy, and refresh. */
   async archiveDocument(
     uuid: string,
+    localSyncDir: string,
     archiveLocal: () => void,
   ): Promise<TabletDocumentResult> {
-    return await this.deleteDocument(uuid, archiveLocal);
+    await this.withSSH((ssh) => this.dependencies.archiveRemote(ssh, localSyncDir, uuid));
+
+    let tabletLibraryRefreshed = false;
+    try {
+      archiveLocal();
+    } finally {
+      tabletLibraryRefreshed = await this.refreshTabletLibrary();
+    }
+    return { tabletLibraryRefreshed };
   }
 }

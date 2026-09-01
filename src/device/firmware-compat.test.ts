@@ -28,6 +28,14 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>>): SSHEx
           };
         }
       }
+      // Existing health-check fixtures represent legacy ARMv7 devices unless
+      // a test opts into another architecture explicitly.
+      if (cmd.includes('uname -m')) {
+        return { stdout: 'armv7l', stderr: '', exitCode: 0 };
+      }
+      if (cmd.includes('/sys/devices/soc0/machine')) {
+        return { stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 };
+      }
       // Default: command not found
       return { stdout: '', stderr: 'command not found', exitCode: 127 };
     }),
@@ -53,6 +61,7 @@ describe('runPostUpdateHealthCheck', () => {
     expect(result.healthy).toBe(true);
     expect(result.firmwareVersion).not.toBeNull();
     expect(result.firmwareVersion!.raw).toBe('3.26.0.68');
+    expect(result.architecture).toBe('armv7');
     expect(result.installPath).toBe('entware');
     expect(result.firmwareUpdateDetected).toBe(false);
   });
@@ -79,7 +88,7 @@ describe('runPostUpdateHealthCheck', () => {
     expect(result.recoverySteps.some(s => s.includes('firmware update'))).toBe(true);
   });
 
-  it('handles toltec firmware range (2.6-3.3)', async () => {
+  it('uses the Entware health path for supported ARMv7 firmware 2.6-3.3', async () => {
     const ssh = createMockSSH({
       'cat /etc/version': { stdout: '3.2.0.50' },
       'test -e /home/root/.entware': { stdout: 'yes' },
@@ -93,7 +102,15 @@ describe('runPostUpdateHealthCheck', () => {
 
     const result = await runPostUpdateHealthCheck(ssh);
 
-    expect(result.installPath).toBe('toltec');
+    const commands = (ssh.execute as jest.Mock).mock.calls
+      .map(([command]: [string]) => command)
+      .join('\n');
+    const entwareCheck = result.checks.find(check => check.name === 'Entware installation');
+
+    expect(result.architecture).toBe('armv7');
+    expect(result.installPath).toBe('entware');
+    expect(entwareCheck?.status).toBe('pass');
+    expect(commands).toContain('.entware');
   });
 
   it('marks Entware as warning if not on /home partition', async () => {
@@ -132,6 +149,82 @@ describe('runPostUpdateHealthCheck', () => {
     expect(xochitlCheck).toBeDefined();
     expect(xochitlCheck!.status).toBe('fail');
   });
+
+  it('uses a read-only SFTP health check on AArch64 devices', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'aarch64' },
+      'cat /etc/version': { stdout: '3.26.0.68' },
+      'test -e /home/root/.local/share/remarkable/xochitl': { stdout: 'yes' },
+      'ls /home/root/.local/share/remarkable/xochitl/*.metadata': { stdout: '7' },
+    });
+
+    const result = await runPostUpdateHealthCheck(ssh);
+    const commands = (ssh.execute as jest.Mock).mock.calls
+      .map(([command]: [string]) => command)
+      .join('\n');
+
+    expect(result.architecture).toBe('aarch64');
+    expect(result.installPath).toBe('sftp-only');
+    expect(result.firmwareUpdateDetected).toBe(false);
+    expect(result.recoverySteps).toEqual([]);
+    expect(result.checks.map(check => check.name)).not.toEqual(
+      expect.arrayContaining([
+        'Entware installation',
+        'Syncthing binary',
+        'Syncthing service',
+        'Syncthing config',
+      ]),
+    );
+    expect(commands).not.toContain('.entware');
+    expect(commands).not.toContain('systemctl');
+    expect(commands).not.toContain('which syncthing');
+    expect(formatHealthCheckReport(result)).not.toMatch(/opkg install|systemctl enable|re-run the setup wizard/i);
+  });
+
+  it('fails closed to SFTP-only when architecture and firmware are unknown', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'x86_64' },
+      'test -e /home/root/.local/share/remarkable/xochitl': { stdout: 'yes' },
+      'ls /home/root/.local/share/remarkable/xochitl/*.metadata': { stdout: '1' },
+    });
+
+    const result = await runPostUpdateHealthCheck(ssh);
+    const commands = (ssh.execute as jest.Mock).mock.calls
+      .map(([command]: [string]) => command)
+      .join('\n');
+
+    expect(result.architecture).toBe('unknown');
+    expect(result.firmwareVersion).toBeNull();
+    expect(result.installPath).toBe('sftp-only');
+    expect(result.firmwareUpdateDetected).toBe(false);
+    expect(result.recoverySteps).toEqual([]);
+    expect(commands).not.toContain('.entware');
+    expect(commands).not.toContain('systemctl');
+  });
+
+  it('skips legacy health checks for an unknown ARMv7 model', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'armv7l' },
+      '/sys/devices/soc0/machine': {
+        stdout: 'reMarkable Future ARM Device',
+      },
+      '/proc/device-tree/model': { stdout: '', exitCode: 1 },
+      '/proc/device-tree/compatible': { stdout: '', exitCode: 1 },
+      'cat /etc/version': { stdout: '3.26.0.68' },
+      'test -e /home/root/.local/share/remarkable/xochitl': { stdout: 'yes' },
+      'ls /home/root/.local/share/remarkable/xochitl/*.metadata': { stdout: '1' },
+    });
+
+    const result = await runPostUpdateHealthCheck(ssh);
+    const commands = (ssh.execute as jest.Mock).mock.calls
+      .map(([command]: [string]) => command)
+      .join('\n');
+
+    expect(result.architecture).toBe('armv7');
+    expect(result.installPath).toBe('sftp-only');
+    expect(commands).not.toContain('.entware');
+    expect(commands).not.toContain('systemctl');
+  });
 });
 
 describe('formatHealthCheckReport', () => {
@@ -142,6 +235,7 @@ describe('formatHealthCheckReport', () => {
         { name: 'Test', status: 'pass', message: 'All good' },
       ],
       firmwareVersion: { raw: '3.26.0.68', major: 3, minor: 26, patch: 0, build: 68 },
+      architecture: 'armv7',
       installPath: 'entware',
       firmwareUpdateDetected: false,
       recoverySteps: [],
@@ -149,6 +243,7 @@ describe('formatHealthCheckReport', () => {
 
     const report = formatHealthCheckReport(result);
     expect(report).toContain('3.26.0.68');
+    expect(report).toContain('Architecture: armv7');
     expect(report).toContain('HEALTHY');
     expect(report).toContain('[OK]');
   });
@@ -160,6 +255,7 @@ describe('formatHealthCheckReport', () => {
         { name: 'Service', status: 'fail', message: 'Missing', recoveryHint: 'Fix it' },
       ],
       firmwareVersion: { raw: '3.28.0.100', major: 3, minor: 28, patch: 0, build: 100 },
+      architecture: 'armv7',
       installPath: 'entware',
       firmwareUpdateDetected: true,
       recoverySteps: ['A firmware update appears to have removed the Syncthing service.'],

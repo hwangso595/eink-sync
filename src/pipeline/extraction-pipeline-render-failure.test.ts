@@ -20,6 +20,7 @@ import {
 import { runExtractionPipeline } from './extraction-pipeline';
 import { renderPageImages } from './page-image-renderer';
 import { renderMarkdown, generateOutputFilename, DefaultMarkdownRenderer } from './markdown-renderer';
+import { TemplateMarkdownRenderer } from './template-engine';
 
 const mockedRender = renderPageImages as jest.Mock;
 
@@ -53,11 +54,15 @@ function result(d: ReMarkableDocument, highlights: ExtractionResult['highlights'
   };
 }
 
-function deps(d: ReMarkableDocument, extractionResults: ExtractionResult[]): PipelineDependencies {
+function deps(
+  d: ReMarkableDocument,
+  extractionResults: ExtractionResult[],
+  renderer: PipelineDependencies['renderer'] = new DefaultMarkdownRenderer(),
+): PipelineDependencies {
   return {
     discovery: { discoverDocuments: async () => [d] },
     extractor: { extractHighlights: async () => extractionResults },
-    renderer: new DefaultMarkdownRenderer(),
+    renderer,
   };
 }
 
@@ -119,6 +124,158 @@ describe('page-render failure preservation', () => {
     await runExtractionPipeline(makeConfig(), deps(d, [result(d, [])]));
 
     expect(fs.readFileSync(notePath, 'utf-8')).toContain('nb-1_p1.png'); // not wiped
+  });
+
+  it('updates successful pages and carries only failed-page drawing/OCR forward', async () => {
+    const d = doc({ pageCount: 2, pageUuids: ['p1', 'p2'] });
+    const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');
+    const oldHighlights = [
+      { text: 'OLD PAGE ONE TEXT', pageNumber: 1, color: null, bounds: null, createdAt: null },
+      { text: 'OLD PAGE TWO TEXT', pageNumber: 2, color: null, bounds: null, createdAt: null },
+    ];
+    const oldDrawings = new Map<number, string>([
+      [1, 'Drawing-Doc_p1_1111.png'],
+      [2, 'Drawing-Doc_p2_2222.png'],
+    ]);
+    const oldOcr = new Map<number, string>([
+      [1, 'old page one OCR'],
+      [2, 'old page two OCR'],
+    ]);
+    fs.writeFileSync(
+      notePath,
+      renderMarkdown(result(d, oldHighlights), 'draw-1.pdf', oldDrawings, undefined, oldOcr),
+      'utf-8',
+    );
+
+    mockedRender.mockResolvedValue({
+      pageDrawings: new Map([[1, 'Drawing-Doc_p1_1111111111111111.png']]),
+      pageOcr: new Map([[1, 'new page one OCR']]),
+      rendererHighlights: [],
+      warnings: ['Page 2: malformed scene'],
+      failedPageNumbers: [2],
+    });
+    const freshHighlights = [
+      { text: 'NEW PAGE ONE TEXT', pageNumber: 1, color: null, bounds: null, createdAt: null },
+      { text: 'NEW PAGE TWO TEXT', pageNumber: 2, color: null, bounds: null, createdAt: null },
+    ];
+
+    await runExtractionPipeline(makeConfig(), deps(d, [result(d, freshHighlights)]));
+
+    const after = fs.readFileSync(notePath, 'utf-8');
+    expect(after).toContain('Drawing-Doc_p1_1111111111111111.png');
+    expect(after).toContain('new page one OCR');
+    expect(after).not.toContain('Drawing-Doc_p1_1111.png');
+    expect(after).not.toContain('old page one OCR');
+    expect(after).toContain('Drawing-Doc_p2_2222.png');
+    expect(after).toContain('old page two OCR');
+    expect(after).toContain('NEW PAGE ONE TEXT');
+    expect(after).toContain('NEW PAGE TWO TEXT');
+    expect(after).not.toContain('OLD PAGE ONE TEXT');
+    expect(after).not.toContain('OLD PAGE TWO TEXT');
+  });
+
+  it('leaves an existing note unchanged when failed-page OCR cannot be associated safely', async () => {
+    const d = doc({ pageCount: 2, pageUuids: ['p1', 'p2'] });
+    const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');
+    const unsafe = [
+      'Personal preface',
+      '<!-- eink-sync:start -->',
+      '## Highlights',
+      '',
+      '> [!note]- Handwriting (OCR)',
+      '> page unknown',
+      '<!-- eink-sync:end -->',
+      'Personal appendix',
+    ].join('\n');
+    fs.writeFileSync(notePath, unsafe, 'utf-8');
+    mockedRender.mockResolvedValue({
+      pageDrawings: new Map([[1, 'Drawing-Doc_p1_newhash.png']]),
+      pageOcr: new Map<number, string>(),
+      rendererHighlights: [],
+      warnings: ['Page 2: malformed scene'],
+      failedPageNumbers: [2],
+    });
+
+    const runResult = await runExtractionPipeline(
+      makeConfig(),
+      deps(d, [result(d, [
+        { text: 'NEW TEXT', pageNumber: 1, color: null, bounds: null, createdAt: null },
+      ])]),
+    );
+
+    expect(fs.readFileSync(notePath, 'utf-8')).toBe(unsafe);
+    expect(runResult.errors.join(' ')).toContain('could not be merged safely');
+  });
+
+  it('uses the final page token in a flat drawing filename', async () => {
+    const d = doc({ visibleName: 'Report_p2', pageCount: 2, pageUuids: ['p1', 'p2'] });
+    const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');
+    const flatRenderer = new DefaultMarkdownRenderer(undefined, true, false);
+    const oldDrawings = new Map<number, string>([
+      [1, 'Report_p2_p1_abcd.png'],
+      [2, 'Report_p2_p2_abcd.png'],
+    ]);
+    fs.writeFileSync(
+      notePath,
+      flatRenderer.render(result(d), 'draw-1.pdf', oldDrawings),
+      'utf-8',
+    );
+
+    mockedRender.mockResolvedValue({
+      pageDrawings: new Map([[2, 'Report_p2_p2_2222222222222222.png']]),
+      pageOcr: new Map<number, string>(),
+      rendererHighlights: [],
+      warnings: ['Page 1: malformed scene'],
+      failedPageNumbers: [1],
+    });
+
+    await runExtractionPipeline(
+      makeConfig({ groupByPage: false }),
+      deps(d, [result(d)], flatRenderer),
+    );
+
+    const after = fs.readFileSync(notePath, 'utf-8');
+    expect(after).toContain('Report_p2_p1_abcd.png');
+    expect(after).toContain('Report_p2_p2_2222222222222222.png');
+    expect(after).not.toContain('Report_p2_p2_abcd.png');
+  });
+
+  it('leaves custom-template notes unchanged after a partial render', async () => {
+    const d = doc({ pageCount: 2, pageUuids: ['p1', 'p2'] });
+    const notePath = path.join(outputDir, generateOutputFilename(d.visibleName) + '.md');
+    const template = [
+      '<!-- eink-sync:start -->',
+      '{{#each pages}}',
+      '### Page {{page_number}}',
+      '{{#if annotation}}![[{{annotation}}|500]]{{/if}}',
+      '{{#if ocr}}{{ocr}}{{/if}}',
+      '{{/each_pages}}',
+      '<!-- eink-sync:end -->',
+    ].join('\n');
+    const templateRenderer = new TemplateMarkdownRenderer(template);
+    const original = templateRenderer.render(
+      result(d),
+      'draw-1.pdf',
+      new Map([[1, 'Drawing-Doc_p1_1111.png'], [2, 'Drawing-Doc_p2_2222.png']]),
+      new Map([[1, 'old page one OCR'], [2, 'old page two OCR']]),
+    );
+    fs.writeFileSync(notePath, original, 'utf-8');
+
+    mockedRender.mockResolvedValue({
+      pageDrawings: new Map([[1, 'Drawing-Doc_p1_1111111111111111.png']]),
+      pageOcr: new Map([[1, 'new page one OCR']]),
+      rendererHighlights: [],
+      warnings: ['Page 2: malformed scene'],
+      failedPageNumbers: [2],
+    });
+
+    const runResult = await runExtractionPipeline(
+      makeConfig({ template }),
+      deps(d, [result(d)], templateRenderer),
+    );
+
+    expect(fs.readFileSync(notePath, 'utf-8')).toBe(original);
+    expect(runResult.errors.join(' ')).toContain('could not be merged safely');
   });
 
   it('surfaces a render failure for a brand-new note (not silent)', async () => {

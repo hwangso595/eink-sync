@@ -10,13 +10,14 @@
  *   an additional dependency.
  * - Debounces changes with a configurable settle time (default: 10s)
  *   to handle Syncthing's incremental file transfers.
- * - Only watches for .rm and .metadata file changes (not .pdf, which
- *   are large and slow to transfer).
+ * - By default, watches every path belonging to an exact UUID / UUID.*
+ *   document collection so future firmware sidecars are not missed.
  * - Emits events for integration with the Obsidian plugin lifecycle.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { documentUuidForCollectionEntry } from '../sync/document-collection';
 import { logger } from '../utils/logger';
 
 /** Events emitted by the file watcher. */
@@ -39,7 +40,7 @@ export interface FileWatcherConfig {
   xochitlPath: string;
   /** Debounce time in milliseconds before triggering extraction (default: 10000). */
   debounceMs?: number;
-  /** File extensions to watch (default: ['.rm', '.metadata', '.content']). */
+  /** Optional file-extension override for callers that need a narrower policy. */
   watchExtensions?: string[];
   /** Whether to watch recursively (default: true). */
   recursive?: boolean;
@@ -53,9 +54,6 @@ export interface FileWatcherConfig {
 
 /** Default debounce time: 10 seconds to let Syncthing finish. */
 const DEFAULT_DEBOUNCE_MS = 10_000;
-
-/** Default file extensions to watch for changes. */
-const DEFAULT_WATCH_EXTENSIONS = ['.rm', '.metadata', '.content'];
 
 /**
  * File watcher that monitors the xochitl directory for changes.
@@ -81,14 +79,16 @@ export class XochitlFileWatcher {
   private running = false;
   private pendingChanges = 0;
   private lastExtractionTrigger: number | null = null;
+  private readonly hasWatchExtensionsOverride: boolean;
   /** Outbound document collections that must not trigger extraction yet. */
   private ignoredDocumentUuids = new Set<string>();
 
   constructor(config: FileWatcherConfig) {
+    this.hasWatchExtensionsOverride = config.watchExtensions !== undefined;
     this.config = {
       xochitlPath: config.xochitlPath,
       debounceMs: config.debounceMs ?? DEFAULT_DEBOUNCE_MS,
-      watchExtensions: config.watchExtensions ?? DEFAULT_WATCH_EXTENSIONS,
+      watchExtensions: config.watchExtensions ?? [],
       recursive: config.recursive ?? true,
     };
     this.registerInterval = config.registerInterval;
@@ -211,12 +211,9 @@ export class XochitlFileWatcher {
     if (!filename) return;
 
     const normalizedFilename = filename.replace(/\\/g, '/').toLowerCase();
-    const ignored = [...this.ignoredDocumentUuids].some(
-      (uuid) => normalizedFilename === uuid
-        || normalizedFilename.startsWith(`${uuid}.`)
-        || normalizedFilename.startsWith(`${uuid}/`),
-    );
-    if (ignored) {
+    const collectionEntry = normalizedFilename.split('/')[0] ?? '';
+    const documentUuid = documentUuidForCollectionEntry(collectionEntry);
+    if (documentUuid !== null && this.ignoredDocumentUuids.has(documentUuid)) {
       logger.debug(`Ignoring outbound document change: ${filename}`);
       return;
     }
@@ -226,9 +223,13 @@ export class XochitlFileWatcher {
       return;
     }
 
-    // Filter by extension
+    // The default follows the document collection rather than a fixed
+    // extension allowlist. Explicit overrides retain extension-only behavior.
     const ext = path.extname(filename).toLowerCase();
-    if (!this.config.watchExtensions.includes(ext)) {
+    const relevant = this.hasWatchExtensionsOverride
+      ? this.config.watchExtensions.includes(ext)
+      : documentUuid !== null;
+    if (!relevant) {
       return;
     }
 

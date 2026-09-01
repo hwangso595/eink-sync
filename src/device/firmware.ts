@@ -4,13 +4,13 @@
  * reMarkable firmware versions follow the pattern: major.minor.patch[.build]
  * e.g., "3.26.0.68" or "3.27.3.0". Some builds report only three components.
  *
- * Compatibility routing (per spec):
- * - Firmware 2.6 to 3.3: Toltec path (package manager available)
- * - Firmware 3.4+: Entware-only path (Toltec incompatible)
+ * Compatibility routing:
+ * - Supported firmware on ARMv7: pinned Entware path
+ * - Supported firmware on current or unknown architectures: SFTP-only path
  * - Firmware < 2.6: unsupported
  */
 
-import { FirmwareVersion } from '../types/device';
+import { DeviceArchitecture, DeviceModel, FirmwareVersion } from '../types/device';
 import { BridgeError, ErrorCode } from '../types/errors';
 
 /** Regex for reMarkable firmware version strings; the build component is optional. */
@@ -21,9 +21,6 @@ const BUILD_TIMESTAMP_REGEX = /^\d{8,}$/;
 
 /** Minimum supported firmware version. */
 const MIN_FIRMWARE = { major: 2, minor: 6 };
-
-/** Firmware threshold where Toltec stops working and Entware is required. */
-const ENTWARE_ONLY_THRESHOLD = { major: 3, minor: 4 };
 
 /** Firmware version where v6 .rm file format was introduced. */
 const V6_FORMAT_THRESHOLD = { major: 3, minor: 0 };
@@ -76,15 +73,27 @@ export function compareFirmwareVersions(a: FirmwareVersion, b: FirmwareVersion):
   return a.build - b.build;
 }
 
-/** Which installation path to use based on firmware version. */
-export type InstallationPath = 'toltec' | 'entware';
+/** Which installation path to use based on firmware version and device architecture. */
+export type InstallationPath = 'entware' | 'sftp-only';
+
+/** Fail closed: the legacy root-modifying installer is known only on rM1/rM2. */
+export function isKnownLegacyInstallerTarget(
+  model: DeviceModel,
+  architecture: DeviceArchitecture,
+): boolean {
+  return architecture === 'armv7'
+    && (model === 'reMarkable1' || model === 'reMarkable2');
+}
 
 /**
- * Determine the installation path for a given firmware version.
+ * Determine the installation path for a given firmware version and architecture.
  *
  * @throws BridgeError if the firmware is too old to support.
  */
-export function getInstallationPath(firmware: FirmwareVersion): InstallationPath {
+export function getInstallationPath(
+  firmware: FirmwareVersion,
+  architecture: DeviceArchitecture,
+): InstallationPath {
   if (firmware.major < MIN_FIRMWARE.major ||
       (firmware.major === MIN_FIRMWARE.major && firmware.minor < MIN_FIRMWARE.minor)) {
     throw new BridgeError(
@@ -94,12 +103,13 @@ export function getInstallationPath(firmware: FirmwareVersion): InstallationPath
     );
   }
 
-  if (firmware.major > ENTWARE_ONLY_THRESHOLD.major ||
-      (firmware.major === ENTWARE_ONLY_THRESHOLD.major && firmware.minor >= ENTWARE_ONLY_THRESHOLD.minor)) {
-    return 'entware';
+  // The package installers represented below are ARMv7-only. SFTP itself is
+  // architecture-independent and remains supported on current/unknown models.
+  if (architecture !== 'armv7') {
+    return 'sftp-only';
   }
 
-  return 'toltec';
+  return 'entware';
 }
 
 /**

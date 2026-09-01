@@ -45,12 +45,20 @@ import { initHostKeyStore } from '../ssh/host-key-store';
 
 // Sprint 2 imports
 import {
-  isSyncthingInstalled,
   isEntwareInstalled,
+  getSyncthingVersion,
   installSyncStack,
   type InstallProgressCallback,
 } from '../sync/installer';
 import { materializeExtractionAssets } from './extraction-assets';
+import { parseGlobalIpv4, parseRouteSourceIpv4, USB_TABLET_IP } from './net-utils';
+import {
+  commitUsbConnection,
+  enableVerifyAndCommitWifiConnection,
+  verifyAndCommitUsbConnection,
+  verifyAndCommitWifiConnection,
+  type WifiTransitionResult,
+} from './wifi-setup';
 
 /**
  * Progress callback for the multi-phase install flow.
@@ -657,6 +665,51 @@ export default class ReMarkableBridgePlugin extends Plugin {
     };
   }
 
+  /** Verify setup over the fixed USB endpoint without trusting stale WiFi settings. */
+  async connectAndVerifyUsb(
+    onProgress?: ProgressCallback,
+  ): Promise<ConnectionResult> {
+    const config = {
+      ...this.buildSSHConfig(),
+      host: USB_TABLET_IP,
+      method: 'usb' as const,
+    };
+    return verifyAndCommitUsbConnection(
+      this.settings,
+      () => connectAndVerify(config, onProgress),
+      () => this.saveSettings(),
+      (result) => result.success,
+    );
+  }
+
+  /**
+   * Explicit USB-authenticated WiFi setup. Settings change only after the
+   * discovered endpoint presents the USB tablet's host key and answers SSH.
+   */
+  async enableAndUseWifiViaUsb(): Promise<WifiTransitionResult> {
+    return enableVerifyAndCommitWifiConnection(
+      this.buildSSHConfig(),
+      this.settings,
+      () => this.saveSettings(),
+    );
+  }
+
+  /** Test a manual/remembered WiFi endpoint before selecting or saving it. */
+  async useVerifiedWifiAddress(host: string): Promise<void> {
+    await verifyAndCommitWifiConnection(
+      this.buildSSHConfig(),
+      this.settings,
+      host.trim(),
+      () => this.saveSettings(),
+    );
+  }
+
+  /** Select USB while retaining the last verified WiFi address for later. */
+  async useUsbConnection(): Promise<void> {
+    await commitUsbConnection(this.settings, () => this.saveSettings());
+    this.toggleAutoSyncTimer();
+  }
+
   /**
    * Open an SSH session, run the callback, and guarantee cleanup.
    * Centralises the connect-try-finally-disconnect pattern so every
@@ -700,6 +753,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
         localSyncDir,
         includeEpub: this.settings.includeEpub,
       });
@@ -716,6 +770,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
       },
     });
   }
@@ -735,6 +790,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
       },
       <T>(fn: (ssh: SSHExecutor) => Promise<T>) => this.withSSH(fn),
       () => this.refreshTabletLibraryNow(),
@@ -909,7 +965,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
   }
 
   /**
-   * Detect the tablet's WiFi IP address via SSH and read the wlan0 interface IP.
+   * Detect the tablet's WiFi IP address via SSH without assuming an interface name.
    * Returns null if the tablet is not on WiFi.
    *
    * @param overrideHost - Connect to this host instead of the saved tablet IP.
@@ -932,9 +988,12 @@ export default class ReMarkableBridgePlugin extends Plugin {
     );
     try {
       await ssh.connect();
-      const result = await ssh.execute('ip -4 addr show wlan0 2>/dev/null');
-      const match = result.stdout.match(/inet\s+(\d+\.\d+\.\d+\.\d+)/);
-      return match ? match[1] : null;
+      const route = await ssh.execute('ip -4 route get 1.1.1.1 2>/dev/null');
+      const routeAddress = route.exitCode === 0 ? parseRouteSourceIpv4(route.stdout) : null;
+      if (routeAddress) return routeAddress;
+
+      const addresses = await ssh.execute('ip -4 addr show scope global 2>/dev/null');
+      return addresses.exitCode === 0 ? parseGlobalIpv4(addresses.stdout) : null;
     } finally {
       await ssh.disconnect();
     }
@@ -1014,6 +1073,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
         username: 'root',
         password: this.settings.rootPassword,
         timeoutMs: this.settings.sshTimeoutMs,
+        connectionMethod: this.settings.connectionMethod,
         localSyncDir: resolvePath(this.app, src.syncFolder),
         includeEpub: this.settings.includeEpub,
       });
@@ -1039,6 +1099,7 @@ export default class ReMarkableBridgePlugin extends Plugin {
           username: 'root',
           password: this.settings.rootPassword,
           timeoutMs: this.settings.sshTimeoutMs,
+          connectionMethod: this.settings.connectionMethod,
           localSyncDir: resolvePath(this.app, targetSources[0].syncFolder),
           includeEpub: this.settings.includeEpub,
         });
@@ -1108,8 +1169,8 @@ export default class ReMarkableBridgePlugin extends Plugin {
   async verifySyncInstallation(): Promise<boolean> {
     return this.withSSH(async (ssh) => {
       const entware = await isEntwareInstalled(ssh);
-      const syncthing = await isSyncthingInstalled(ssh);
-      return entware && syncthing;
+      const syncthingVersion = await getSyncthingVersion(ssh);
+      return entware && syncthingVersion !== null;
     });
   }
 
@@ -1883,7 +1944,6 @@ export default class ReMarkableBridgePlugin extends Plugin {
           minAgeDays: this.settings.archiveMinAgeDays,
           force,
           localSyncDir,
-          allowSftpSkippedFiles: (this.settings.syncMethod ?? 'sftp') === 'sftp',
         }, () => this.scheduleXochitlRestart());
       });
 

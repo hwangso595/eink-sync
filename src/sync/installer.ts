@@ -7,11 +7,11 @@
  * 3. Install Syncthing via opkg
  * 4. Verify the Syncthing binary works
  *
- * Safety guarantees:
- * - All installs go to /home/root/.entware (survives firmware updates)
- * - Never touches the root partition or xochitl files
- * - Each step is individually reversible
- * - Entware removal: rm -rf /home/root/.entware + remove PATH from .bashrc
+ * Legacy layout and safety notes:
+ * - Package data lives in /home/root/.entware
+ * - The upstream installer also creates /opt and /etc/systemd/system/opt.mount
+ * - It is restricted to the legacy ARMv7 devices for which it was designed
+ * - It never modifies xochitl document files
  * - Syncthing removal: opkg remove syncthing
  */
 
@@ -19,6 +19,11 @@ import type { SSHExecutor } from '../ssh/ssh-client';
 import { BridgeError, ErrorCode } from '../types/errors';
 import { SYNCTHING_BIN_PATH } from './types';
 import { logger } from '../utils/logger';
+import {
+  detectDeviceArchitecture,
+  detectDeviceModelIdentity,
+} from '../device/detector';
+import { isKnownLegacyInstallerTarget } from '../device/firmware';
 
 /** Callback for reporting installation progress. */
 export type InstallProgressCallback = (step: string, detail: string) => void;
@@ -35,8 +40,17 @@ export interface InstallResult {
   syncthingVersion: string | null;
 }
 
-/** URL for the Entware installer script (Evidlo's remarkable_entware). */
-const ENTWARE_INSTALL_URL = 'https://raw.githubusercontent.com/Evidlo/remarkable_entware/master/install.sh';
+/**
+ * Pinned legacy ARMv7 Entware installer and its SHA-256 digest.
+ *
+ * Never point this at a mutable branch: the script runs as root. This installer
+ * is intentionally disabled for AArch64 devices because it configures the
+ * armv7sf feed and writes protected root-filesystem paths.
+ */
+const ENTWARE_INSTALL_COMMIT = '5636b8b56a44eb122a5d2253dfdb0addf28c744d';
+const ENTWARE_INSTALL_URL =
+  `https://raw.githubusercontent.com/Evidlo/remarkable_entware/${ENTWARE_INSTALL_COMMIT}/install.sh`;
+const ENTWARE_INSTALL_SHA256 = 'e9c864d27197b9a68fd8d1c3945b23a4352d8285377bfe9e92cf285c6c921d5d';
 
 /** The opkg binary path inside Entware. */
 const OPKG_BIN = '/home/root/.entware/bin/opkg';
@@ -61,16 +75,10 @@ export async function isEntwareInstalled(ssh: SSHExecutor): Promise<boolean> {
 }
 
 /**
- * Check whether Syncthing is installed via Entware.
- *
- * Verifies the binary exists and is executable.
+ * Check whether Syncthing is installed via Entware and can execute.
  */
 export async function isSyncthingInstalled(ssh: SSHExecutor): Promise<boolean> {
-  const result = await ssh.execute(
-    `test -x ${SYNCTHING_BIN_PATH} && echo "yes" || echo "no"`,
-    CHECK_TIMEOUT_MS,
-  );
-  return result.exitCode === 0 && result.stdout.trim() === 'yes';
+  return (await getSyncthingVersion(ssh)) !== null;
 }
 
 /**
@@ -90,17 +98,37 @@ export async function getSyncthingVersion(ssh: SSHExecutor): Promise<string | nu
   return result.stdout.trim().split('\n')[0];
 }
 
+/** Fail closed before invoking the legacy ARMv7 package stack. */
+async function requireLegacyArmv7(ssh: SSHExecutor): Promise<void> {
+  const architecture = await detectDeviceArchitecture(ssh);
+  const model = await detectDeviceModelIdentity(ssh);
+  if (isKnownLegacyInstallerTarget(model, architecture)) return;
+
+  throw new BridgeError(
+    ErrorCode.SYNC_INSTALL_FAILED,
+    architecture === 'aarch64'
+      ? 'Automatic Syncthing installation is not supported on this AArch64 reMarkable.'
+      : architecture !== 'armv7'
+        ? 'Automatic Syncthing installation is disabled because the tablet architecture could not be verified.'
+        : `Automatic Syncthing installation is disabled for the unverified tablet model "${model}".`,
+    'Use SFTP sync on this tablet. The legacy Entware installer is only safe for ARMv7 reMarkable 1/2 devices.',
+  );
+}
+
 /**
  * Install Entware on the reMarkable tablet.
  *
  * Downloads and runs the Evidlo/remarkable_entware installer script.
- * This creates /home/root/.entware and adds it to PATH.
+ * This creates /home/root/.entware, bind-mounts it at /opt, and creates an
+ * opt.mount systemd unit under /etc. Those root-filesystem changes are why the
+ * installer is not offered on current protected AArch64 devices.
  *
  * Prerequisites:
  * - SSH connection to the tablet
  * - Internet access from the tablet (for wget)
  *
- * Rollback: rm -rf /home/root/.entware
+ * Rollback follows the upstream uninstall steps, including unmounting /opt and
+ * removing opt.mount before deleting /home/root/.entware.
  *
  * @param ssh - Active SSH connection.
  * @param onProgress - Optional progress callback.
@@ -110,6 +138,10 @@ export async function installEntware(
   onProgress?: InstallProgressCallback,
 ): Promise<InstallResult> {
   const progress = onProgress ?? (() => {});
+
+  // Check architecture before trusting a pre-existing executable bit. An old
+  // ARMv7 Entware directory may have been copied onto an AArch64 tablet.
+  await requireLegacyArmv7(ssh);
 
   // Check if already installed
   progress('Checking', 'Checking for existing Entware installation...');
@@ -123,10 +155,13 @@ export async function installEntware(
     };
   }
 
+  // Evidlo's installer is explicitly tied to Entware's armv7sf feed. Running
+  // it on current AArch64 tablets can install unusable binaries and attempt to
+  // modify protected /etc and /opt paths, so unknown architectures fail safe.
   // Verify internet connectivity from tablet
   progress('Verifying', 'Checking tablet internet connectivity...');
   const pingResult = await ssh.execute(
-    'wget -q --spider http://bin.entware.net/ 2>&1 && echo "ok" || echo "fail"',
+    'wget -q --spider https://bin.entware.net/ 2>&1 && echo "ok" || echo "fail"',
     CHECK_TIMEOUT_MS,
   );
   if (pingResult.stdout.trim() !== 'ok') {
@@ -142,7 +177,9 @@ export async function installEntware(
   logger.info('Installing Entware from Evidlo/remarkable_entware...');
 
   const installResult = await ssh.execute(
-    `wget -q -O /tmp/entware_install.sh "${ENTWARE_INSTALL_URL}" && sh /tmp/entware_install.sh 2>&1`,
+    `wget -q -O /tmp/entware_install.sh "${ENTWARE_INSTALL_URL}" && ` +
+      `echo "${ENTWARE_INSTALL_SHA256}  /tmp/entware_install.sh" | sha256sum -c - && ` +
+      'sh /tmp/entware_install.sh 2>&1',
     INSTALL_TIMEOUT_MS,
   );
 
@@ -192,6 +229,10 @@ export async function installSyncthing(
 ): Promise<InstallResult> {
   const progress = onProgress ?? (() => {});
 
+  // This exported function can be called independently of installEntware, so
+  // it must enforce the same architecture boundary itself.
+  await requireLegacyArmv7(ssh);
+
   // Verify Entware is installed
   if (!(await isEntwareInstalled(ssh))) {
     throw new BridgeError(
@@ -203,8 +244,9 @@ export async function installSyncthing(
 
   // Check if already installed
   progress('Checking', 'Checking for existing Syncthing installation...');
-  if (await isSyncthingInstalled(ssh)) {
-    const version = await getSyncthingVersion(ssh);
+  const existingVersion = await getSyncthingVersion(ssh);
+  if (existingVersion) {
+    const version = existingVersion;
     logger.info(`Syncthing already installed: ${version}`);
     return {
       success: true,

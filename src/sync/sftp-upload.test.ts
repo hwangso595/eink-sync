@@ -27,6 +27,11 @@ function createMockSftp(operations: string[]): SFTPWrapper {
       else if (files.has(remotePath)) callback(undefined, { isDirectory: () => false } as Stats);
       else callback(missingError());
     },
+    lstat(remotePath: string, callback: StatCallback) {
+      if (directories.has(remotePath)) callback(undefined, directoryStats());
+      else if (files.has(remotePath)) callback(undefined, { isDirectory: () => false } as Stats);
+      else callback(missingError());
+    },
     mkdir(remotePath: string, _attributes: object, callback: StatusCallback) {
       operations.push(`mkdir:${remotePath}`);
       directories.add(remotePath);
@@ -147,5 +152,60 @@ describe('SFTP document upload', () => {
     )).rejects.toThrow('invalid UUID');
 
     expect(operations).toEqual([]);
+  });
+
+  it('rejects a pre-existing remote collection-directory symlink', async () => {
+    fs.mkdirSync(path.join(localDir, UUID));
+    fs.writeFileSync(path.join(localDir, UUID, 'page.rm'), 'strokes');
+    const operations: string[] = [];
+    const sftp = createMockSftp(operations);
+    const originalLstat = sftp.lstat.bind(sftp);
+    sftp.lstat = ((remotePath: string, callback: (error?: Error, stats?: Stats) => void) => {
+      if (remotePath === `${REMOTE_ROOT}/${UUID}`) {
+        callback(undefined, {
+          isDirectory: () => false,
+          isSymbolicLink: () => true,
+        } as Stats);
+        return;
+      }
+      originalLstat(remotePath, callback);
+    }) as SFTPWrapper['lstat'];
+
+    await expect(uploadDocumentCollectionWithSftp(
+      sftp,
+      localDir,
+      REMOTE_ROOT,
+      UUID,
+    )).rejects.toThrow('Remote upload path is not a directory');
+
+    expect(operations.some((operation) => operation.startsWith('put:'))).toBe(false);
+  });
+
+  it('keeps the configured remote root compatible with intentional links', async () => {
+    fs.writeFileSync(path.join(localDir, `${UUID}.content`), 'content');
+    const operations: string[] = [];
+    const sftp = createMockSftp(operations);
+    const originalLstat = sftp.lstat.bind(sftp);
+    sftp.lstat = ((remotePath: string, callback: (error?: Error, stats?: Stats) => void) => {
+      if (remotePath === REMOTE_ROOT) {
+        callback(undefined, {
+          isDirectory: () => false,
+          isSymbolicLink: () => true,
+        } as Stats);
+        return;
+      }
+      originalLstat(remotePath, callback);
+    }) as SFTPWrapper['lstat'];
+
+    await expect(uploadDocumentCollectionWithSftp(
+      sftp,
+      localDir,
+      REMOTE_ROOT,
+      UUID,
+    )).resolves.toEqual({
+      filesUploaded: 1,
+      bytesUploaded: Buffer.byteLength('content'),
+    });
+    expect(operations).toContain(`rename:${REMOTE_ROOT}/${UUID}.content`);
   });
 });

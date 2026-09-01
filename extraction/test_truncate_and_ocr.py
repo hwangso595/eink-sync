@@ -6,8 +6,10 @@ Tests for two features:
 
 import os
 import tempfile
+from types import SimpleNamespace
 
 import fitz  # PyMuPDF; already a hard dependency of the renderer.
+import pytest
 
 from constants import RM_SCREEN_HEIGHT
 from png_renderer import (
@@ -70,6 +72,124 @@ def test_tiny_content_clamps_to_minimum_height():
     # A couple of words at the very top should not produce a sliver image.
     strokes = [_stroke(20, 50)]
     assert _render_height(strokes, truncate_blank=True) == MIN_TRUNCATED_HEIGHT
+
+
+@pytest.mark.parametrize("canvas_size", [(1620, 2160), (954, 1696)])
+def test_current_model_canvas_dimensions_are_preserved(canvas_size):
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        render_strokes_to_png(
+            [_stroke(100, 300)], out, pdf_path=None, coord_scale=1.0,
+            canvas_width=canvas_size[0], canvas_height=canvas_size[1],
+        )
+        pixmap = fitz.Pixmap(out)
+        assert (pixmap.width, pixmap.height) == canvas_size
+
+
+def test_reasonable_scrolled_notebook_grows_within_safe_limit():
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        render_strokes_to_png(
+            [_stroke(100, 3000)], out, pdf_path=None, coord_scale=1.0,
+        )
+        pixmap = fitz.Pixmap(out)
+        assert pixmap.width == 1404
+        assert 3000 <= pixmap.height <= 3020
+
+
+def test_pathological_notebook_growth_is_rejected_before_output():
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        with pytest.raises(ValueError, match="exceeds safe limits"):
+            render_strokes_to_png(
+                [_stroke(100, 1_000_000_000)], out,
+                pdf_path=None, coord_scale=1.0,
+            )
+        assert not os.path.exists(out)
+
+
+def test_oversized_base_canvas_area_is_rejected():
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        with pytest.raises(ValueError, match="exceeds safe limits"):
+            render_strokes_to_png(
+                [_stroke(100, 300)], out, pdf_path=None, coord_scale=1.0,
+                canvas_width=10_000, canvas_height=10_000,
+            )
+        assert not os.path.exists(out)
+
+
+@pytest.mark.parametrize("bad_coordinate", [float("inf"), float("nan")])
+def test_nonfinite_stroke_coordinate_is_rejected(bad_coordinate):
+    stroke = _stroke(100, 300)
+    stroke.points[-1].y = bad_coordinate
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        with pytest.raises(ValueError, match="coordinates must be finite"):
+            render_strokes_to_png([stroke], out, pdf_path=None, coord_scale=1.0)
+        assert not os.path.exists(out)
+
+
+def test_nonfinite_glyph_rectangle_is_rejected():
+    glyph = SimpleNamespace(
+        rectangles=[(0.0, 0.0, float("inf"), 20.0)],
+        color="yellow",
+    )
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "page.png")
+        with pytest.raises(ValueError, match="coordinates must be finite"):
+            render_strokes_to_png(
+                [], out, pdf_path=None, coord_scale=1.0,
+                glyph_highlights=[glyph],
+            )
+        assert not os.path.exists(out)
+
+
+@pytest.mark.parametrize(("bad_coordinate", "message"), [
+    (1_000_000_000.0, "exceeds safe limits"),
+    (float("nan"), "coordinates must be finite"),
+])
+def test_pdf_stroke_coordinates_are_bounded_before_interpolation(bad_coordinate, message):
+    stroke = _stroke(100, 300)
+    stroke.points[-1].x = bad_coordinate
+    with tempfile.TemporaryDirectory() as d:
+        pdf_path = os.path.join(d, "source.pdf")
+        out = os.path.join(d, "page.png")
+        document = fitz.open()
+        document.new_page(width=612, height=792)
+        document.save(pdf_path)
+        document.close()
+
+        with pytest.raises(ValueError, match=message):
+            render_strokes_to_png(
+                [stroke], out, pdf_path=pdf_path, page_index=0,
+                coord_scale=0.73,
+            )
+        assert not os.path.exists(out)
+
+
+def test_custom_highlighter_color_is_used_in_png():
+    stroke = Stroke(
+        pen_type=18,
+        color="#00FF00",
+        stroke_width=20.0,
+        points=[
+            StrokePoint(x=-20, y=100, width=20.0),
+            StrokePoint(x=20, y=100, width=20.0),
+        ],
+    )
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "highlight.png")
+        render_strokes_to_png(
+            [stroke], out, coord_scale=1.0,
+            canvas_width=200, canvas_height=200,
+        )
+        pixmap = fitz.Pixmap(out)
+        center = (100 * pixmap.width + 100) * pixmap.n
+        red, green, blue = pixmap.samples[center:center + 3]
+
+        assert green > red + 50
+        assert green > blue + 50
 
 
 # --------------------------------------------------------------------------

@@ -30,6 +30,7 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>> = {}): 
 function makeDeviceInfo(overrides: Partial<DeviceInfo> = {}): DeviceInfo {
   return {
     model: 'reMarkable1' as DeviceModel,
+    architecture: 'armv7',
     firmware: parseFirmwareVersion('3.26.0.68'),
     memory: { totalMB: 512, availableMB: 300, usedMB: 212 },
     storage: [
@@ -51,8 +52,67 @@ describe('runPreflightChecks', () => {
     const report = await runPreflightChecks(makeDeviceInfo(), ssh);
 
     expect(report.passed).toBe(true);
+    expect(report.automaticSyncthingInstallReady).toBe(true);
     expect(report.checks.length).toBeGreaterThanOrEqual(6);
     expect(report.checks.every(c => c.passed)).toBe(true);
+  });
+
+  it('routes AArch64 tablets to SFTP without failing core preflight', async () => {
+    const ssh = createMockSSH({
+      'test -d': { stdout: 'exists', exitCode: 0 },
+    });
+    const info = makeDeviceInfo({ model: 'paperPro', architecture: 'aarch64' });
+
+    const report = await runPreflightChecks(info, ssh);
+
+    expect(report.installationPath).toBe('sftp-only');
+    expect(report.passed).toBe(true);
+    expect(report.automaticSyncthingInstallReady).toBe(false);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      name: 'Automatic Syncthing Installation',
+      passed: true,
+      severity: 'warning',
+    }));
+  });
+
+  it('warns but keeps low-resource rM2 detection usable for SFTP', async () => {
+    const ssh = createMockSSH({
+      'test -d': { stdout: 'exists', exitCode: 0 },
+    });
+    const info = makeDeviceInfo({
+      model: 'reMarkable2',
+      architecture: 'armv7',
+      memory: { totalMB: 1024, availableMB: 1, usedMB: 1023 },
+      storage: [
+        { mountPoint: '/', totalMB: 512, usedMB: 480, availableMB: 32, usagePercent: 94 },
+        { mountPoint: '/home', totalMB: 6400, usedMB: 6399, availableMB: 1, usagePercent: 99 },
+      ],
+    });
+
+    const report = await runPreflightChecks(info, ssh);
+
+    expect(report.installationPath).toBe('entware');
+    expect(report.passed).toBe(true);
+    expect(report.automaticSyncthingInstallReady).toBe(false);
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Available Memory', passed: true, severity: 'warning' }),
+      expect.objectContaining({ name: '/home Storage', passed: true, severity: 'warning' }),
+    ]));
+  });
+
+  it('routes an unknown ARMv7 model to SFTP instead of the legacy installer', async () => {
+    const ssh = createMockSSH({
+      'test -d': { stdout: 'exists', exitCode: 0 },
+    });
+    const info = makeDeviceInfo({ model: 'unknown', architecture: 'armv7' });
+
+    const report = await runPreflightChecks(info, ssh);
+
+    expect(report.installationPath).toBe('sftp-only');
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      name: 'Automatic Syncthing Installation',
+      severity: 'warning',
+    }));
   });
 
   it('fails when firmware is too old', async () => {
@@ -73,7 +133,7 @@ describe('runPreflightChecks', () => {
     expect(report.passed).toBe(false);
   });
 
-  it('fails when available memory is below minimum', async () => {
+  it('warns and blocks only automatic installation when memory is below minimum', async () => {
     const ssh = createMockSSH({
       'test -d': { stdout: 'exists', exitCode: 0 },
     });
@@ -87,9 +147,10 @@ describe('runPreflightChecks', () => {
 
     const memCheck = report.checks.find(c => c.name === 'Available Memory');
     expect(memCheck).toBeDefined();
-    expect(memCheck!.passed).toBe(false);
-    expect(memCheck!.severity).toBe('error');
-    expect(report.passed).toBe(false);
+    expect(memCheck!.passed).toBe(true);
+    expect(memCheck!.severity).toBe('warning');
+    expect(report.passed).toBe(true);
+    expect(report.automaticSyncthingInstallReady).toBe(false);
   });
 
   it('warns when memory is tight but above minimum', async () => {
@@ -115,7 +176,7 @@ describe('runPreflightChecks', () => {
     expect(memCheck!.severity).toBe('warning');
   });
 
-  it('fails when /home storage is below minimum', async () => {
+  it('warns and blocks only automatic installation when /home storage is below minimum', async () => {
     const ssh = createMockSSH({
       'test -d': { stdout: 'exists', exitCode: 0 },
     });
@@ -132,9 +193,10 @@ describe('runPreflightChecks', () => {
 
     const storageCheck = report.checks.find(c => c.name === '/home Storage');
     expect(storageCheck).toBeDefined();
-    expect(storageCheck!.passed).toBe(false);
-    expect(storageCheck!.severity).toBe('error');
-    expect(report.passed).toBe(false);
+    expect(storageCheck!.passed).toBe(true);
+    expect(storageCheck!.severity).toBe('warning');
+    expect(report.passed).toBe(true);
+    expect(report.automaticSyncthingInstallReady).toBe(false);
   });
 
   it('warns when root partition is nearly full', async () => {
@@ -155,6 +217,7 @@ describe('runPreflightChecks', () => {
     expect(rootCheck).toBeDefined();
     expect(rootCheck!.passed).toBe(true); // root issues don't block
     expect(rootCheck!.message).toContain('97%');
+    expect(report.automaticSyncthingInstallReady).toBe(false);
   });
 
   it('fails when xochitl directory is missing', async () => {
@@ -198,6 +261,7 @@ describe('runPreflightChecks', () => {
     expect(report.usesV6Format).toBe(true); // 3.26 uses v6
     expect(report.timestamp).toBeTruthy();
     expect(report.resourceBudget).toBe(DEFAULT_RESOURCE_BUDGETS['reMarkable1']);
+    expect(report.automaticSyncthingInstallReady).toBe(true);
   });
 });
 

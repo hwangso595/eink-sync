@@ -10,7 +10,7 @@ CLI entry point for collecting reMarkable page images.
 Renders each page's strokes to PNG with our own renderer (tablet
 .cache/.thumbnails PNGs are ignored: lower fidelity, and their mtimes churn
 on every page view). A per-doc render cache next to the output images skips
-pages whose .rm file hasn't changed since the last run.
+pages whose content, background, template, and render settings are unchanged.
 
 Usage:
     python render_pages.py --xochitl-path /path --doc-uuid UUID --output-dir /path/to/dir
@@ -23,11 +23,14 @@ Output format (JSON on stdout):
         ],
         "doc_type": "pdf",
         "visible_name": "My Document",
+        "failed_pages": [],
         "errors": []
     }
 """
 
 import argparse
+import glob
+import hashlib
 import json
 import os
 import sys
@@ -37,9 +40,14 @@ _original_stdout_fd = os.dup(1)
 os.dup2(2, 1)
 
 from metadata_parser import parse_metadata_file, parse_content_file
-from png_renderer import render_rm_file_to_png, extract_highlight_texts, extract_glyph_highlight_texts
-from stroke_renderer import extract_strokes, extract_glyph_highlights, HIGHLIGHTER_PEN_TYPES, ERASER_PEN_TYPES
+from png_renderer import (
+    PNG_RENDERER_VERSION,
+    extract_highlight_texts,
+    render_rm_file_to_png,
+)
+from stroke_renderer import extract_strokes, extract_glyph_highlights
 from template_renderer import TEMPLATE_RENDERER_VERSION
+from page_geometry import read_page_geometry
 
 
 def _print_json(data: dict) -> None:
@@ -57,20 +65,55 @@ def _load_template_map(templates_dir: str) -> dict:
     """
     if not templates_dir:
         return {}
-    tj = os.path.join(templates_dir, "templates.json")
-    if not os.path.exists(tj):
+    tj = _contained_template_file(templates_dir, "templates.json")
+    if not tj:
         return {}
     try:
         with open(tj, "r", encoding="utf-8") as f:
             data = json.load(f)
         mapping = {}
-        for t in data.get("templates", []):
+        entries = data.get("templates", []) if isinstance(data, dict) else []
+        for t in entries if isinstance(entries, list) else []:
+            if not isinstance(t, dict):
+                continue
             name = t.get("name")
-            if name:
-                mapping[name] = t.get("filename", name)
+            filename = t.get("filename", name)
+            if isinstance(name, str) and name and isinstance(filename, str):
+                mapping[name] = filename
         return mapping
     except Exception:
         return {}
+
+
+def _contained_template_file(templates_dir: str, candidate: object):
+    """Return a regular template file contained in ``templates_dir``.
+
+    Template names originate on the tablet. Reject traversal, Windows-special
+    names, control characters, and symlinks before opening any candidate on the
+    host filesystem.
+    """
+    if not templates_dir or not isinstance(candidate, str) or not candidate:
+        return None
+    if (
+        candidate in (".", "..")
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate)
+        or any(ch in '<>:"/\\|?*' for ch in candidate)
+        or candidate.endswith((".", " "))
+        or os.path.isabs(candidate)
+        or os.path.splitdrive(candidate)[0]
+    ):
+        return None
+
+    root = os.path.realpath(templates_dir)
+    joined = os.path.join(root, candidate)
+    if os.path.islink(joined):
+        return None
+    target = os.path.realpath(joined)
+    try:
+        contained = os.path.normcase(os.path.commonpath((root, target))) == os.path.normcase(root)
+    except ValueError:
+        return None
+    return target if contained and os.path.isfile(target) else None
 
 
 def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
@@ -89,9 +132,9 @@ def _resolve_template_png(templates_dir: str, name: str, name_map: dict):
     stem = name_map.get(name) or name_map.get(normalized) or normalized
 
     for candidate in (f"{stem}.png", f"{normalized}.png"):
-        path = os.path.join(templates_dir, candidate)
-        if os.path.exists(path):
-            return path
+        resolved = _contained_template_file(templates_dir, candidate)
+        if resolved:
+            return resolved
 
     return None
 
@@ -100,8 +143,9 @@ def _resolve_template_source(templates_dir: str, name: str, name_map: dict):
     """Resolve a page's template to (png_art, template_definition).
 
     Older firmware ships PNG art, which is drawn as-is. Firmware 3.x ships
-    `.template` vector definitions, which png_renderer draws once it knows the
-    page's final height (scrolled pages are taller than one screen).
+    `.template` vector definitions, while some firmware/device combinations
+    ship legacy SVG art. Vector sources are rasterized once the canvas size is
+    known; `.template` definitions can also extend over scrolled pages.
     """
     png = _resolve_template_png(templates_dir, name, name_map)
     if png:
@@ -112,10 +156,11 @@ def _resolve_template_source(templates_dir: str, name: str, name_map: dict):
     if not normalized or normalized.lower() == "blank":
         return None, None
     stem = name_map.get(name) or name_map.get(normalized) or normalized
-    for candidate in (f"{stem}.template", f"{normalized}.template"):
-        path = os.path.join(templates_dir, candidate)
-        if os.path.exists(path):
-            return None, path
+    for extension in (".template", ".svg"):
+        for candidate in (f"{stem}{extension}", f"{normalized}{extension}"):
+            resolved = _contained_template_file(templates_dir, candidate)
+            if resolved:
+                return None, resolved
     return None, None
 
 
@@ -142,20 +187,106 @@ def _load_render_cache(cache_path: str, settings: dict) -> dict:
     return {}
 
 
-def _cache_entry_fresh(cached, filename: str, rm_mtime: int, template, out_path: str) -> bool:
-    """True when a cached page entry still matches the current render inputs.
+def _file_digest(path: str, digest_cache: dict | None = None) -> str:
+    """Hash a render input, memoized by stable file metadata for this run."""
+    resolved = os.path.realpath(path)
+    stat = os.stat(resolved)
+    cache_key = (resolved, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    if digest_cache is not None and cache_key in digest_cache:
+        return digest_cache[cache_key]
 
-    The filename encodes doc name, page position, and .rm mtime; the template
-    name is checked separately because a template switch rewrites .content
-    without touching the page's .rm.
-    """
+    digest = hashlib.sha256()
+    with open(resolved, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    value = digest.hexdigest()
+    if digest_cache is not None:
+        digest_cache[cache_key] = value
+    return value
+
+
+def _page_render_fingerprint(
+    rm_path: str,
+    page_pdf: str | None,
+    pdf_page_idx: int,
+    page_template: str | None,
+    template_asset: str | None,
+    settings: dict,
+    digest_cache: dict | None = None,
+) -> str:
+    """Return a content key for every input that can affect page pixels/text."""
+    template = {
+        "name": page_template or "",
+        "asset": os.path.basename(template_asset) if template_asset else None,
+        "digest": _file_digest(template_asset, digest_cache) if template_asset else None,
+    }
+    payload = {
+        "rm": _file_digest(rm_path, digest_cache),
+        "pdf": _file_digest(page_pdf, digest_cache) if page_pdf else None,
+        "pdf_page": int(pdf_page_idx) if page_pdf else None,
+        "template": template,
+        "settings": settings,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _page_image_filename(doc_name: str, page_number: int, input_fingerprint: str) -> str:
+    """Build an Obsidian-cache-busting filename from the full render key."""
+    return f"{doc_name}_p{page_number}_{input_fingerprint[:16]}.png"
+
+
+def _cache_entry_fresh(cached, filename: str, input_fingerprint: str, out_path: str) -> bool:
+    """True when a cached page entry matches all current render inputs."""
     return bool(
         cached
         and cached.get("filename") == filename
-        and cached.get("rm_mtime") == rm_mtime
-        and cached.get("template") == template
+        and cached.get("input_fingerprint") == input_fingerprint
         and os.path.exists(out_path)
     )
+
+
+def _cleanup_old_page_images(output_dir: str, doc_name: str, page_number: int, keep: str) -> None:
+    """Remove superseded cache-busted images only after a usable image exists."""
+    pattern = os.path.join(
+        output_dir, f"{glob.escape(doc_name)}_p{page_number}_*.png",
+    )
+    for old_file in glob.glob(pattern):
+        if not _paths_refer_to_same_file(old_file, keep):
+            try:
+                os.remove(old_file)
+            except OSError:
+                pass
+
+
+def _paths_refer_to_same_file(left: str, right: str) -> bool:
+    """Compare paths without deleting a case-only alias on Windows."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(
+            os.path.realpath(right)
+        )
+
+
+def _cleanup_page_images_after_success(
+    rendered_pages: list[tuple[str, str, int, str]], errors: list[str],
+) -> None:
+    """Defer destructive cleanup until every page in the document succeeded."""
+    if errors:
+        return
+    for output_dir, doc_name, page_number, keep in rendered_pages:
+        _cleanup_old_page_images(output_dir, doc_name, page_number, keep)
+
+
+def _page_has_pdf_backing(is_notebook: bool, page_redir, page_idx: int) -> bool:
+    """True for original PDF pages, even when the source PDF is unavailable."""
+    return not is_notebook and (page_redir is None or page_idx in page_redir)
+
+
+def _render_succeeded(pages: list[dict], errors: list[str]) -> bool:
+    """A mixed render is usable; an all-failed render remains fatal."""
+    return bool(pages) or not errors
 
 
 def _save_render_cache(cache_path: str, settings: dict, pages: dict) -> None:
@@ -167,6 +298,47 @@ def _save_render_cache(cache_path: str, settings: dict, pages: dict) -> None:
         os.replace(tmp_path, cache_path)
     except OSError:
         pass
+
+
+def _render_cache_settings(truncate_blank: bool, templates_enabled: bool) -> dict:
+    """Return every setting/version that can change rendered page pixels."""
+    return {
+        "truncate_blank": truncate_blank,
+        "templates": templates_enabled,
+        "template_renderer": TEMPLATE_RENDERER_VERSION,
+        "png_renderer": PNG_RENDERER_VERSION,
+    }
+
+
+def _ocr_cache_key(language: str) -> str:
+    """Identify OCR output without changing the rendered-pixel cache key."""
+    return f"ocr-v1:{language}"
+
+
+def _resolve_cached_ocr(
+    cached: dict,
+    out_path: str,
+    ocr_page_image,
+    language: str,
+    timeout_seconds: float,
+):
+    """Reuse OCR only for the requested language; retry failures and misses."""
+    if ocr_page_image is None:
+        return None
+
+    ocr_key = _ocr_cache_key(language)
+    ocr_text = (
+        cached.get("ocr_text")
+        if cached.get("ocr_key") == ocr_key
+        else None
+    )
+    if ocr_text is None:
+        ocr_text = ocr_page_image(
+            out_path, language, timeout_seconds=timeout_seconds,
+        )
+        cached["ocr_key"] = ocr_key
+        cached["ocr_text"] = ocr_text
+    return ocr_text
 
 
 def main() -> None:
@@ -189,8 +361,8 @@ def main() -> None:
     # Per-page OCR time budget (seconds). A page that exceeds it loses its OCR
     # text but still renders; 0 disables the limit.
     parser.add_argument("--ocr-page-timeout", type=float, default=12.0)
-    # Directory of reMarkable page-template PNGs (+ templates.json). When given,
-    # a notebook page's template is drawn behind its strokes.
+    # Directory of reMarkable PNG/SVG/.template assets (+ templates.json).
+    # When given, a notebook page's template is drawn behind its strokes.
     parser.add_argument("--templates-dir", default=None)
     args = parser.parse_args()
 
@@ -199,6 +371,7 @@ def main() -> None:
         "pages": [],
         "doc_type": "unknown",
         "visible_name": "Unknown",
+        "failed_pages": [],
         "errors": [],
     }
 
@@ -272,13 +445,7 @@ def main() -> None:
     # Keyed by page UUID and invalidated wholesale when pixel-affecting
     # settings change. Lives next to the page images as a dotfile so Obsidian
     # ignores it (and Syncthing shares it between machines).
-    cache_settings = {
-        "truncate_blank": truncate_blank,
-        "templates": bool(templates_dir),
-        # Bumping the template renderer changes page pixels, so cached images
-        # drawn by an older version must be redrawn.
-        "template_renderer": TEMPLATE_RENDERER_VERSION,
-    }
+    cache_settings = _render_cache_settings(truncate_blank, bool(templates_dir))
     render_cache_path = os.path.join(
         args.output_dir, f".render-cache-{args.doc_uuid}.json"
     )
@@ -286,6 +453,8 @@ def main() -> None:
     new_cache: dict = {}
 
     pages_collected = 0
+    digest_cache: dict = {}
+    rendered_page_images: list[tuple[str, str, int, str]] = []
 
     for page_idx, page_uuid in enumerate(page_uuids):
         page_number = page_idx + 1
@@ -299,117 +468,110 @@ def main() -> None:
         if not has_strokes:
             continue
 
-        # Get .rm file modification time for staleness comparison
-        rm_mtime = os.path.getmtime(rm_path)
-
-        # Include an .rm-mtime hash in the filename so Obsidian's image cache
-        # picks up changes; an unchanged page keeps a stable name. (Tablet
-        # .cache/.thumbnails PNGs are deliberately ignored: our renderer
-        # produces higher-resolution output including glyph highlights, and
-        # their mtimes churn on every page view.)
-        mtime_hash = format(int(rm_mtime) & 0xFFFF, '04x')
-        filename = f"{doc_name}_p{page_number}_{mtime_hash}.png"
-        out_path = os.path.join(args.output_dir, filename)
-
-        # Clean up old versions of this page image (different hash)
-        import glob
-        old_pattern = os.path.join(args.output_dir, f"{doc_name}_p{page_number}_*.png")
-        for old_file in glob.glob(old_pattern):
-            if old_file != out_path:
-                try:
-                    os.remove(old_file)
-                except OSError:
-                    pass
-
-        page_template = (
-            content.page_templates[page_idx]
-            if page_idx < len(content.page_templates) else None
-        )
-
-        # Reuse the previous render when the page is unchanged. OCR may still
-        # run on the existing image when it never succeeded (ocr_text None:
-        # OCR just enabled, Tesseract newly installed, or a previous attempt
-        # failed/timed out).
-        cached = render_cache.get(page_uuid)
-        if _cache_entry_fresh(cached, filename, int(rm_mtime), page_template, out_path):
-            # Cached OCR text is only reported while OCR is switched on.
-            # Replaying it regardless made turning OCR off do nothing: the
-            # text is kept (re-enabling then costs no re-run) but withheld.
-            ocr_text = cached.get("ocr_text") if ocr_page_image is not None else None
-            if ocr_text is None and ocr_page_image is not None:
-                ocr_text = ocr_page_image(
-                    out_path, args.ocr_lang, timeout_seconds=args.ocr_page_timeout,
-                )
-                cached["ocr_text"] = ocr_text
-            output["pages"].append({
-                "page_number": page_number,
-                "filename": filename,
-                "has_strokes": True,
-                "highlight_texts": cached.get("highlight_texts", []),
-                "ocr_text": ocr_text or "",
-            })
-            new_cache[page_uuid] = cached
-            pages_collected += 1
-            continue
-
         try:
-            # PDF documents use 300-DPI logical coordinates; notebooks use 1:1 pixels.
-            doc_coord_scale = 0.73 if not is_notebook else 1.0
+            page_template = (
+                content.page_templates[page_idx]
+                if page_idx < len(content.page_templates) else None
+            )
+
+            # Resolve PDF redirects before checking the cache: both the backing
+            # file and redirected page index affect pixels and extracted text.
+            # A page with no redirect is an inserted notebook page.
+            page_pdf = None
+            pdf_page_idx = 0
+            has_pdf_backing = _page_has_pdf_backing(
+                is_notebook, content.page_redir, page_idx,
+            )
+            if source_pdf:
+                if content.page_redir is not None:
+                    if has_pdf_backing:
+                        page_pdf = source_pdf
+                        pdf_page_idx = content.page_redir[page_idx]
+                else:
+                    page_pdf = source_pdf
+                    pdf_page_idx = page_idx
+
+            background_png = None
+            background_template = None
+            if page_pdf is None and templates_dir and page_template:
+                background_png, background_template = _resolve_template_source(
+                    templates_dir, page_template, template_map,
+                )
+
+            input_fingerprint = _page_render_fingerprint(
+                rm_path,
+                page_pdf,
+                pdf_page_idx,
+                page_template if page_pdf is None else None,
+                background_png or background_template,
+                cache_settings,
+                digest_cache,
+            )
+            filename = _page_image_filename(doc_name, page_number, input_fingerprint)
+            out_path = os.path.join(args.output_dir, filename)
+
+            # Reuse the previous render when every byte/setting that can affect
+            # it is unchanged. OCR may still run when it never succeeded.
+            cached = render_cache.get(page_uuid)
+            if _cache_entry_fresh(cached, filename, input_fingerprint, out_path):
+                # Cached OCR text is only reported while OCR is switched on.
+                ocr_text = _resolve_cached_ocr(
+                    cached,
+                    out_path,
+                    ocr_page_image,
+                    args.ocr_lang,
+                    args.ocr_page_timeout,
+                )
+                output["pages"].append({
+                    "page_number": page_number,
+                    "filename": filename,
+                    "has_strokes": True,
+                    "highlight_texts": cached.get("highlight_texts", []),
+                    "ocr_text": ocr_text or "",
+                })
+                new_cache[page_uuid] = cached
+                pages_collected += 1
+                rendered_page_images.append(
+                    (args.output_dir, doc_name, page_number, out_path),
+                )
+                continue
+
+            geometry = read_page_geometry(rm_path)
+            # PDF annotations use a shared logical grid; SceneInfo determines
+            # how that grid maps onto each device's canvas. Notebook and
+            # inserted pages are already stored in page pixels.
+            doc_coord_scale = geometry.pdf_coord_scale if has_pdf_backing else 1.0
 
             strokes = extract_strokes(rm_path)
             glyph_hls = extract_glyph_highlights(rm_path)
 
             if strokes or glyph_hls:
-                # Use page redirect map for correct PDF page index
-                # If redir is missing for this page, it's an inserted notebook page
-                # (no PDF backing) — render on white background
-                page_pdf = None
-                pdf_page_idx = 0
-                if source_pdf:
-                    if content.page_redir is not None:
-                        if page_idx in content.page_redir:
-                            page_pdf = source_pdf
-                            pdf_page_idx = content.page_redir[page_idx]
-                    else:
-                        page_pdf = source_pdf
-                        pdf_page_idx = page_idx
-                # Notebook pages (no PDF backing) get their reMarkable template
-                # drawn behind the strokes when template art is available.
-                background_png = None
-                background_template = None
-                if page_pdf is None and templates_dir and page_template:
-                    background_png, background_template = _resolve_template_source(
-                        templates_dir, page_template, template_map,
-                    )
-
                 drawn = render_rm_file_to_png(rm_path, out_path,
                                               pdf_path=page_pdf,
                                               page_index=pdf_page_idx,
                                               coord_scale=doc_coord_scale,
                                               truncate_blank=truncate_blank,
                                               background_png=background_png,
-                                              background_template=background_template)
+                                              background_template=background_template,
+                                              canvas_width=geometry.width,
+                                              canvas_height=geometry.height)
                 if drawn > 0 or glyph_hls:
                     print(
                         f"Page {page_number}: rendered {drawn} strokes, {len(glyph_hls)} glyph highlight(s)",
                         file=sys.stderr, flush=True,
                     )
-                    # Glyph highlight text is already extracted by highlight_extractor.py
-                    # via the Python bridge — skip it here to avoid duplicates.
-                    # Only extract text under stroke-based highlights (PDF pages only),
-                    # which highlight_extractor.py does NOT handle.
+                    # Keep the redirect-aware stroke-highlight fallback. The
+                    # main extractor owns glyph selections and most strokes;
+                    # TypeScript removes any duplicate `(page, text)` while
+                    # favoring its richer RGBA/bounds result.
                     highlight_texts = []
                     if page_pdf and strokes:
-                        stroke_hl_texts = extract_highlight_texts(
+                        highlight_texts.extend(extract_highlight_texts(
                             strokes, page_pdf, pdf_page_idx,
+                            canvas_w=geometry.width,
+                            canvas_h=geometry.height,
                             coord_scale=doc_coord_scale,
-                        )
-                        highlight_texts.extend(stroke_hl_texts)
-                    if highlight_texts:
-                        print(
-                            f"Page {page_number}: {len(highlight_texts)} highlighted text(s)",
-                            file=sys.stderr, flush=True,
-                        )
+                        ))
 
                     # Local OCR of the rendered handwriting (notebook pages
                     # only). None = not attempted or failed — retried next run.
@@ -434,17 +596,25 @@ def main() -> None:
                     })
                     new_cache[page_uuid] = {
                         "filename": filename,
-                        "rm_mtime": int(rm_mtime),
-                        "template": page_template,
+                        "input_fingerprint": input_fingerprint,
                         "highlight_texts": highlight_texts,
+                        "ocr_key": (
+                            _ocr_cache_key(args.ocr_lang)
+                            if ocr_page_image is not None else None
+                        ),
                         "ocr_text": ocr_text_raw,
                     }
                     pages_collected += 1
+                    rendered_page_images.append(
+                        (args.output_dir, doc_name, page_number, out_path),
+                    )
         except Exception as e:
+            output["failed_pages"].append(page_number)
             output["errors"].append(f"Page {page_number}: {e}")
             print(f"Page {page_number} error: {e}", file=sys.stderr, flush=True)
 
-    output["success"] = True
+    output["success"] = _render_succeeded(output["pages"], output["errors"])
+    _cleanup_page_images_after_success(rendered_page_images, output["errors"])
     _save_render_cache(render_cache_path, cache_settings, new_cache)
     print(
         f"Collected {pages_collected} page(s) with strokes",

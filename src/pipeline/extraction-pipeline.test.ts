@@ -18,7 +18,11 @@ import {
   ReMarkableDocument,
   ExtractionResult,
 } from './types';
-import { runExtractionPipeline } from './extraction-pipeline';
+import {
+  applyExtractionWarnings,
+  mergeRendererHighlights,
+  runExtractionPipeline,
+} from './extraction-pipeline';
 import { renderMarkdown, mergeWithExistingNote, generateOutputFilename, DefaultMarkdownRenderer } from './markdown-renderer';
 import { discoverDocuments } from './document-discovery';
 
@@ -81,6 +85,152 @@ function createMockDeps(overrides?: Partial<PipelineDependencies>): PipelineDepe
     ...overrides,
   };
 }
+
+describe('mergeRendererHighlights', () => {
+  it('keeps extractor RGBA and bounds when renderer text is a whitespace duplicate', () => {
+    const extracted: ExtractionResult['highlights'] = [{
+      text: 'A highlighted\npassage',
+      pageNumber: 3,
+      color: '#12AB34',
+      bounds: { x: 10, y: 20, width: 30, height: 40 },
+      createdAt: null,
+    }];
+    const renderer: ExtractionResult['highlights'] = [{
+      text: '  A highlighted passage  ',
+      pageNumber: 3,
+      color: 'yellow',
+      bounds: null,
+      createdAt: null,
+    }];
+
+    const merged = mergeRendererHighlights(extracted, renderer);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(extracted[0]);
+    expect(merged[0].color).toBe('#12AB34');
+    expect(merged[0].bounds).toEqual({ x: 10, y: 20, width: 30, height: 40 });
+  });
+
+  it('retains redirect-aware renderer-only text and the same text on another page', () => {
+    const extracted: ExtractionResult['highlights'] = [{
+      text: 'same text', pageNumber: 1, color: 'green', bounds: null, createdAt: null,
+    }];
+    const renderer: ExtractionResult['highlights'] = [{
+      text: 'same text', pageNumber: 2, color: 'yellow', bounds: null, createdAt: null,
+    }, {
+      text: 'redirect-only', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }];
+
+    expect(mergeRendererHighlights(extracted, renderer).map((highlight) => (
+      [highlight.pageNumber, highlight.text]
+    ))).toEqual([
+      [1, 'same text'],
+      [2, 'same text'],
+      [4, 'redirect-only'],
+    ]);
+  });
+
+  it('deduplicates renderer fallback entries among themselves', () => {
+    const renderer: ExtractionResult['highlights'] = [{
+      text: 'redirect only', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }, {
+      text: 'redirect\nonly', pageNumber: 4, color: 'yellow', bounds: null, createdAt: null,
+    }];
+
+    expect(mergeRendererHighlights([], renderer)).toHaveLength(1);
+  });
+});
+
+describe('applyExtractionWarnings', () => {
+  it('keeps YAML frontmatter first and quotes multiline warning continuations', () => {
+    const markdown = [
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      '<!-- eink-sync:start -->',
+      'Body',
+      '<!-- eink-sync:end -->',
+    ].join('\n');
+
+    const updated = applyExtractionWarnings(markdown, ['first line\nsecond line']);
+
+    expect(updated.startsWith('---\n')).toBe(true);
+    expect(updated.indexOf('---\n\n<!-- eink-sync:extraction-warnings:start -->'))
+      .toBeGreaterThan(updated.indexOf('title: "Paper"'));
+    expect(updated).toContain('> - first line\n>   second line');
+  });
+
+  it('repairs, replaces, and later removes a legacy leading warning', () => {
+    const legacy = [
+      '> [!warning] Extraction warnings',
+      '> - stale warning',
+      '',
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      'Body',
+    ].join('\n');
+
+    const replaced = applyExtractionWarnings(legacy, ['current warning']);
+    expect(replaced.startsWith('---\n')).toBe(true);
+    expect(replaced).not.toContain('stale warning');
+    expect(replaced.match(/Extraction warnings/g)).toHaveLength(1);
+    expect(replaced).toContain('> - current warning');
+
+    const cleared = applyExtractionWarnings(replaced, []);
+    expect(cleared.startsWith('---\n')).toBe(true);
+    expect(cleared).not.toContain('Extraction warnings');
+    expect(cleared).not.toContain('current warning');
+  });
+
+  it('prepends the callout when a custom template has no frontmatter', () => {
+    const updated = applyExtractionWarnings('# Paper\n\nBody', ['warning']);
+    expect(updated).toBe(
+      '<!-- eink-sync:extraction-warnings:start -->\n' +
+      '> [!warning] Extraction warnings\n' +
+      '> - warning\n' +
+      '<!-- eink-sync:extraction-warnings:end -->\n\n' +
+      '# Paper\n\nBody',
+    );
+  });
+
+  it('does not remove a same-named user callout in the note body', () => {
+    const markdown = [
+      '---',
+      'title: "Paper"',
+      '---',
+      '',
+      '# User notes',
+      '> [!warning] Extraction warnings',
+      '> This belongs to the user.',
+    ].join('\n');
+
+    const updated = applyExtractionWarnings(markdown, []);
+    expect(updated).toContain('> [!warning] Extraction warnings');
+    expect(updated).toContain('> This belongs to the user.');
+  });
+
+  it('does not remove a same-named user section after managed highlights', () => {
+    const markdown = [
+      '<!-- eink-sync:start -->',
+      'Body',
+      '<!-- eink-sync:end -->',
+      '',
+      '## Extraction Notes',
+      '',
+      '- This belongs to the user.',
+    ].join('\n');
+
+    expect(applyExtractionWarnings(markdown, [])).toBe(markdown);
+  });
+
+  it('keeps a BOM first for a custom template without frontmatter', () => {
+    const updated = applyExtractionWarnings('\uFEFF# Paper\r\n\r\nBody', ['warning']);
+    expect(updated.startsWith('\uFEFF<!-- eink-sync:extraction-warnings:start -->\r\n')).toBe(true);
+    expect(updated).toContain('\r\n\r\n# Paper\r\n\r\nBody');
+  });
+});
 
 describe('runExtractionPipeline with injected dependencies', () => {
   let xochitlDir: string;
@@ -158,6 +308,38 @@ describe('runExtractionPipeline with injected dependencies', () => {
     expect(writtenContent).toContain('Important finding');
   });
 
+  it('preserves discovered notebook tags in the renderer input', async () => {
+    const doc = createMockDocument({
+      type: 'notebook',
+      hasPdf: false,
+      pageCount: 0,
+      pageUuids: [],
+      tags: ['Research', 'Review later'],
+      pageTags: { pageOne: ['Calculus'] },
+    });
+    let renderedTags: string[] | undefined;
+    let renderedPageTags: Record<string, string[]> | undefined;
+    const deps = createMockDeps({
+      discovery: { discoverDocuments: async () => [doc] },
+      extractor: { extractHighlights: async () => [] },
+      renderer: {
+        render: (result) => {
+          renderedTags = result.tags;
+          renderedPageTags = result.pageTags;
+          return `Tags: ${(result.tags ?? []).join(', ')}`;
+        },
+        mergeWithExisting: (existing) => existing,
+      },
+    });
+
+    const run = await runExtractionPipeline(makeConfig(), deps);
+
+    expect(renderedTags).toEqual(['Research', 'Review later']);
+    expect(renderedPageTags).toEqual({ pageOne: ['Calculus'] });
+    expect(fs.readFileSync(run.outputFiles[0], 'utf-8'))
+      .toContain('Tags: Research, Review later');
+  });
+
   it('handles extraction error gracefully', async () => {
     const doc = createMockDocument();
     const extraction = createMockExtractionResult(doc, [], {
@@ -212,7 +394,7 @@ describe('runExtractionPipeline with injected dependencies', () => {
       discovery: { discoverDocuments: async () => [doc] },
       extractor: { extractHighlights: async () => [extraction] },
       renderer: {
-        render: () => '# Test\n\n> Partial highlight\n',
+        render: () => '---\ntitle: "Test"\n---\n\n# Test\n\n> Partial highlight\n',
         mergeWithExisting: (existing) => existing,
       },
     });
@@ -228,6 +410,7 @@ describe('runExtractionPipeline with injected dependencies', () => {
     // Output file should be written with warning marker
     expect(result.outputFiles).toHaveLength(1);
     const content = fs.readFileSync(result.outputFiles[0], 'utf-8');
+    expect(content.startsWith('---\n')).toBe(true);
     expect(content).toContain('[!warning] Extraction warnings');
   });
 

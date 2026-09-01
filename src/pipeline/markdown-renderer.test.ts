@@ -157,14 +157,13 @@ describe('renderMarkdown', () => {
     expect(md).toContain(HIGHLIGHTS_SECTION_END);
   });
 
-  it('includes warnings section when warnings exist', () => {
+  it('leaves extraction-warning placement to the pipeline', () => {
     const result = createTestResult([]);
     result.warnings = ['Missing page 5 annotations', 'Low confidence on page 8'];
     const md = renderMarkdown(result);
 
-    expect(md).toContain('## Extraction Notes');
-    expect(md).toContain('- Missing page 5 annotations');
-    expect(md).toContain('- Low confidence on page 8');
+    expect(md).not.toContain('Extraction Notes');
+    expect(md).not.toContain('Missing page 5 annotations');
   });
 
   it('handles multi-line highlight text', () => {

@@ -187,7 +187,7 @@ export function deleteGeneratedDocumentArtifacts(
 
   const drawingPatterns = [...baseNames].map(
     (baseName) => new RegExp(
-      `^${escapeRegExp(baseName)}_p\\d+(?:_[0-9a-fA-F]{4})?\\.png(?:\\.bak)?$`,
+      `^${escapeRegExp(baseName)}_p\\d+(?:_(?:[0-9a-fA-F]{4}|[0-9a-fA-F]{16}))?\\.png(?:\\.bak)?$`,
     ),
   );
   const cacheName = `.render-cache-${uuid}.json`;

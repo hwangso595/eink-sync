@@ -14,6 +14,7 @@ import { ReMarkableSSHClient } from '../ssh/ssh-client';
 import { stopServices, removeServices } from './service-manager';
 import { logger } from '../utils/logger';
 import { isRecord } from '../utils/json';
+import type { ConnectionMethod } from '../types/config';
 
 /** How long to wait after triggering a rescan before considering sync settled. */
 const RESCAN_SETTLE_MS = 5000;
@@ -32,6 +33,7 @@ export interface SyncthingProviderConfig {
     username: string;
     password: string;
     timeoutMs: number;
+    connectionMethod: ConnectionMethod;
   };
 }
 
@@ -140,7 +142,7 @@ export class SyncthingProvider implements SyncProvider {
     if (this.config.sshConfig) {
       const ssh = new ReMarkableSSHClient({
         ...this.config.sshConfig,
-        method: 'wifi',
+        method: this.config.sshConfig.connectionMethod,
       });
       try {
         await ssh.connect();

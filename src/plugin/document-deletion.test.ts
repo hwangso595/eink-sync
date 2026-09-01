@@ -94,6 +94,7 @@ describe('deleteGeneratedDocumentArtifacts', () => {
       'Renamed note_p1_abcd.png',
       'Original name_p2.png',
       'Original name_p3_beef.png.bak',
+      'Original name_p4_0123456789abcdef.png',
       `.render-cache-${UUID}.json`,
       'Other_p1_abcd.png',
     ]) {
@@ -105,7 +106,7 @@ describe('deleteGeneratedDocumentArtifacts', () => {
       'Original name',
       [highlightsDir],
       drawingsDir,
-    )).toBe(5);
+    )).toBe(6);
     expect(fs.readdirSync(highlightsDir).sort()).toEqual(['Other.md', 'drawings']);
     expect(fs.readdirSync(drawingsDir)).toEqual(['Other_p1_abcd.png']);
   });

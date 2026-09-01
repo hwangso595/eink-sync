@@ -21,6 +21,20 @@ function createHarness() {
   const deleteRemote = jest.fn(async () => {
     operations.push('delete-remote');
   });
+  const archiveRemote = jest.fn(async (
+    _ssh: SSHExecutor,
+    localSyncDir: string,
+    _uuid: string,
+  ) => {
+    operations.push(`archive-remote:${localSyncDir}`);
+  });
+  const unprotectRemote = jest.fn(async () => {
+    operations.push('unprotect-remote');
+  });
+  const protectRemote = jest.fn(async () => {
+    operations.push('protect-remote');
+    return { uuid: UUID, addedLines: [`/${UUID}`, `/${UUID}.*`] };
+  });
   const refresh = jest.fn(async () => {
     operations.push('refresh');
     return true;
@@ -36,22 +50,37 @@ function createHarness() {
       username: 'root',
       password: '',
       timeoutMs: 1000,
+      connectionMethod: 'usb',
     },
     withSSH,
     refresh,
-    { upload, deleteRemote },
+    { upload, deleteRemote, archiveRemote, protectRemote, unprotectRemote },
   );
-  return { adapter, operations, upload, deleteRemote, refresh };
+  return {
+    adapter,
+    operations,
+    upload,
+    deleteRemote,
+    archiveRemote,
+    protectRemote,
+    unprotectRemote,
+    refresh,
+  };
 }
 
 describe('TabletDocumentAdapter', () => {
   it('sends directly and refreshes the tablet for every sync mode', async () => {
-    const { adapter, operations } = createHarness();
+    const { adapter, operations, upload } = createHarness();
 
     await expect(adapter.sendDocument(UUID, '/vault/Sync')).resolves.toEqual({
       tabletLibraryRefreshed: true,
     });
     expect(operations).toEqual(['upload', 'refresh']);
+    expect(upload).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionMethod: 'usb' }),
+      UUID,
+      expect.any(Function),
+    );
   });
 
   it('reports connecting, per-file upload, refresh, and completion phases', async () => {
@@ -87,7 +116,34 @@ describe('TabletDocumentAdapter', () => {
       () => operations.push('restore-local'),
       () => operations.push('rollback-local'),
     )).rejects.toThrow('offline');
-    expect(operations).toEqual(['restore-local', 'upload', 'rollback-local']);
+    expect(operations).toEqual([
+      'restore-local',
+      'connect',
+      'unprotect-remote',
+      'upload',
+      'rollback-local',
+      'connect',
+      'protect-remote',
+    ]);
+  });
+
+  it('removes exact archive ignore rules before uploading a restore', async () => {
+    const { adapter, operations } = createHarness();
+
+    await adapter.restoreDocument(
+      UUID,
+      '/vault/Sync',
+      () => operations.push('restore-local'),
+      () => operations.push('rollback-local'),
+    );
+
+    expect(operations).toEqual([
+      'restore-local',
+      'connect',
+      'unprotect-remote',
+      'upload',
+      'refresh',
+    ]);
   });
 
   it('deletes remotely, deletes locally, then refreshes', async () => {
@@ -117,18 +173,31 @@ describe('TabletDocumentAdapter', () => {
     ]);
   });
 
-  it('archives with the same remote-first sequence as permanent delete', async () => {
+  it('verifies the named local backup before archiving remotely', async () => {
     const { adapter, operations } = createHarness();
 
     await expect(adapter.archiveDocument(
       UUID,
+      '/vault/Sync',
       () => operations.push('archive-local'),
     )).resolves.toEqual({ tabletLibraryRefreshed: true });
     expect(operations).toEqual([
       'connect',
-      'delete-remote',
+      'archive-remote:/vault/Sync',
       'archive-local',
       'refresh',
     ]);
+  });
+
+  it('keeps the local copy when remote backup verification fails', async () => {
+    const { adapter, operations, archiveRemote } = createHarness();
+    archiveRemote.mockRejectedValueOnce(new Error('backup incomplete'));
+
+    await expect(adapter.archiveDocument(
+      UUID,
+      '/vault/Sync',
+      () => operations.push('archive-local'),
+    )).rejects.toThrow('backup incomplete');
+    expect(operations).toEqual(['connect']);
   });
 });

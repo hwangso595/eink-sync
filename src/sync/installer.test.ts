@@ -28,6 +28,14 @@ function createMockSSH(responses: Record<string, Partial<CommandResult>>): SSHEx
           });
         }
       }
+      // Existing installer tests model the legacy tablets unless an explicit
+      // architecture response above overrides this default.
+      if (command.includes('uname -m')) {
+        return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
+      }
+      if (command.includes('/sys/devices/soc0/machine')) {
+        return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
+      }
       return Promise.resolve({ stdout: '', stderr: '', exitCode: 1 });
     }),
   };
@@ -55,16 +63,16 @@ describe('isEntwareInstalled', () => {
 });
 
 describe('isSyncthingInstalled', () => {
-  it('returns true when syncthing binary exists', async () => {
+  it('returns true when the syncthing binary executes', async () => {
     const ssh = createMockSSH({
-      [`test -x ${SYNCTHING_BIN_PATH}`]: { stdout: 'yes', exitCode: 0 },
+      '--version': { stdout: 'syncthing v1.27.0', exitCode: 0 },
     });
     expect(await isSyncthingInstalled(ssh)).toBe(true);
   });
 
-  it('returns false when syncthing binary is missing', async () => {
+  it('returns false when an executable cannot run', async () => {
     const ssh = createMockSSH({
-      [`test -x ${SYNCTHING_BIN_PATH}`]: { stdout: 'no', exitCode: 0 },
+      '--version': { stdout: '', stderr: 'Exec format error', exitCode: 126 },
     });
     expect(await isSyncthingInstalled(ssh)).toBe(false);
   });
@@ -109,6 +117,7 @@ describe('installEntware', () => {
   it('throws when tablet has no internet', async () => {
     const ssh = createMockSSH({
       'test -x /home/root/.entware/bin/opkg': { stdout: 'no', exitCode: 0 },
+      'uname -m': { stdout: 'armv7l', exitCode: 0 },
       'wget -q --spider': { stdout: 'fail', exitCode: 1 },
     });
 
@@ -119,11 +128,61 @@ describe('installEntware', () => {
   it('throws when installation script fails', async () => {
     const ssh = createMockSSH({
       'test -x /home/root/.entware/bin/opkg': { stdout: 'no', exitCode: 0 },
+      'uname -m': { stdout: 'armv7l', exitCode: 0 },
       'wget -q --spider': { stdout: 'ok', exitCode: 0 },
       'entware_install.sh': { stdout: 'error', exitCode: 1 },
     });
 
     await expect(installEntware(ssh)).rejects.toThrow(BridgeError);
+  });
+
+  it('refuses the ARMv7 installer on AArch64 before downloading anything', async () => {
+    const ssh = createMockSSH({
+      'test -x /home/root/.entware/bin/opkg': { stdout: 'no', exitCode: 0 },
+      'uname -m': { stdout: 'aarch64', exitCode: 0 },
+    });
+
+    await expect(installEntware(ssh)).rejects.toThrow(/AArch64/);
+    expect(ssh.execute).not.toHaveBeenCalledWith(
+      expect.stringContaining('entware_install.sh'),
+      expect.anything(),
+    );
+  });
+
+  it('refuses an existing Entware directory on AArch64', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'aarch64', exitCode: 0 },
+      'test -x /home/root/.entware/bin/opkg': { stdout: 'yes', exitCode: 0 },
+    });
+
+    await expect(installEntware(ssh)).rejects.toThrow(/AArch64/);
+  });
+
+  it('refuses installation when architecture cannot be verified', async () => {
+    const ssh = createMockSSH({
+      'test -x /home/root/.entware/bin/opkg': { stdout: 'no', exitCode: 0 },
+      'uname -m': { stdout: 'x86_64', exitCode: 0 },
+    });
+
+    await expect(installEntware(ssh)).rejects.toThrow(/architecture could not be verified/);
+  });
+
+  it('refuses an unknown ARMv7 model before downloading anything', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'armv7l', exitCode: 0 },
+      '/sys/devices/soc0/machine': {
+        stdout: 'reMarkable Future ARM Device',
+        exitCode: 0,
+      },
+      '/proc/device-tree/model': { stdout: '', exitCode: 1 },
+      '/proc/device-tree/compatible': { stdout: '', exitCode: 1 },
+    });
+
+    await expect(installEntware(ssh)).rejects.toThrow(/unverified tablet model/);
+    expect(ssh.execute).not.toHaveBeenCalledWith(
+      expect.stringContaining('wget'),
+      expect.anything(),
+    );
   });
 
   it('calls progress callback during installation', async () => {
@@ -159,6 +218,12 @@ describe('installEntware', () => {
         if (command.includes('wget -q --spider')) {
           return Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 });
         }
+        if (command.includes('uname -m')) {
+          return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
+        }
+        if (command.includes('/sys/devices/soc0/machine')) {
+          return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
+        }
         if (command.includes('entware_install.sh')) {
           return Promise.resolve({ stdout: 'done', stderr: '', exitCode: 0 });
         }
@@ -168,9 +233,49 @@ describe('installEntware', () => {
 
     await expect(installEntware(ssh)).rejects.toThrow(/opkg binary not found/);
   });
+
+  it('pins and verifies the installer before execution', async () => {
+    let opkgChecks = 0;
+    const ssh: SSHExecutor = {
+      connect: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn().mockResolvedValue(undefined),
+      ping: jest.fn().mockResolvedValue(true),
+      isConnected: jest.fn().mockReturnValue(true),
+      execute: jest.fn().mockImplementation((command: string) => {
+        if (command.includes('test -x /home/root/.entware/bin/opkg')) {
+          opkgChecks++;
+          return Promise.resolve({ stdout: opkgChecks === 1 ? 'no' : 'yes', stderr: '', exitCode: 0 });
+        }
+        if (command.includes('uname -m')) return Promise.resolve({ stdout: 'armv7l', stderr: '', exitCode: 0 });
+        if (command.includes('/sys/devices/soc0/machine')) return Promise.resolve({ stdout: 'reMarkable 2.0', stderr: '', exitCode: 0 });
+        if (command.includes('wget -q --spider')) return Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 });
+        if (command.includes('entware_install.sh')) return Promise.resolve({ stdout: 'ok', stderr: '', exitCode: 0 });
+        return Promise.resolve({ stdout: '', stderr: '', exitCode: 1 });
+      }),
+    };
+
+    await expect(installEntware(ssh)).resolves.toMatchObject({ success: true });
+    expect(ssh.execute).toHaveBeenCalledWith(
+      expect.stringMatching(/5636b8b56a44eb122a5d2253dfdb0addf28c744d.*sha256sum -c -.*sh \/tmp\/entware_install\.sh/s),
+      expect.any(Number),
+    );
+  });
 });
 
 describe('installSyncthing', () => {
+  it('cannot bypass the architecture guard when called directly', async () => {
+    const ssh = createMockSSH({
+      'uname -m': { stdout: 'aarch64', exitCode: 0 },
+      'test -x /home/root/.entware/bin/opkg': { stdout: 'yes', exitCode: 0 },
+    });
+
+    await expect(installSyncthing(ssh)).rejects.toThrow(/AArch64/);
+    expect(ssh.execute).not.toHaveBeenCalledWith(
+      expect.stringContaining('opkg install syncthing'),
+      expect.anything(),
+    );
+  });
+
   it('throws when Entware is not installed', async () => {
     const ssh = createMockSSH({
       'test -x /home/root/.entware/bin/opkg': { stdout: 'no', exitCode: 0 },

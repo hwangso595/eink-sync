@@ -9,7 +9,16 @@ Sync reMarkable documents, notebooks, and highlights over SFTP or Syncthing. No 
 3. **Renders** pen stroke annotations as PNG images embedded in your notes
 4. **Manages** your tablet library from an Obsidian sidebar: browse, search, archive, and delete
 
-Works with reMarkable 1 (512MB RAM) and reMarkable 2. Supports firmware 3.0+ (v6 .rm format) and legacy firmware (v3/v5 format).
+Device support depends on the sync method and document features:
+
+| Device | Direct SFTP | Automatic Syncthing install | Rendering validation |
+|--------|-------------|------------------------------|----------------------|
+| reMarkable 1 / 2 | Supported | Supported (ARMv7) | Legacy and v6 formats |
+| Paper Pure | Supported | Use SFTP | Native canvas regression tests |
+| Paper Pro | Supported | Use SFTP | Public 1620×2160 fixture |
+| Paper Pro Move | Supported | Use SFTP | 954×1696 geometry tests; hardware fixture pending |
+
+Current devices require Developer Mode for SSH. Enabling it factory-resets the tablet, so back up first. Typed notebook text, embedded notebook images, and newer blocks unsupported by the pinned `rmscene` parser may be omitted from rendered PNGs; strokes, PDF annotations, templates, and exact highlight colors are supported where the parser exposes them.
 
 ---
 
@@ -29,7 +38,7 @@ Python runs only during setup, sync, or extraction. The setup wizard creates a p
 | **Python** | 3.10+ | Host runtime for highlight extraction and page rendering |
 | **rmscene** | managed automatically | Parses v6 .rm annotation files |
 | **PyMuPDF** | managed automatically | Extracts text from PDF pages and renders page images |
-| **reMarkable SSH access** | enabled | Required for direct SFTP sync and tablet management |
+| **reMarkable SSH access** | enabled | Required for direct SFTP sync and tablet management; current devices require Developer Mode, which factory-resets the tablet when enabled, so back up first |
 | **Syncthing** _(optional)_ | any | Provides continuous background sync as an alternative to SFTP |
 | **Tesseract** _(optional)_ | 5.x | Local handwriting OCR; only needed for **Search handwriting (OCR)** |
 
@@ -120,7 +129,7 @@ New-Item -ItemType Junction -Path "<vault>\.obsidian\plugins\eink-sync" -Target 
 1. Enable the plugin in Obsidian settings
 2. A setup wizard opens automatically -- follow the steps to configure:
    - Initial SSH connection over USB
-   - Verified WiFi promotion for everyday use when the tablet is reachable on WiFi
+   - Optional, explicit WiFi setup for everyday use: over authenticated USB, the plugin uses the vendor `rm-ssh-over-wlan on` control when available, discovers the route-selected address without assuming `wlan0`, verifies the same SSH host key and a working SSH command, and only then saves WiFi as the default. The final setup check also opens the configured SFTP subsystem. Legacy tablets with WiFi SSH already available use the same verification without changing their system configuration.
    - Direct SFTP or Syncthing as the sync method
    - Sync and highlight output folders
    - Automatic Python environment installation and verification
@@ -151,7 +160,7 @@ You can also use the command palette: **E-Ink Sync: Extract highlights**.
 
 Use the document actions in the library view to remove documents from the tablet:
 
-- **Archive from tablet** keeps the existing complete local document collection, highlight notes, and drawings in your configured Archive folder, then removes the tablet copy. The operation requires a usable local collection but does not wait for a redundant fresh backup.
+- **Archive from tablet** keeps the existing complete local document collection, highlight notes, and drawings in your configured Archive folder, then removes the tablet copy. Every current tablet file must match the local copy by type, size, and SHA-256; otherwise deletion is refused.
 - **Delete permanently** removes the document and all of its sidecar files from the reMarkable, Sync folders, and Archive folder. You can permanently delete an already archived document.
 
 Archive must be outside every Sync folder so archived files are not copied back to the tablet.
@@ -164,7 +173,7 @@ Archive must be outside every Sync folder so archived files are not copied back 
 | **Pen strokes on PDFs** (drawing/writing over pages) | PNG image of the annotated page |
 | **Notebook pages** (Quick sheets, etc.) | PNG image of each page with strokes |
 
-**Note:** Text-selection highlights produce the best results -- you get the actual text as searchable markdown. Pen strokes (including the pen-style highlighter) are rendered as images only. The extractor does not currently OCR pen-stroke annotations to recover text.
+**Note:** Text-selection highlights produce the best results -- you get the actual text as searchable markdown. On PDFs, the extractor attempts to match pen-style highlighter strokes to underlying text; scans and unusual layouts may remain image-only. Other pen strokes are rendered as images, and notebook handwriting becomes searchable only when optional OCR is enabled.
 
 ### Output format
 
@@ -193,7 +202,7 @@ Everything between the `<!-- eink-sync:start/end -->` markers is managed by the 
 
 ### Trim blank page space
 
-Notebook and quick-sheet pages are a full 1404×1872 canvas even when you only jotted a few lines at the top. With **Trim blank page space** on (the default), a page whose content sits within the top half is cropped to just below your writing, so a short quick sheet embeds a short image instead of a tall mostly-blank one. Pages that use more of the sheet, and all PDF-backed pages, are left untouched. Toggle it in **Settings → Extraction**.
+Notebook and quick-sheet pages use the device's full native canvas even when you only jotted a few lines at the top. With **Trim blank page space** on (the default), a page whose content sits within the top half is cropped to just below your writing, so a short quick sheet embeds a short image instead of a tall mostly-blank one. Pages that use more of the sheet, and all PDF-backed pages, are left untouched. Toggle it in **Settings → Extraction**.
 
 ### Handwriting search (OCR)
 
@@ -214,7 +223,11 @@ OCR is **off by default** and requires Tesseract (see Prerequisites). Recognitio
 
 ### Page templates
 
-Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) normally render on plain white, because the template art lives on the tablet at `/usr/share/remarkable/templates/` and isn't part of the synced document data. With **Render page templates** on (the default), the plugin fetches that art from the tablet over SFTP during sync and draws each page's template behind its strokes. `Blank` pages are unaffected, and until the art has been fetched (or for Syncthing-only setups) pages simply render on white as before. Toggle it in **Settings → Extraction**.
+Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) normally render on plain white, because the template art lives on the tablet at `/usr/share/remarkable/templates/` and isn't part of the synced document data. With **Render page templates** on (the default), the plugin fetches that art from the tablet over SFTP during sync and draws each page's template behind its strokes. `Blank` pages are unaffected, and until the art has been fetched (or for Syncthing-only setups) pages simply render on white as before. Planner text labels may be omitted, and fixed PNG/SVG art does not repeat below its native height on vertically scrolled pages. Toggle it in **Settings → Extraction**.
+
+### reMarkable tags
+
+Document and page tags can be placed in generated notes by adding `{{tags}}` inside the template's managed `eink-sync` section. It renders space-separated Obsidian hashtags at that exact location (for example, `linear algebra` becomes `#linear-algebra`). Remove the placeholder to disable tag output.
 
 ---
 
@@ -306,7 +319,7 @@ When you disable and re-enable the plugin (e.g., in a subvault), it re-reads set
 
 1. **Check Syncthing** -- open `http://127.0.0.1:8384` and verify the folder is "Up to Date"
 2. **Check Python** -- run `python --version` (or `python3 --version`) in a terminal. If it opens the Microsoft Store, disable the aliases (see Prerequisites above)
-3. **Check annotation type** -- text-selection highlights (long-press to select) produce text. Pen/highlighter strokes produce only images. If you only drew with a pen, the extraction may report 0 highlights but should still generate page drawings.
+3. **Check annotation type** -- text-selection highlights (long-press to select) produce text. PDF pen-style highlighter strokes are matched to underlying text when possible; scans and ordinary pen strokes remain images. If you only drew with a pen, the extraction may report 0 highlights but should still generate page drawings.
 4. **Force full extraction** -- incremental mode may skip documents if their `lastModified` timestamp hasn't changed. Use the Sync button in the library or the command palette to force a full run.
 
 ### Documents not appearing in library
@@ -383,8 +396,10 @@ Normal sync and extraction contact only your tablet and the Syncthing service on
 
 ## Known limitations
 
-- **Pen-stroke text extraction**: Highlights drawn with a pen or the pen-style highlighter tool are captured as images, not text. Only text-selection highlights (GlyphRange) produce searchable text.
-- **Stale notes on highlight deletion**: Documents with 0 highlights and 0 drawings are skipped, leaving old notes unchanged (see Troubleshooting above).
+- **New scene content**: Typed notebook text, embedded notebook images, and blocks unsupported by the pinned `rmscene` parser may be omitted from page previews.
+- **Pen-stroke text extraction**: Pen-style highlighter strokes are matched to underlying PDF text when possible. Scans and unusual layouts may remain image-only; other PDF pen strokes remain image-only.
+- **Device fixtures**: Paper Pro rendering is validated with a public 1620×2160 fixture. Paper Pro Move and landscape rendering have automated geometry coverage but no real-device fixture. Legacy pages without `SceneInfo` use the portrait fallback.
+- **Template details**: Planner text labels may be omitted. Fixed PNG/SVG templates do not repeat beyond the native page height on vertically scrolled pages.
 - **Incremental extraction uses document timestamp**: The `lastModified` field in `.metadata` may not update when annotations change, causing incremental mode to miss updates. Use full re-extraction if highlights seem stuck.
 - **Same-name documents across sources**: If two tablets have a document with the same visible name, their highlight notes will overwrite each other (unless per-source subfolders are configured).
 

@@ -2,10 +2,9 @@
 """
 Render reMarkable page templates from the firmware 3.x vector format.
 
-Older firmware shipped templates as PNG art that could be drawn behind
-strokes directly. Current firmware (observed on build 20260612085811) ships
-`.template` files instead: declarative JSON describing the page furniture as
-expression-driven boxes and paths, with no raster art anywhere on the device.
+Older firmware shipped templates as PNG or SVG art. Current firmware (observed
+on build 20260612085811) ships `.template` files instead: declarative JSON
+describing the page furniture as expression-driven boxes and paths.
 
 A template looks like this (abridged, "P Lines medium"):
 
@@ -32,6 +31,7 @@ install. The output is a PNG the existing renderer composites as a page
 background (see png_renderer.render_rm_file_to_png).
 """
 
+import hashlib
 import json
 import os
 from typing import Optional, Union
@@ -45,7 +45,7 @@ from constants import RM_SCREEN_WIDTH, RM_SCREEN_HEIGHT
 
 # Bump when a change alters rendered output, so cached page images that were
 # drawn with an older renderer are regenerated (see render_pages.py).
-TEMPLATE_RENDERER_VERSION = 1
+TEMPLATE_RENDERER_VERSION = 2
 
 # The device draws page furniture as thin, light rules -- dark enough to guide
 # handwriting, light enough that strokes stay dominant.
@@ -57,6 +57,15 @@ MIN_REPEAT_STEP = 0.5
 MAX_REPEAT_COUNT = 2000
 
 Number = Union[int, float]
+
+
+def template_source_digest(template_path: str) -> str:
+    """Return a stable digest for template bytes used in cache keys."""
+    digest = hashlib.sha256()
+    with open(template_path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # ---------------------------------------------------------------
@@ -157,7 +166,8 @@ class _Parser:
         value = self._comparison()
         while True:
             if self._accept('op', '&&'):
-                value = 1.0 if (value and self._comparison()) else 0.0
+                right = self._comparison()
+                value = 1.0 if (value and right) else 0.0
             elif self._accept('op', '||'):
                 right = self._comparison()
                 value = 1.0 if (value or right) else 0.0
@@ -463,8 +473,7 @@ def render_template_file(
     height: float = RM_SCREEN_HEIGHT,
     canvas_height: Optional[float] = None,
 ) -> bool:
-    """
-    Render a `.template` file to a PNG page background.
+    """Render a `.template` or legacy SVG file to a PNG page background.
 
     `canvas_height` extends the output for scrolled notebook pages, which are
     taller than one screen: the ruling continues at its true rhythm instead of
@@ -478,6 +487,29 @@ def render_template_file(
     """
     if fitz is None:
         return False
+
+    if template_path.lower().endswith('.svg'):
+        try:
+            with open(template_path, 'rb') as handle:
+                svg_doc = fitz.open(stream=handle.read(), filetype='svg')
+            if len(svg_doc) < 1:
+                svg_doc.close()
+                return False
+            source_page = svg_doc[0]
+            if source_page.rect.width <= 0 or source_page.rect.height <= 0:
+                svg_doc.close()
+                return False
+            matrix = fitz.Matrix(
+                float(width) / source_page.rect.width,
+                float(height) / source_page.rect.height,
+            )
+            pixmap = source_page.get_pixmap(matrix=matrix, alpha=False)
+            os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+            pixmap.save(out_path)
+            svg_doc.close()
+            return pixmap.width == int(width) and pixmap.height == int(height)
+        except Exception:
+            return False
 
     try:
         with open(template_path, 'r', encoding='utf-8') as handle:
@@ -541,24 +573,38 @@ def render_template_cached(
 ) -> Optional[str]:
     """
     Render a template once and reuse it: pages of a notebook share a
-    template, and so do notebooks. Re-renders when the source `.template`
-    is newer than the cached PNG or the renderer version changed.
+    template, and so do notebooks. The source-content digest and renderer
+    version are part of the cache key, so preserved or coarse mtimes cannot
+    reuse stale pixels.
 
     Page height is part of the key, since scrolled pages need a taller draw.
     """
     stem = os.path.splitext(os.path.basename(template_path))[0]
-    out_h = int(max(float(canvas_height), height)) if canvas_height else int(height)
+    is_svg = template_path.lower().endswith('.svg')
+    source_kind = 'svg' if is_svg else 'template'
+    # An SVG is fixed page art, like the older PNG assets. Do not stretch it
+    # over a vertically scrolled notebook page; only `.template` definitions
+    # know how to continue their ruling rhythm beyond one screen.
+    out_h = (
+        int(height) if is_svg
+        else int(max(float(canvas_height), height)) if canvas_height
+        else int(height)
+    )
+    try:
+        source_digest = template_source_digest(template_path)[:16]
+    except OSError:
+        return None
+
     out_path = os.path.join(
         cache_dir,
-        f"{stem}-{int(width)}x{out_h}-v{TEMPLATE_RENDERER_VERSION}.png",
+        f"{stem}-{source_kind}-{int(width)}x{out_h}-{source_digest}-v{TEMPLATE_RENDERER_VERSION}.png",
     )
 
-    try:
-        if (os.path.exists(out_path)
-                and os.path.getmtime(out_path) >= os.path.getmtime(template_path)):
-            return out_path
-    except OSError:
-        pass
+    if os.path.isfile(out_path):
+        return out_path
 
-    rendered = render_template_file(template_path, out_path, width, height, canvas_height)
+    rendered = render_template_file(
+        template_path, out_path, width, height,
+        None if is_svg else canvas_height,
+    )
     return out_path if rendered else None

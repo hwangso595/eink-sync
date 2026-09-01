@@ -1,6 +1,8 @@
 export {
   detectFirmwareVersion,
   detectDeviceModel,
+  detectDeviceModelIdentity,
+  detectDeviceArchitecture,
   detectMemoryInfo,
   detectStorageInfo,
   detectDeviceInfo,
@@ -11,6 +13,7 @@ export {
   parseFirmwareVersion,
   compareFirmwareVersions,
   getInstallationPath,
+  isKnownLegacyInstallerTarget,
   usesV6FileFormat,
   getFirmwareCompatibilityWarning,
 } from './firmware';

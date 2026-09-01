@@ -7,12 +7,9 @@
  * capture that password. This module pins the tablet's host key on first
  * connect and detects later changes.
  *
- * Policy: pin-and-notify. On first sight we record the key. On a change we fire
- * a one-time notification (so a real MITM is visible to the user) and then
- * re-pin to the new key. We deliberately do NOT hard-reject a changed key:
- * locking the user out of their own tablet (e.g. after a legitimate firmware
- * reflash regenerates the key) would violate the project's "never break the
- * tablet workflow" rule. Detection-with-notification is the chosen balance.
+ * Policy: pin and reject mismatches. On first sight we record the key. On a
+ * change we notify the user and refuse before password authentication. A
+ * legitimate reflash must be explicitly re-trusted by clearing that host pin.
  *
  * Storage is a small JSON file in the plugin directory; no network calls.
  */
@@ -60,20 +57,21 @@ export function initHostKeyStore(filePath: string, onMismatch?: HostKeyMismatchH
   }
 }
 
-function persist(): void {
-  if (!storePath) return;
+function persist(): boolean {
+  if (!storePath) return true;
   try {
     fs.writeFileSync(storePath, JSON.stringify(fingerprints, null, 2), 'utf-8');
+    return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`Could not persist known-hosts store: ${msg}`);
+    return false;
   }
 }
 
 /**
- * Verify a presented host key for `host`. Returns true if the connection
- * should proceed (always true under the pin-and-notify policy), recording or
- * updating the pin as a side effect.
+ * Verify a presented host key for `host`. A first-seen key proceeds only if its
+ * pin can be retained; changed keys are rejected before credentials are sent.
  *
  * @param host - The host being connected to (keyed independently).
  * @param keyHash - sha256 fingerprint of the presented key.
@@ -84,7 +82,10 @@ export function verifyHostKey(host: string, keyHash: string): boolean {
   if (!known) {
     // First time we've seen this host: pin it.
     fingerprints[host] = keyHash;
-    persist();
+    if (!persist()) {
+      delete fingerprints[host];
+      return false;
+    }
     logger.info(`Pinned SSH host key for ${host} (${keyHash.slice(0, 16)}…)`);
     return true;
   }
@@ -113,6 +114,42 @@ export function verifyHostKey(host: string, keyHash: string): boolean {
 /** Build an ssh2 `hostVerifier` callback bound to a specific host. */
 export function makeHostVerifier(host: string): (key: Buffer) => boolean {
   return (key: Buffer) => verifyHostKey(host, fingerprintFromKey(key));
+}
+
+/** Build a verifier that accepts only one already-authenticated host key. */
+export function makeExactHostVerifier(
+  expectedFingerprint: string,
+): (key: Buffer) => boolean {
+  return (key: Buffer) => fingerprintFromKey(key) === expectedFingerprint;
+}
+
+/** Return the currently pinned fingerprint for a host, if one has been seen. */
+export function getPinnedHostFingerprint(host: string): string | null {
+  return fingerprints[host] ?? null;
+}
+
+/**
+ * Remember that a newly verified address is an alias for an already trusted
+ * host. Callers must first connect to the alias using the source fingerprint
+ * as an exact verifier; this function deliberately performs no network I/O.
+ */
+export function rememberVerifiedHostAlias(
+  trustedHost: string,
+  verifiedAlias: string,
+): boolean {
+  const fingerprint = fingerprints[trustedHost];
+  if (!fingerprint) return false;
+  const previous = fingerprints[verifiedAlias];
+  fingerprints[verifiedAlias] = fingerprint;
+  if (!persist()) {
+    if (previous === undefined) {
+      delete fingerprints[verifiedAlias];
+    } else {
+      fingerprints[verifiedAlias] = previous;
+    }
+    return false;
+  }
+  return true;
 }
 
 /** Remove the pinned key for a host (forces re-pin on next connect). Test/maintenance use. */

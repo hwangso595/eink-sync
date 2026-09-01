@@ -1,6 +1,8 @@
 import {
   detectFirmwareVersion,
   detectDeviceModel,
+  detectDeviceModelIdentity,
+  detectDeviceArchitecture,
   detectMemoryInfo,
   detectStorageInfo,
 } from './detector';
@@ -116,6 +118,31 @@ describe('detectDeviceModel', () => {
     expect(model).toBe('reMarkable2');
   });
 
+  it.each([
+    ['reMarkable Ferrari', 'paperPro'],
+    ['reMarkable Chiappa', 'paperProMove'],
+    ['reMarkable Tatsu', 'paperPure'],
+    ['reMarkable Paper Pro', 'paperPro'],
+    ['reMarkable Paper Pro Move', 'paperProMove'],
+    ['reMarkable Paper Pure', 'paperPure'],
+    ['reMarkable Paper Pro Pure', 'paperPure'],
+  ])('detects current model %s', async (machine, expected) => {
+    const ssh = createMockSSH({
+      ['/sys/devices/soc0/machine']: { stdout: machine, exitCode: 0 },
+    });
+
+    await expect(detectDeviceModel(ssh)).resolves.toBe(expected);
+  });
+
+  it('continues after an unknown machine string and uses device-tree model', async () => {
+    const ssh = createMockSSH({
+      ['/sys/devices/soc0/machine']: { stdout: 'reMarkable Future Device', exitCode: 0 },
+      ['/proc/device-tree/model']: { stdout: 'reMarkable Ferrari\0', exitCode: 0 },
+    });
+
+    await expect(detectDeviceModel(ssh)).resolves.toBe('paperPro');
+  });
+
   it('falls back to device tree compatible string', async () => {
     const ssh = createMockSSH({
       ['/sys/devices/soc0/machine']: { stdout: '', exitCode: 1 },
@@ -175,6 +202,44 @@ describe('detectDeviceModel', () => {
 
     const model = await detectDeviceModel(ssh);
     expect(model).toBe('unknown');
+  });
+
+  it('does not authorize a legacy model from RAM in strict identity mode', async () => {
+    const ssh = createMockSSH({
+      ['/sys/devices/soc0/machine']: {
+        stdout: 'reMarkable Future ARM Device',
+        exitCode: 0,
+      },
+      ['/proc/device-tree/model']: { stdout: '', exitCode: 1 },
+      ['/proc/device-tree/compatible']: { stdout: '', exitCode: 1 },
+      'cat /proc/meminfo': {
+        stdout: 'MemTotal:         524288 kB\nMemAvailable:    262144 kB',
+        exitCode: 0,
+      },
+    });
+
+    await expect(detectDeviceModelIdentity(ssh)).resolves.toBe('unknown');
+    expect(ssh.execute).not.toHaveBeenCalledWith('cat /proc/meminfo');
+  });
+});
+
+describe('detectDeviceArchitecture', () => {
+  it.each([
+    ['armv7l', 'armv7'],
+    ['armv7a', 'armv7'],
+    ['aarch64', 'aarch64'],
+    ['arm64', 'aarch64'],
+    ['x86_64', 'unknown'],
+  ])('normalizes %s to %s', async (machine, expected) => {
+    const ssh = createMockSSH({
+      ['uname -m']: { stdout: `${machine}\n`, exitCode: 0 },
+    });
+
+    await expect(detectDeviceArchitecture(ssh)).resolves.toBe(expected);
+  });
+
+  it('returns unknown when uname fails', async () => {
+    await expect(detectDeviceArchitecture(createMockSSH({}))).resolves.toBe('unknown');
   });
 });
 
@@ -249,6 +314,44 @@ describe('detectStorageInfo', () => {
     expect(storage.usedMB).toBe(2100);
     expect(storage.availableMB).toBe(4300);
     expect(storage.usagePercent).toBe(33);
+  });
+
+  it('parses df output when a long filesystem source wraps', async () => {
+    const ssh = createMockSSH({
+      'df -m /home': {
+        stdout: [
+          'Filesystem           1M-blocks      Used Available Use% Mounted on',
+          '/dev/mapper/remarkable-userdata-with-a-long-source-name',
+          '                         47430      3656     43260   8% /home',
+        ].join('\n'),
+        exitCode: 0,
+      },
+    });
+
+    await expect(detectStorageInfo(ssh, '/home')).resolves.toEqual({
+      mountPoint: '/home',
+      totalMB: 47430,
+      usedMB: 3656,
+      availableMB: 43260,
+      usagePercent: 8,
+    });
+  });
+
+  it('accepts a queried directory that lives on a parent mount', async () => {
+    const ssh = createMockSSH({
+      'df -m /home': {
+        stdout: '/dev/root   47430  3656  43260  8% /',
+        exitCode: 0,
+      },
+    });
+
+    await expect(detectStorageInfo(ssh, '/home')).resolves.toEqual({
+      mountPoint: '/home',
+      totalMB: 47430,
+      usedMB: 3656,
+      availableMB: 43260,
+      usagePercent: 8,
+    });
   });
 
   it('throws BridgeError on command failure', async () => {

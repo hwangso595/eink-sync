@@ -137,6 +137,127 @@ function formatHighlight(
  */
 export type PageDrawings = Map<number, string>;
 
+/** Generated drawing/OCR artifacts recovered from an existing managed section. */
+export interface ManagedPageArtifacts {
+  pageDrawings: PageDrawings;
+  pageOcr: PageOcr;
+}
+
+function pageNumberFromDrawingTarget(target: string): number | null {
+  const normalized = target.replace(/\\/g, '/');
+  const basename = normalized.substring(normalized.lastIndexOf('/') + 1);
+  // Rendered names end in `_pN.png`, legacy `_pN_abcd.png`, or current
+  // `_pN_<16 hex>.png`. Keeping the suffix strict makes this select the final
+  // page token when a document title itself contains `_pN`.
+  const match = basename.match(/_p([1-9]\d*)(?:_(?:[0-9a-f]{4}|[0-9a-f]{16}))?\.png$/i);
+  return match ? Number(match[1]) : null;
+}
+
+function managedPageHeader(line: string): number | null {
+  const markdownHeader = line.match(/^\s*#{1,6}\s+Page\s+([1-9]\d*)(?:\s+.*)?$/i);
+  if (markdownHeader) return Number(markdownHeader[1]);
+
+  // TemplateMarkdownRenderer's simple {{annotations}} output.
+  const annotationHeader = line.match(/^\s*\*\*Page\s+([1-9]\d*):\*\*\s*$/i);
+  return annotationHeader ? Number(annotationHeader[1]) : null;
+}
+
+/**
+ * Recover generated page drawings and OCR from the current managed section.
+ *
+ * Page headings are authoritative when present. Cache-busted `_pN_` filenames
+ * provide a second independent page key and support flat/custom templates. Any
+ * conflicting or unassociated generated artifact throws so callers can leave
+ * the existing note untouched instead of risking data loss.
+ */
+export function extractManagedPageArtifacts(existingContent: string): ManagedPageArtifacts {
+  const start = findHighlightsStart(existingContent);
+  const end = findHighlightsEnd(existingContent);
+  if (!start || !end || end.index <= start.index + start.marker.length) {
+    throw new Error('managed section markers are missing or out of order');
+  }
+
+  const section = existingContent.substring(start.index + start.marker.length, end.index);
+  const lines = section.split(/\r?\n/);
+  const pageDrawings: PageDrawings = new Map();
+  const pageOcr: PageOcr = new Map();
+  let header: { page: number; line: number } | null = null;
+  let lastDrawing: { page: number; line: number } | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const headerPage = managedPageHeader(line);
+    if (headerPage !== null) {
+      header = { page: headerPage, line: i };
+      continue;
+    }
+    if (/^\s*#{1,6}\s+/.test(line)) {
+      header = null;
+    }
+
+    const image = line.match(/^\s*!\[\[([^\]\r\n]+)\]\]\s*$/);
+    if (image) {
+      const target = image[1].split('|', 1)[0].trim();
+      if (target.toLowerCase().endsWith('.png')) {
+        const filenamePage = pageNumberFromDrawingTarget(target);
+        if (filenamePage !== null && header && filenamePage !== header.page) {
+          throw new Error(`drawing filename page ${filenamePage} conflicts with page ${header.page} header`);
+        }
+        const page = filenamePage ?? header?.page ?? null;
+        if (page === null) {
+          throw new Error(`cannot associate drawing ${target} with a page`);
+        }
+        const previous = pageDrawings.get(page);
+        if (previous && previous !== target) {
+          throw new Error(`multiple drawings are associated with page ${page}`);
+        }
+        pageDrawings.set(page, target);
+        lastDrawing = { page, line: i };
+      }
+      continue;
+    }
+
+    if (!/^\s*>\s*\[!note\]-\s+Handwriting \(OCR\)\s*$/.test(line)) {
+      continue;
+    }
+
+    let page = header?.page ?? null;
+    if (header && lastDrawing && lastDrawing.line > header.line && lastDrawing.page !== header.page) {
+      throw new Error(`OCR page ${header.page} conflicts with its drawing page ${lastDrawing.page}`);
+    }
+    if (page === null && lastDrawing) {
+      const onlyBlankLinesBetween = lines
+        .slice(lastDrawing.line + 1, i)
+        .every((between) => between.trim() === '');
+      if (onlyBlankLinesBetween) page = lastDrawing.page;
+    }
+    if (page === null) {
+      throw new Error('cannot associate handwriting OCR with a page');
+    }
+
+    const ocrLines: string[] = [];
+    let next = i + 1;
+    while (next < lines.length) {
+      const quoted = lines[next].match(/^\s*>\s?(.*)$/);
+      if (!quoted) break;
+      ocrLines.push(quoted[1]);
+      next++;
+    }
+    const ocrText = ocrLines.join('\n').trim();
+    if (!ocrText) {
+      throw new Error(`handwriting OCR for page ${page} has no text`);
+    }
+    const previous = pageOcr.get(page);
+    if (previous && previous !== ocrText) {
+      throw new Error(`multiple OCR blocks are associated with page ${page}`);
+    }
+    pageOcr.set(page, ocrText);
+    i = next - 1;
+  }
+
+  return { pageDrawings, pageOcr };
+}
+
 /**
  * Format a page's OCR text as an Obsidian callout that is collapsed by default
  * (the `-` after the callout type). The text stays hidden but remains fully
@@ -230,16 +351,6 @@ export function renderMarkdown(
     pageOcr,
   ));
   sections.push('');
-
-  // Warnings section (if any)
-  if (result.warnings.length > 0) {
-    sections.push('## Extraction Notes');
-    sections.push('');
-    for (const warning of result.warnings) {
-      sections.push(`- ${warning}`);
-    }
-    sections.push('');
-  }
 
   return sections.join('\n');
 }
@@ -602,6 +713,8 @@ export function resolveOutputBaseNames(
  * MarkdownRenderer implementation that uses the default template.
  */
 export class DefaultMarkdownRenderer implements MarkdownRenderer {
+  readonly supportsPartialPageArtifactRecovery = true;
+
   private options: RenderMarkdownOptions;
 
   constructor(

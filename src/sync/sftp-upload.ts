@@ -88,8 +88,34 @@ function sftpStat(sftp: SFTPWrapper, remotePath: string): Promise<Stats | null> 
   });
 }
 
-async function ensureRemoteDirectory(sftp: SFTPWrapper, remotePath: string): Promise<void> {
-  const existing = await sftpStat(sftp, remotePath);
+function sftpLstat(sftp: SFTPWrapper, remotePath: string): Promise<Stats | null> {
+  return new Promise((resolve, reject) => {
+    sftp.lstat(remotePath, (err, stats) => {
+      if (!err) {
+        resolve(stats);
+        return;
+      }
+      const code = (err as Error & { code?: unknown }).code;
+      if (code === 2 || code === 'ENOENT') {
+        resolve(null);
+        return;
+      }
+      reject(new Error(`Failed to inspect ${remotePath}: ${err.message}`));
+    });
+  });
+}
+
+async function ensureRemoteDirectory(
+  sftp: SFTPWrapper,
+  remotePath: string,
+  allowLinkedDirectory = false,
+): Promise<void> {
+  // The configured remote root is trusted and may intentionally be a link.
+  // Collection descendants are data-controlled, so inspect the entry itself
+  // and refuse to upload through a pre-existing symlink.
+  const existing = allowLinkedDirectory
+    ? await sftpStat(sftp, remotePath)
+    : await sftpLstat(sftp, remotePath);
   if (existing) {
     if (!existing.isDirectory()) {
       throw new Error(`Remote upload path is not a directory: ${remotePath}`);
@@ -175,7 +201,7 @@ export async function uploadDocumentCollectionWithSftp(
     );
   }
 
-  await ensureRemoteDirectory(sftp, remoteRoot);
+  await ensureRemoteDirectory(sftp, remoteRoot, true);
   for (const directory of entries.filter((entry) => entry.isDirectory)) {
     await ensureRemoteDirectory(sftp, directory.remotePath);
   }

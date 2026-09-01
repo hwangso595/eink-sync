@@ -30,10 +30,18 @@ import {
   PipelineConfig,
   PipelineDependencies,
   ExtractionResult,
+  ExtractedHighlight,
 } from './types';
 import { XochitlDocumentDiscovery } from './document-discovery';
 import { PythonHighlightExtractor } from './python-bridge';
-import { DefaultMarkdownRenderer, generateOutputFilename, resolveOutputBaseNames, scanExistingNoteBaseNames, type PageDrawings } from './markdown-renderer';
+import {
+  DefaultMarkdownRenderer,
+  extractManagedPageArtifacts,
+  generateOutputFilename,
+  resolveOutputBaseNames,
+  scanExistingNoteBaseNames,
+  type PageDrawings,
+} from './markdown-renderer';
 import { TemplateMarkdownRenderer, validateTemplate } from './template-engine';
 import { renderPageImages, type PageImageResult } from './page-image-renderer';
 import { preserveTypedNotes } from './notes-preservation';
@@ -68,6 +76,93 @@ export interface DocumentPipelineResult {
   success: boolean;
   error: string | null;
   warnings: string[];
+}
+
+function rendererHighlightKey(highlight: ExtractedHighlight): string {
+  const text = highlight.text.normalize('NFKC').trim().replace(/\s+/gu, ' ');
+  return `${highlight.pageNumber}\0${text}`;
+}
+
+/**
+ * Add redirect-aware renderer fallbacks without duplicating the richer main
+ * extractor result. Existing entries win because they retain RGBA and bounds.
+ */
+export function mergeRendererHighlights(
+  extracted: ExtractedHighlight[],
+  renderer: ExtractedHighlight[],
+): ExtractedHighlight[] {
+  const merged = [...extracted];
+  const seen = new Set(extracted.map(rendererHighlightKey));
+  for (const highlight of renderer) {
+    const key = rendererHighlightKey(highlight);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(highlight);
+  }
+  return merged;
+}
+
+const EXTRACTION_WARNING_HEADING = '> [!warning] Extraction warnings';
+const EXTRACTION_WARNING_START = '<!-- eink-sync:extraction-warnings:start -->';
+const EXTRACTION_WARNING_END = '<!-- eink-sync:extraction-warnings:end -->';
+
+/**
+ * Replace the plugin-owned warning callout without moving YAML frontmatter off
+ * the first line. This also repairs notes written by older versions, which
+ * prepended the callout before the opening `---` and then left it stale.
+ */
+export function applyExtractionWarnings(
+  markdown: string,
+  warnings: string[],
+): string {
+  const eol = markdown.includes('\r\n') ? '\r\n' : '\n';
+  const bom = markdown.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const lines = markdown.slice(bom.length).split(/\r?\n/);
+  const cleaned: string[] = [];
+
+  for (let i = 0; i < lines.length;) {
+    if (lines[i] === EXTRACTION_WARNING_START) {
+      const end = lines.indexOf(EXTRACTION_WARNING_END, i + 1);
+      if (end !== -1) {
+        i = end + 1;
+        if (lines[i] === '') i++;
+        continue;
+      }
+    }
+    cleaned.push(lines[i]);
+    i++;
+  }
+
+  // Older versions put this unmarked callout at byte zero, before frontmatter.
+  if (cleaned[0] === EXTRACTION_WARNING_HEADING) {
+    let end = 1;
+    while (cleaned[end]?.startsWith('>')) end++;
+    if (cleaned[end] === '') end++;
+    cleaned.splice(0, end);
+  }
+
+  if (warnings.length === 0) return bom + cleaned.join(eol);
+
+  let insertAt = 0;
+  if (cleaned[0]?.replace(/^\uFEFF/u, '') === '---') {
+    const closingFence = cleaned.findIndex((line, index) => index > 0 && line === '---');
+    if (closingFence !== -1) insertAt = closingFence + 1;
+  }
+
+  const before = cleaned.slice(0, insertAt);
+  const after = cleaned.slice(insertAt);
+  while (after[0] === '') after.shift();
+
+  const warningLines = [EXTRACTION_WARNING_START, EXTRACTION_WARNING_HEADING];
+  for (const warning of warnings) {
+    const [first = '', ...continuation] = warning.split(/\r?\n/);
+    warningLines.push(`> - ${first}`);
+    warningLines.push(...continuation.map((line) => `>   ${line}`));
+  }
+  warningLines.push(EXTRACTION_WARNING_END);
+
+  if (before.length > 0 && before[before.length - 1] !== '') before.push('');
+  return bom + [...before, ...warningLines, '', ...after].join(eol);
 }
 
 /** Callback for reporting pipeline progress. */
@@ -352,6 +447,8 @@ export async function runExtractionPipeline(
         success: true,
         error: null,
         extractedAt: new Date().toISOString(),
+        tags: doc.tags ?? [],
+        pageTags: doc.pageTags ?? {},
       });
     }
   }
@@ -426,6 +523,7 @@ export async function runExtractionPipeline(
 
       let pageDrawings: PageDrawings | null = null;
       let pageOcr: PageOcr | null = null;
+      let failedPageNumbers: number[] = [];
       // renderPageImages returns null for a genuinely-empty result but THROWS on
       // a real render failure (the document had strokes we couldn't render). We
       // track that separately so we never clear an existing note's drawings just
@@ -445,15 +543,21 @@ export async function runExtractionPipeline(
         if (imageResult) {
           pageDrawings = imageResult.pageDrawings;
           pageOcr = imageResult.pageOcr;
+          failedPageNumbers = imageResult.failedPageNumbers;
+          docResult.warnings.push(...imageResult.warnings.map(
+            (warning) => `Page rendering: ${warning}`,
+          ));
           // Merge renderer-extracted highlights (from handwritten highlights on PDF)
           // into the extraction result. These come from stroke bounding boxes
           // intersected with PDF text, complementing the PDF-annotation highlights.
           if (imageResult.rendererHighlights.length > 0) {
-            extractionResult.highlights = [
-              ...extractionResult.highlights,
-              ...imageResult.rendererHighlights,
-            ];
-            logger.info(`${doc.visibleName}: merged ${imageResult.rendererHighlights.length} renderer highlight(s)`);
+            const before = extractionResult.highlights.length;
+            extractionResult.highlights = mergeRendererHighlights(
+              extractionResult.highlights,
+              imageResult.rendererHighlights,
+            );
+            const added = extractionResult.highlights.length - before;
+            logger.info(`${doc.visibleName}: merged ${added} renderer highlight(s)`);
           }
         }
       } catch (drawErr) {
@@ -485,12 +589,54 @@ export async function runExtractionPipeline(
         }
       }
 
-      // Nothing to show (no highlights AND no drawings). Only skip creating a
+      const existingContent = fs.existsSync(outputFilePath)
+        ? fs.readFileSync(outputFilePath, 'utf-8')
+        : null;
+
+      // A mixed render updates successful pages but must retain the previous
+      // generated drawing/OCR for each failed page. Only structured page IDs
+      // from Python are used; human-readable error messages are never parsed.
+      if (failedPageNumbers.length > 0 && existingContent !== null) {
+        try {
+          if (renderer.supportsPartialPageArtifactRecovery !== true) {
+            throw new Error('the active markdown template cannot prove page ownership');
+          }
+          const previous = extractManagedPageArtifacts(existingContent);
+          for (const page of failedPageNumbers) {
+            const drawing = previous.pageDrawings.get(page);
+            if (drawing) {
+              if (!pageDrawings) pageDrawings = new Map();
+              pageDrawings.set(page, drawing);
+            }
+            const ocr = previous.pageOcr.get(page);
+            if (ocr) {
+              if (!pageOcr) pageOcr = new Map();
+              pageOcr.set(page, ocr);
+            }
+          }
+        } catch (preserveErr) {
+          const msg = `${doc.visibleName}: partial page render could not be merged safely; ` +
+            `existing note left unchanged (${String(preserveErr)}).`;
+          logger.warn(msg);
+          result.errors.push(msg);
+          docResult.error = 'Partial page render could not be merged safely';
+          docResult.warnings.push('Existing note left unchanged after a partial page render.');
+          result.documentsProcessed++;
+          result.documentResults.push(docResult);
+          continue;
+        }
+      }
+
+      // Nothing to show (no highlights, drawings, or OCR). Only skip creating a
       // *brand-new* note here -- avoids empty-note noise for untouched PDFs.
       // An existing note (whose render succeeded) falls through to the merge
       // path so removing all highlights on the tablet clears the stale note.
-      if (extractionResult.highlights.length === 0 && (!pageDrawings || pageDrawings.size === 0)) {
-        if (doc.type !== 'notebook' && !fs.existsSync(outputFilePath)) {
+      if (
+        extractionResult.highlights.length === 0
+        && (!pageDrawings || pageDrawings.size === 0)
+        && (!pageOcr || pageOcr.size === 0)
+      ) {
+        if (doc.type !== 'notebook' && existingContent === null) {
           // Brand-new PDF with nothing to extract: don't create an empty note.
           result.documentsProcessed++;
           docResult.success = true;
@@ -504,9 +650,6 @@ export async function runExtractionPipeline(
 
       // Render or merge markdown
       let markdownContent: string;
-      const existingContent = fs.existsSync(outputFilePath)
-        ? fs.readFileSync(outputFilePath, 'utf-8')
-        : null;
       if (!config.overwrite && existingContent !== null) {
         markdownContent = renderer.mergeWithExisting(
           existingContent,
@@ -528,17 +671,9 @@ export async function runExtractionPipeline(
         markdownContent = preserveTypedNotes(existingContent, markdownContent);
       }
 
-      // If there are warnings, prepend a warning callout to the content
-      if (docResult.warnings.length > 0) {
-        const warningBlock =
-          '> [!warning] Extraction warnings\n' +
-          docResult.warnings.map((w) => `> - ${w}`).join('\n') +
-          '\n\n';
-        // Only add if not already present (avoid duplicates on re-run)
-        if (!markdownContent.includes('[!warning] Extraction warnings')) {
-          markdownContent = warningBlock + markdownContent;
-        }
-      }
+      // Replace stale generated warnings on every run. The callout belongs
+      // after YAML frontmatter so Obsidian continues to recognize Properties.
+      markdownContent = applyExtractionWarnings(markdownContent, docResult.warnings);
 
       // Write atomically
       progress?.('writing', i, total, doc.visibleName);

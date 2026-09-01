@@ -19,6 +19,11 @@ export interface SSHConfig {
   timeoutMs: number;
   /** Preferred connection method. */
   method: ConnectionMethod;
+  /**
+   * Optional exact SHA-256 host-key fingerprint for a one-shot identity check.
+   * Used when promoting the USB-authenticated tablet to its WiFi address.
+   */
+  expectedHostKeyFingerprint?: string;
 }
 
 /** Sensible defaults for a fresh installation. */

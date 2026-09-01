@@ -22,6 +22,17 @@ import * as path from 'path';
 import * as os from 'os';
 import { XochitlFileWatcher, FileWatcherEvent } from './file-watcher';
 
+const TEST_UUID = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+
+type WatcherInternals = {
+  handleFsEvent(eventType: string, filename: string): void;
+};
+
+/** Deliver one synthetic fs.watch event without relying on OS timing. */
+function deliverFsEvent(watcher: XochitlFileWatcher, filename: string): void {
+  (watcher as unknown as WatcherInternals).handleFsEvent('change', filename);
+}
+
 /** Create a temporary directory for testing. */
 function createTempDir(): string {
   // WSL may inherit a Windows-mounted TMP directory where recursive fs.watch
@@ -119,6 +130,8 @@ describe('XochitlFileWatcher', () => {
 
   describe('file change detection', () => {
     it('detects .rm file changes', (done) => {
+      const documentDir = path.join(tempDir, TEST_UUID);
+      fs.mkdirSync(documentDir);
       const watcher = new XochitlFileWatcher({
         xochitlPath: tempDir,
         debounceMs: 100,
@@ -135,7 +148,7 @@ describe('XochitlFileWatcher', () => {
 
       // Write a .rm file to trigger the watcher
       setTimeout(() => {
-        fs.writeFileSync(path.join(tempDir, 'test-page.rm'), 'test data');
+        fs.writeFileSync(path.join(documentDir, 'test-page.rm'), 'test data');
       }, 50);
     }, 5000);
 
@@ -172,7 +185,7 @@ describe('XochitlFileWatcher', () => {
         xochitlPath: tempDir,
         debounceMs: 100,
       });
-      const uuid = '7449b8ee-c9dc-4fc0-b9a1-9a743952c4e1';
+      const uuid = TEST_UUID;
       let changes = 0;
       watcher.on((event) => {
         if (event === 'change-detected') changes++;
@@ -196,6 +209,8 @@ describe('XochitlFileWatcher', () => {
     }, 5000);
 
     it('fires extraction-due after debounce settles', (done) => {
+      const documentDir = path.join(tempDir, TEST_UUID);
+      fs.mkdirSync(documentDir);
       const watcher = new XochitlFileWatcher({
         xochitlPath: tempDir,
         debounceMs: 200,
@@ -212,11 +227,13 @@ describe('XochitlFileWatcher', () => {
       watcher.start();
 
       setTimeout(() => {
-        fs.writeFileSync(path.join(tempDir, 'page1.rm'), 'data');
+        fs.writeFileSync(path.join(documentDir, 'page1.rm'), 'data');
       }, 50);
     }, 5000);
 
     it('resets debounce on rapid changes', (done) => {
+      const documentDir = path.join(tempDir, TEST_UUID);
+      fs.mkdirSync(documentDir);
       const watcher = new XochitlFileWatcher({
         xochitlPath: tempDir,
         debounceMs: 300,
@@ -233,10 +250,10 @@ describe('XochitlFileWatcher', () => {
 
       // Write files rapidly (within debounce window)
       setTimeout(() => {
-        fs.writeFileSync(path.join(tempDir, 'page1.rm'), 'data1');
+        fs.writeFileSync(path.join(documentDir, 'page1.rm'), 'data1');
       }, 50);
       setTimeout(() => {
-        fs.writeFileSync(path.join(tempDir, 'page2.rm'), 'data2');
+        fs.writeFileSync(path.join(documentDir, 'page2.rm'), 'data2');
       }, 150);
 
       // Check: should only fire once after both changes settle
@@ -246,6 +263,53 @@ describe('XochitlFileWatcher', () => {
         done();
       }, 700);
     }, 5000);
+
+    it('detects an unknown nested sidecar in a document collection by default', () => {
+      const changes: string[] = [];
+      const watcher = new XochitlFileWatcher({ xochitlPath: tempDir });
+      watcher.on((event, detail) => {
+        if (event === 'change-detected' && detail !== undefined) changes.push(detail);
+      });
+      watcher.start();
+
+      const filename = `${TEST_UUID}.future-assets/nested/page.sidecar-v2`;
+      deliverFsEvent(watcher, filename);
+      watcher.stop();
+
+      expect(changes).toEqual([filename]);
+    });
+
+    it('ignores a path outside a UUID document collection by default', () => {
+      const changes: string[] = [];
+      const watcher = new XochitlFileWatcher({ xochitlPath: tempDir });
+      watcher.on((event, detail) => {
+        if (event === 'change-detected' && detail !== undefined) changes.push(detail);
+      });
+      watcher.start();
+
+      deliverFsEvent(watcher, 'unrelated/page.rm');
+      watcher.stop();
+
+      expect(changes).toEqual([]);
+    });
+
+    it('preserves an explicitly supplied extension override', () => {
+      const changes: string[] = [];
+      const watcher = new XochitlFileWatcher({
+        xochitlPath: tempDir,
+        watchExtensions: ['.rm'],
+      });
+      watcher.on((event, detail) => {
+        if (event === 'change-detected' && detail !== undefined) changes.push(detail);
+      });
+      watcher.start();
+
+      deliverFsEvent(watcher, `${TEST_UUID}/future.sidecar-v2`);
+      deliverFsEvent(watcher, 'unrelated/page.rm');
+      watcher.stop();
+
+      expect(changes).toEqual(['unrelated/page.rm']);
+    });
   });
 
   describe('on/off', () => {

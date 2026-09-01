@@ -18,76 +18,69 @@ import { App, Modal, Setting, Notice } from 'obsidian';
 import * as fs from 'fs';
 import * as path from 'path';
 import type ReMarkableBridgePlugin from './plugin';
-import type { DeviceInfo } from '../types/device';
-import type { ConnectionResult } from '../ssh/connection-manager';
 import { BridgeError } from '../types/errors';
-
-/**
- * The wizard steps. When syncMethod is 'sftp', steps 3 (Entware Install)
- * and 4 (Syncthing Pairing) are skipped -- the wizard goes 1 -> 2 -> 5.
- */
-type WizardStep = 1 | 2 | 3 | 4 | 5;
-
-/** Per-step verification state. */
-interface StepState {
-  verified: boolean;
-  message: string;
-  data: Record<string, unknown>;
-}
+import {
+  resolveWizardConnectionTarget,
+  SetupFlowController,
+  supportsAutomaticSyncthingInstall,
+  type StepState,
+  type WizardStep,
+} from './setup-flow';
 
 export class SetupWizardModal extends Modal {
-  private currentStep: WizardStep = 1;
-  private stepStates: Map<WizardStep, StepState> = new Map();
-  private deviceInfo: DeviceInfo | null = null;
-  private connectionResult: ConnectionResult | null = null;
+  private readonly flow: SetupFlowController;
+  private manualWifiAddress = '';
 
   constructor(
     app: App,
     private plugin: ReMarkableBridgePlugin,
   ) {
     super(app);
-    // Initialize step states
-    for (let i = 1; i <= 5; i++) {
-      this.stepStates.set(i as WizardStep, {
-        verified: false,
-        message: '',
-        data: {},
-      });
-    }
+    this.flow = new SetupFlowController(
+      plugin.settings,
+      () => plugin.saveSettings(),
+    );
+  }
+
+  private get currentStep(): WizardStep {
+    return this.flow.currentStep;
+  }
+
+  private set currentStep(step: WizardStep) {
+    this.flow.currentStep = step;
+  }
+
+  private get stepStates(): Map<WizardStep, StepState> {
+    return this.flow.stepStates;
+  }
+
+  private get deviceInfo() {
+    return this.flow.deviceInfo;
   }
 
   /** Whether we're in SFTP mode (skip Syncthing steps). */
   private get isSftpMode(): boolean {
-    return (this.plugin.settings.syncMethod ?? 'sftp') === 'sftp';
+    return this.flow.isSftpMode;
   }
 
   /** Get the ordered list of wizard steps for the current sync method. */
   private get activeSteps(): WizardStep[] {
-    if (this.isSftpMode) {
-      // SFTP: skip Entware install (3) and Syncthing pairing (4)
-      return [1, 2, 5];
-    }
-    return [1, 2, 3, 4, 5];
+    return this.flow.activeSteps;
   }
 
   /** Get the next step in the flow, or null if at the end. */
   private getNextStep(): WizardStep | null {
-    const steps = this.activeSteps;
-    const idx = steps.indexOf(this.currentStep);
-    return idx < steps.length - 1 ? steps[idx + 1] : null;
+    return this.flow.nextStep;
   }
 
   /** Get the previous step in the flow, or null if at the beginning. */
   private getPrevStep(): WizardStep | null {
-    const steps = this.activeSteps;
-    const idx = steps.indexOf(this.currentStep);
-    return idx > 0 ? steps[idx - 1] : null;
+    return this.flow.previousStep;
   }
 
   /** Whether the current step is the last step. */
   private get isLastStep(): boolean {
-    const steps = this.activeSteps;
-    return this.currentStep === steps[steps.length - 1];
+    return this.flow.isLastStep;
   }
 
   onOpen(): void {
@@ -171,21 +164,26 @@ export class SetupWizardModal extends Modal {
     new Setting(containerEl).setName('Step 1: Connect to your reMarkable').setHeading();
     containerEl.createEl('p', {
       text:
-        'Connect your tablet via USB and enter the root password. ' +
-        'Find the password on your tablet at Settings > Help > Copyrights and licenses (scroll to the bottom). ' +
-        'After connecting, the plugin will auto-detect your tablet\'s WiFi IP for wireless syncing.',
+        'Enter the root password and connect your tablet. USB is the default. ' +
+        'If you already selected a verified WiFi address in settings, this wizard reuses it. ' +
+        'Find the password on the tablet’s Copyrights and licenses screen. ' +
+        'Paper Pro, Paper Pro Move, and Paper Pure require Developer Mode before SSH is available. ' +
+        'Enabling Developer Mode factory-resets those devices, so sync or back up their files first. ' +
+        'The plugin verifies the selected connection before continuing.',
     });
 
     const settings = this.plugin.settings;
+    const state = this.stepStates.get(1)!;
 
-    // Default to USB for initial setup; WiFi IP auto-detected after connection
-    if (!settings.tabletIp) {
-      settings.tabletIp = '10.11.99.1';
-      settings.connectionMethod = 'usb';
-    }
-
+    const selectedTarget = resolveWizardConnectionTarget(
+      settings.connectionMethod,
+      settings.tabletIp,
+      '',
+    );
     containerEl.createEl('p', {
-      text: 'Plug in your reMarkable via USB cable, then enter the root password below.',
+      text: selectedTarget.method === 'wifi'
+        ? `The wizard will use the verified WiFi address ${selectedTarget.host}.`
+        : 'Plug in your reMarkable via USB cable, then enter the root password below.',
       cls: 'remarkable-wizard-hint',
     });
 
@@ -197,16 +195,33 @@ export class SetupWizardModal extends Modal {
           .setValue(settings.rootPassword)
           .onChange((value) => {
             settings.rootPassword = value;
+            state.verified = false;
+            state.message = '';
           });
         text.inputEl.type = 'password';
         text.inputEl.autocomplete = 'off';
       });
 
+    new Setting(containerEl)
+      .setName('Manual WiFi address (optional)')
+      .setDesc(
+        'Use this IPv4 fallback only when USB networking is unavailable. ' +
+        'The plugin tests it before saving or switching connections.',
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder('192.168.1.42')
+          .setValue(this.manualWifiAddress)
+          .onChange((value) => {
+            this.manualWifiAddress = value;
+            state.verified = false;
+            state.message = '';
+          }),
+      );
+
     // Verify button and status
     const verifyContainer = containerEl.createDiv({ cls: 'remarkable-wizard-verify' });
     const statusEl = verifyContainer.createDiv({ cls: 'remarkable-wizard-status' });
-    const state = this.stepStates.get(1)!;
-
     if (state.verified) {
       statusEl.addClass('is-success');
       statusEl.setText(state.message);
@@ -229,56 +244,27 @@ export class SetupWizardModal extends Modal {
             statusEl.setText('Establishing SSH connection...');
 
             try {
-              const result = await this.plugin.connectAndVerify(
-                (step: string, detail: string) => {
-                  statusEl.setText(`${step}: ${detail}`);
-                },
+              const target = resolveWizardConnectionTarget(
+                settings.connectionMethod,
+                settings.tabletIp,
+                this.manualWifiAddress,
               );
+              const onProgress = (step: string, detail: string): void => {
+                statusEl.setText(`${step}: ${detail}`);
+              };
 
-              this.connectionResult = result;
-              if (result.success && result.deviceInfo) {
-                this.deviceInfo = result.deviceInfo;
-                state.verified = true;
-                state.message = `Connected to ${result.deviceInfo.model} (firmware ${result.deviceInfo.firmware.raw})`;
-                state.data = { deviceInfo: result.deviceInfo };
-
-                // Also mark step 2 data
-                const step2 = this.stepStates.get(2)!;
-                step2.data = {
-                  deviceInfo: result.deviceInfo,
-                  preflightReport: result.preflightReport,
-                };
-
-                // Auto-detect WiFi IP if connected via USB
-                if (settings.connectionMethod === 'usb') {
-                  try {
-                    statusEl.setText('Detecting WiFi IP address...');
-                    const wifiIp = await this.plugin.detectTabletWifiIp();
-                    if (wifiIp) {
-                      state.data.wifiIp = wifiIp;
-                      statusEl.setText(`Testing WiFi connection to ${wifiIp}...`);
-                      const wifiResult = await this.plugin.testWifiConnection(wifiIp);
-                      if (wifiResult.ok) {
-                        state.message += ` | WiFi ready: ${wifiIp}`;
-                        settings.wifiTabletIp = wifiIp;
-                        settings.tabletIp = wifiIp;
-                        settings.connectionMethod = 'wifi';
-                        new Notice(`Tablet WiFi verified at ${wifiIp}. WiFi is now the default connection.`);
-                      } else {
-                        state.message += ' | WiFi detected but unreachable; staying on USB';
-                      }
-                    }
-                  } catch {
-                    // WiFi detection is optional. A working USB setup remains valid.
-                    state.message += ' | WiFi unavailable; staying on USB';
-                  }
-                }
-
-                await this.plugin.saveSettings();
-              } else {
-                state.verified = false;
-                state.message = result.summary;
+              if (target.method === 'wifi' && target.requiresWifiSelection) {
+                await this.plugin.useVerifiedWifiAddress(target.host);
               }
+              const result = target.method === 'wifi'
+                ? await this.plugin.connectAndVerify(onProgress)
+                : await this.plugin.connectAndVerifyUsb(onProgress);
+              const routing = await this.flow.recordConnection(result);
+              if (routing.changed) {
+                new Notice(routing.message ?? 'SFTP selected for this tablet.');
+              }
+              // Persist the password even when no routing change was needed.
+              await this.plugin.saveSettings();
             } catch (err) {
               state.verified = false;
               state.message = err instanceof Error
@@ -291,6 +277,45 @@ export class SetupWizardModal extends Modal {
             this.renderCurrentStep();
           }),
       );
+
+    if (state.verified) {
+      new Setting(containerEl)
+        .setName('Use WiFi after setup')
+        .setDesc(
+          'Optional. This explicitly runs "rm-ssh-over-wlan on" when the tablet provides it, ' +
+          'discovers the WiFi address, verifies the same tablet host key, and only then switches. ' +
+          'This exposes password-protected SSH on your local network, so use it only on trusted WiFi. ' +
+          'It does not enable Developer Mode or reset the tablet.',
+        )
+        .addButton((button) =>
+          button
+            .setButtonText('Enable & verify WiFi')
+            .setCta()
+            .onClick(async () => {
+              button.setDisabled(true);
+              button.setButtonText('Verifying WiFi...');
+              try {
+                const result = await this.plugin.enableAndUseWifiViaUsb();
+                state.data.wifiStatus = `WiFi verified at ${result.host}; it is now the default connection.`;
+                state.data.wifiError = false;
+                new Notice(`Tablet WiFi verified at ${result.host}.`);
+              } catch (err) {
+                state.data.wifiStatus = err instanceof BridgeError
+                  ? err.toUserMessage()
+                  : err instanceof Error ? err.message : 'WiFi setup failed; USB remains selected.';
+                state.data.wifiError = true;
+              }
+              this.renderCurrentStep();
+            }),
+        );
+
+      if (typeof state.data.wifiStatus === 'string') {
+        containerEl.createDiv({
+          cls: `remarkable-wizard-status ${state.data.wifiError ? 'is-error' : 'is-success'}`,
+          text: state.data.wifiStatus,
+        });
+      }
+    }
   }
 
   // -------------------------------------------------------------------
@@ -315,6 +340,7 @@ export class SetupWizardModal extends Modal {
     const infoTable = containerEl.createDiv({ cls: 'remarkable-wizard-device-info' });
 
     this.addInfoRow(infoTable, 'Device Model', info.model);
+    this.addInfoRow(infoTable, 'Architecture', info.architecture);
     this.addInfoRow(infoTable, 'Firmware Version', info.firmware.raw);
     this.addInfoRow(infoTable, 'Kernel', info.kernelVersion);
     this.addInfoRow(infoTable, 'Total RAM', `${info.memory.totalMB} MB`);
@@ -349,14 +375,41 @@ export class SetupWizardModal extends Modal {
       }
     }
 
-    // Verify button (auto-verified if step 1 passed with device info)
+    new Setting(containerEl).setName('Sync method').setHeading();
+    if (supportsAutomaticSyncthingInstall(info)) {
+      new Setting(containerEl)
+        .setName('Tablet transfer')
+        .setDesc(
+          'SFTP is simpler and does not install tablet software. Syncthing provides background sync ' +
+          'and uses the legacy ARMv7 Entware installer in the next step.',
+        )
+        .addDropdown((dropdown) =>
+          dropdown
+            .addOption('sftp', 'SFTP (recommended)')
+            .addOption('syncthing', 'Syncthing (background sync)')
+            .setValue(this.plugin.settings.syncMethod)
+            .onChange(async (value) => {
+              try {
+                await this.flow.selectSyncMethod(value as 'sftp' | 'syncthing');
+              } catch (err) {
+                const message = err instanceof Error ? err.message : 'Could not save the sync method.';
+                new Notice(`E-Ink Sync: ${message}`);
+              }
+              this.renderCurrentStep();
+            }),
+        );
+    } else {
+      containerEl.createEl('p', {
+        text:
+          `SFTP selected for ${info.model}/${info.architecture}. Automatic Syncthing installation ` +
+          'is limited to the known reMarkable 1 and reMarkable 2 ARMv7 models.',
+        cls: 'remarkable-wizard-safety-note',
+      });
+    }
+
+    // recordConnection() verifies this only when required pre-flight checks pass.
     const verifyContainer = containerEl.createDiv({ cls: 'remarkable-wizard-verify' });
     const state = this.stepStates.get(2)!;
-
-    if (this.deviceInfo && this.connectionResult?.success) {
-      state.verified = true;
-      state.message = 'Device detected and all pre-flight checks passed.';
-    }
 
     const statusEl = verifyContainer.createDiv({ cls: 'remarkable-wizard-status' });
     if (state.verified) {
@@ -365,12 +418,10 @@ export class SetupWizardModal extends Modal {
     } else {
       statusEl.addClass('is-error');
       statusEl.setText(
-        report?.passed === false
-          ? 'Some pre-flight checks failed. You may still proceed, but setup may encounter issues.'
-          : 'Detection incomplete.',
+        state.message || (report?.passed === false
+          ? 'Required pre-flight checks failed. Resolve the failed checks, then go back and verify again.'
+          : 'Detection incomplete.'),
       );
-      // Allow proceeding even with warnings
-      state.verified = true;
     }
   }
 
@@ -379,11 +430,38 @@ export class SetupWizardModal extends Modal {
   // -------------------------------------------------------------------
   private renderStep3(containerEl: HTMLElement): void {
     new Setting(containerEl).setName('Step 3: Install Syncthing').setHeading();
+
+    // The bundled Entware path is limited to known rM1/rM2 ARMv7 hardware.
+    // Keep current, unknown, and future devices on the safe SFTP route.
+    if (!supportsAutomaticSyncthingInstall(this.deviceInfo)) {
+      const architecture = this.deviceInfo?.architecture ?? 'unknown';
+      containerEl.createEl('p', {
+        text:
+          `Automatic Syncthing installation is unavailable for ${architecture} tablets. ` +
+          'SFTP provides the supported sync path and does not install software on the tablet.',
+        cls: 'remarkable-wizard-warning',
+      });
+
+      new Setting(containerEl)
+        .addButton((button) =>
+          button
+            .setButtonText('Use SFTP instead')
+            .setCta()
+            .onClick(async () => {
+              await this.flow.selectSyncMethod('sftp');
+              this.currentStep = 5;
+              this.renderCurrentStep();
+            }),
+        );
+      return;
+    }
+
     containerEl.createEl('p', {
       text:
         'Syncthing provides automatic background sync between your reMarkable ' +
         'and this computer. It requires installing Entware and Syncthing on the tablet. ' +
-        'All files go to /home/root/.entware (safe, reversible with rm -rf /home/root/.entware).',
+        'Package data is stored in /home/root/.entware; the legacy installer also creates ' +
+        'an /opt bind mount and /etc/systemd/system/opt.mount.',
     });
 
     const state = this.stepStates.get(3)!;
@@ -427,14 +505,14 @@ export class SetupWizardModal extends Modal {
 
             try {
               appendLog('Starting installation...');
-              await this.plugin.installSyncStack(
-                (phase: string, step: string, detail: string) => {
-                  appendLog(`[${phase}] ${step}: ${detail}`);
-                },
+              await this.flow.installLegacySyncStack(
+                () => this.plugin.installSyncStack(
+                  (phase: string, step: string, detail: string) => {
+                    appendLog(`[${phase}] ${step}: ${detail}`);
+                  },
+                ),
               );
 
-              state.verified = true;
-              state.message = 'Entware and Syncthing installed successfully.';
               statusEl.addClass('is-success');
               statusEl.setText(state.message);
               appendLog('Installation complete.');
@@ -458,6 +536,10 @@ export class SetupWizardModal extends Modal {
   // -------------------------------------------------------------------
   private renderStep4(containerEl: HTMLElement): void {
     const state = this.stepStates.get(4)!;
+    const invalidatePairing = (): void => {
+      state.verified = false;
+      state.message = '';
+    };
 
     new Setting(containerEl).setName('Step 4: Configure Syncthing').setHeading();
 
@@ -527,6 +609,47 @@ export class SetupWizardModal extends Modal {
         );
     }
 
+    new Setting(containerEl)
+      .setName('Desktop Syncthing URL')
+      .setDesc('The Syncthing web/API address on this computer.')
+      .addText((text) =>
+        text
+          .setPlaceholder('http://127.0.0.1:8384')
+          .setValue(this.plugin.settings.syncthingUrl)
+          .onChange((value) => {
+            this.plugin.settings.syncthingUrl = value.trim();
+            invalidatePairing();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName('Desktop Syncthing API key')
+      .setDesc('Found in the desktop Syncthing web UI under Actions > Settings.')
+      .addText((text) => {
+        text
+          .setPlaceholder('Enter API key')
+          .setValue(this.plugin.settings.syncthingApiKey)
+          .onChange((value) => {
+            this.plugin.settings.syncthingApiKey = value.trim();
+            invalidatePairing();
+          });
+        text.inputEl.type = 'password';
+        text.inputEl.autocomplete = 'off';
+      });
+
+    new Setting(containerEl)
+      .setName('Syncthing folder ID')
+      .setDesc('Must match the shared folder ID configured in desktop Syncthing.')
+      .addText((text) =>
+        text
+          .setPlaceholder('remarkable-xochitl')
+          .setValue(this.plugin.settings.syncthingFolderId)
+          .onChange((value) => {
+            this.plugin.settings.syncthingFolderId = value.trim();
+            invalidatePairing();
+          }),
+      );
+
     // Sync folder path
     new Setting(containerEl)
       .setName('Sync folder (relative to vault)')
@@ -537,6 +660,7 @@ export class SetupWizardModal extends Modal {
           .setValue(this.plugin.settings.syncFolder || 'reMarkable/Sync')
           .onChange((value) => {
             this.plugin.settings.syncFolder = value.trim();
+            invalidatePairing();
           }),
       );
 
@@ -567,23 +691,31 @@ export class SetupWizardModal extends Modal {
               const syncFolder = this.plugin.settings.syncFolder || 'reMarkable/Sync';
               const basePath = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.() ?? '';
               const fullPath = basePath ? path.join(basePath, syncFolder) : syncFolder;
-
-              // Check if the folder exists and has metadata files
-              if (!fs.existsSync(fullPath)) {
-                state.verified = false;
-                state.message = `Folder "${fullPath}" does not exist. Make sure Syncthing has synced at least once.`;
-              } else {
-                const files = fs.readdirSync(fullPath);
-                const metaFiles = files.filter((file) => file.endsWith('.metadata'));
-
-                if (metaFiles.length > 0) {
-                  state.verified = true;
-                  state.message = `Sync working! Found ${metaFiles.length} document(s) in "${syncFolder}".`;
-                } else {
-                  state.verified = false;
-                  state.message = `Folder exists but no documents found yet. Wait for Syncthing to complete the initial sync, then try again.`;
-                }
-              }
+              await this.flow.verifySyncthingPairing({
+                syncFolderIsDirectory: () => {
+                  try {
+                    return fs.statSync(fullPath).isDirectory();
+                  } catch {
+                    return false;
+                  }
+                },
+                persistProviderConfiguration: async () => {
+                  const sources = this.plugin.getSyncSources();
+                  if (sources.length > 0) {
+                    await this.plugin.updateSyncSources([
+                      {
+                        ...sources[0],
+                        syncFolder: this.plugin.settings.syncFolder,
+                        syncthingFolderId: this.plugin.settings.syncthingFolderId,
+                      },
+                      ...sources.slice(1),
+                    ]);
+                  } else {
+                    await this.plugin.saveSettings();
+                  }
+                },
+                isSyncProviderAvailable: () => this.plugin.getSyncProvider().isAvailable(),
+              });
             } catch (err) {
               state.verified = false;
               state.message = err instanceof BridgeError
@@ -604,6 +736,11 @@ export class SetupWizardModal extends Modal {
   // Step 5: First Sync & Output Folder
   // -------------------------------------------------------------------
   private renderStep5(containerEl: HTMLElement): void {
+    const state = this.stepStates.get(5)!;
+    const invalidateCompletion = (): void => {
+      state.verified = false;
+      state.message = '';
+    };
     const stepLabel = this.isSftpMode ? 'Step 3: Review & Finish' : 'Step 5: Review & Finish';
     new Setting(containerEl).setName(stepLabel).setHeading();
     containerEl.createEl('p', {
@@ -622,6 +759,7 @@ export class SetupWizardModal extends Modal {
             .setValue(this.plugin.settings.syncFolder || 'reMarkable/Sync')
             .onChange((value) => {
               this.plugin.settings.syncFolder = value.trim();
+              invalidateCompletion();
             }),
         );
     }
@@ -637,6 +775,7 @@ export class SetupWizardModal extends Modal {
           .setValue(this.plugin.settings.extraction.pdfLinkFormat)
           .onChange((value) => {
             this.plugin.settings.extraction.pdfLinkFormat = value as 'pdfpp' | 'obsidian' | 'none';
+            invalidateCompletion();
           }),
       );
 
@@ -660,7 +799,6 @@ export class SetupWizardModal extends Modal {
     }
 
     // Final verify
-    const state = this.stepStates.get(5)!;
     const verifyContainer = containerEl.createDiv({ cls: 'remarkable-wizard-verify' });
     const statusEl = verifyContainer.createDiv({ cls: 'remarkable-wizard-status' });
 
@@ -682,72 +820,28 @@ export class SetupWizardModal extends Modal {
             button.setButtonText('Verifying...');
 
             try {
-              // Save all settings
-              await this.plugin.saveSettings();
-
-              // Test connection one more time
-              statusEl.setText('Testing connection...');
-              const connected = await this.plugin.testConnection();
-              if (!connected) {
-                throw new Error('Cannot reach the tablet. Check your connection.');
-              }
-
-              // Ensure a default sync source exists
-              const sources = this.plugin.getSyncSources();
-              if (sources.length === 0 && this.plugin.settings.syncFolder) {
-                const { generateSourceId } = await import('./settings');
-                const newSource = {
-                  id: generateSourceId(),
-                  label: 'Default',
-                  syncFolder: this.plugin.settings.syncFolder,
-                  syncthingFolderId: this.plugin.settings.syncthingFolderId ?? '',
-                  lastExtractionTimestamps: {} as Record<string, number>,
-                  syncFolderPathHash: null,
-                  highlightsSubfolder: null,
-                };
-                await this.plugin.updateSyncSources([newSource]);
-              }
-
-              // In Syncthing mode, an SSH ping is not enough: the plugin syncs
-              // through Syncthing's local REST API, so setup is only "complete"
-              // once that API is actually reachable and the folder is configured.
-              // Otherwise the user finishes the wizard with a provider that can
-              // never work.
-              if (!this.isSftpMode) {
-                statusEl.setText('Checking Syncthing API...');
-                const available = await this.plugin.getSyncProvider().isAvailable();
-                if (!available) {
-                  throw new Error(
-                    'Syncthing is not reachable yet. Open the Syncthing web UI, add the ' +
-                    'shared folder, then set the Syncthing URL, API key, and folder ID in ' +
-                    'settings and verify again.',
-                  );
-                }
-              }
-
-              // A new installation is not ready until the extraction runtime is
-              // usable. This installs the pinned packages into the managed env on
-              // first run and reports a clear prerequisite error when Python is absent.
-              statusEl.setText('Preparing highlight extraction...');
-              const python = await this.plugin.preparePythonEnvironment((message) => {
-                statusEl.setText(message);
-              });
-              statusEl.setText(
-                python.created
-                  ? 'Python environment installed and verified.'
-                  : 'Python environment verified.',
-              );
-
-              // Mark setup as complete only after connection, sync provider, and
-              // extraction dependencies have all passed.
-              this.plugin.settings.setupComplete = true;
-              await this.plugin.saveSettings();
-
-              // Start auto-sync timer if enabled (SFTP mode)
-              this.plugin.toggleAutoSyncTimer();
-
-              state.verified = true;
-              state.message = 'Setup complete. E-Ink Sync is ready.';
+              await this.flow.completeSetup({
+                testConnectionDetailed: () => this.plugin.testConnectionDetailed(),
+                ensureDefaultSyncSource: async () => {
+                  const sources = this.plugin.getSyncSources();
+                  if (sources.length === 0 && this.plugin.settings.syncFolder) {
+                    const { generateSourceId } = await import('./settings');
+                    await this.plugin.updateSyncSources([{
+                      id: generateSourceId(),
+                      label: 'Default',
+                      syncFolder: this.plugin.settings.syncFolder,
+                      syncthingFolderId: this.plugin.settings.syncthingFolderId ?? '',
+                      lastExtractionTimestamps: {},
+                      syncFolderPathHash: null,
+                      highlightsSubfolder: null,
+                    }]);
+                  }
+                },
+                isSyncProviderAvailable: () => this.plugin.getSyncProvider().isAvailable(),
+                preparePythonEnvironment: (onProgress) =>
+                  this.plugin.preparePythonEnvironment(onProgress),
+                toggleAutoSyncTimer: () => this.plugin.toggleAutoSyncTimer(),
+              }, (message) => statusEl.setText(message));
 
               new Notice('E-Ink Sync setup complete!');
             } catch (err) {

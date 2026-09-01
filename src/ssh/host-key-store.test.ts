@@ -12,6 +12,9 @@ import {
   fingerprintFromKey,
   resetHostKey,
   makeHostVerifier,
+  makeExactHostVerifier,
+  getPinnedHostFingerprint,
+  rememberVerifiedHostAlias,
   _resetStoreForTests,
 } from './host-key-store';
 
@@ -94,5 +97,26 @@ describe('host-key-store', () => {
     const verify = makeHostVerifier('10.0.0.41');
     expect(verify(Buffer.from('rm-key'))).toBe(true);
     expect(verify(Buffer.from('rm-key'))).toBe(true);
+  });
+
+  it('exact verification refuses a different WiFi host key', () => {
+    const trustedKey = Buffer.from('usb-tablet-key');
+    const verifyWifiKey = makeExactHostVerifier(fingerprintFromKey(trustedKey));
+    expect(verifyWifiKey(trustedKey)).toBe(true);
+    expect(verifyWifiKey(Buffer.from('different-lan-host-key'))).toBe(false);
+  });
+
+  it('copies a USB pin to a WiFi alias only after explicit verification', () => {
+    initHostKeyStore(tmpStorePath());
+    expect(verifyHostKey('10.11.99.1', 'tablet-fingerprint')).toBe(true);
+    expect(rememberVerifiedHostAlias('10.11.99.1', '192.168.1.42')).toBe(true);
+    expect(getPinnedHostFingerprint('192.168.1.42')).toBe('tablet-fingerprint');
+  });
+
+  it('refuses first-use authentication when a configured pin cannot be persisted', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'hostkey-no-dir-'));
+    initHostKeyStore(path.join(base, 'missing', 'known-hosts.json'));
+    expect(verifyHostKey('192.168.1.42', 'tablet-fingerprint')).toBe(false);
+    expect(getPinnedHostFingerprint('192.168.1.42')).toBeNull();
   });
 });

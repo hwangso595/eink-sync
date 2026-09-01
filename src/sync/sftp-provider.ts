@@ -9,8 +9,10 @@
 
 import type { SyncProvider, SyncProgressCallback, SyncResult } from './sync-provider';
 import { SftpSyncEngine, type SftpProgressCallback } from './sftp-sync';
+import { connectSftp } from './sftp-connection';
 import { ReMarkableSSHClient } from '../ssh/ssh-client';
 import { stopServices, removeServices } from './service-manager';
+import type { ConnectionMethod } from '../types/config';
 
 export interface SftpProviderConfig {
   host: string;
@@ -18,6 +20,7 @@ export interface SftpProviderConfig {
   username: string;
   password: string;
   timeoutMs: number;
+  connectionMethod: ConnectionMethod;
   localSyncDir: string;
   includeEpub: boolean;
 }
@@ -39,6 +42,7 @@ export class SftpProvider implements SyncProvider {
       username: this.config.username,
       password: this.config.password,
       timeoutMs: this.config.timeoutMs,
+      connectionMethod: this.config.connectionMethod,
       localSyncDir: this.config.localSyncDir,
       includeEpub: this.config.includeEpub,
     });
@@ -56,20 +60,22 @@ export class SftpProvider implements SyncProvider {
   }
 
   async isAvailable(): Promise<boolean> {
-    const ssh = new ReMarkableSSHClient({
-      host: this.config.host,
-      port: this.config.port,
-      username: this.config.username,
-      password: this.config.password,
-      timeoutMs: this.config.timeoutMs,
-      method: 'wifi',
-    });
+    let connection: Awaited<ReturnType<typeof connectSftp>>['conn'] | null = null;
     try {
-      await ssh.connect();
-      await ssh.disconnect();
+      const session = await connectSftp({
+        host: this.config.host,
+        port: this.config.port,
+        username: this.config.username,
+        password: this.config.password,
+        timeoutMs: this.config.timeoutMs,
+        connectionMethod: this.config.connectionMethod,
+      });
+      connection = session.conn;
       return true;
     } catch {
       return false;
+    } finally {
+      connection?.end();
     }
   }
 
@@ -94,7 +100,7 @@ export class SftpProvider implements SyncProvider {
       username: this.config.username,
       password: this.config.password,
       timeoutMs: this.config.timeoutMs,
-      method: 'wifi',
+      method: this.config.connectionMethod,
     });
     try {
       await ssh.connect();
