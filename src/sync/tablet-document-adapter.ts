@@ -128,7 +128,7 @@ export class TabletDocumentAdapter {
         const original = err instanceof Error ? err.message : String(err);
         const recovery = recoveryError instanceof Error
           ? recoveryError.message
-          : String(recoveryError);
+          : typeof recoveryError === 'string' ? recoveryError : 'Unknown rollback error';
         throw new Error(`${original} Restore rollback also failed: ${recovery}`);
       }
       throw err;

@@ -831,7 +831,7 @@ export class SetupWizardModal extends Modal {
                       label: 'Default',
                       syncFolder: this.plugin.settings.syncFolder,
                       syncthingFolderId: this.plugin.settings.syncthingFolderId ?? '',
-                      lastExtractionTimestamps: {} as Record<string, number>,
+                      lastExtractionTimestamps: {},
                       syncFolderPathHash: null,
                       highlightsSubfolder: null,
                     }]);

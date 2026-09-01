@@ -57,7 +57,7 @@ export interface MutableConnectionSettings {
   autoSyncEnabled: boolean;
 }
 
-interface ConnectionSnapshot extends MutableConnectionSettings {}
+type ConnectionSnapshot = Readonly<MutableConnectionSettings>;
 
 function snapshotConnection(settings: MutableConnectionSettings): ConnectionSnapshot {
   return {

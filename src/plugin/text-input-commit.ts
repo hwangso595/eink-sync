@@ -1,5 +1,9 @@
 import type { TextComponent } from 'obsidian';
 
+function isBlurTarget(element: Element): element is Element & { blur(): void } {
+  return 'blur' in element && typeof element.blur === 'function';
+}
+
 /** Commit a trimmed text value when the field loses focus or Enter is pressed. */
 export function commitTextOnBlurOrEnter(
   text: TextComponent,
@@ -35,8 +39,7 @@ export function blurFocusedDescendant(containerEl: HTMLElement): void {
   if (
     activeElement
     && containerEl.contains(activeElement)
-    && 'blur' in activeElement
-    && typeof activeElement.blur === 'function'
+    && isBlurTarget(activeElement)
   ) {
     activeElement.blur();
   }

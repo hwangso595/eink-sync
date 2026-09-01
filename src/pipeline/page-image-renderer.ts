@@ -82,7 +82,8 @@ function parseRenderOutput(json: string): RenderOutput {
     throw new Error('Invalid render_pages page data');
   }
   if (!Array.isArray(failedPages) || !failedPages.every(
-    (page) => typeof page === 'number' && Number.isInteger(page) && page > 0,
+    (page): page is number =>
+      typeof page === 'number' && Number.isInteger(page) && page > 0,
   )) {
     throw new Error('Invalid render_pages failed page data');
   }
