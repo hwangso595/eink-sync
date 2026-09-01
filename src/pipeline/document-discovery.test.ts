@@ -56,20 +56,6 @@ describe('computeTrashedUuids', () => {
   });
 });
 
-describe('captured tablet tag fixture', () => {
-  it('reads real page tags from a firmware 3.x .content file', () => {
-    const fixtureDir = path.resolve(__dirname, '../../test-data/xochitl');
-    const doc = discoverDocuments(fixtureDir).find(
-      (entry) => entry.uuid === 'a9f3e41f-1c5c-4bf8-87cd-1b6764a9e9db',
-    );
-
-    expect(doc).toBeDefined();
-    expect(doc?.pageTags).toEqual({
-      '696087c1-fdc5-4bf8-8564-6984811de4c2': ['ml', 'rl'],
-    });
-  });
-});
-
 describe('discoverDocuments', () => {
   let tmpDir: string;
 
@@ -185,6 +171,29 @@ describe('discoverDocuments', () => {
     expect(docs[0].pageTags).toEqual({ n1: ['Calculus', 'Exam'] });
   });
 
+  it('reads page tags from the captured firmware 3.x content shape', () => {
+    const uuid = 'firmware-3-tags';
+    const pageId = '696087c1-fdc5-4bf8-8564-6984811de4c2';
+    writeJson(tmpDir, `${uuid}.metadata`, {
+      visibleName: 'Tagged PDF',
+      parent: '',
+      type: 'DocumentType',
+      deleted: false,
+    });
+    writeJson(tmpDir, `${uuid}.content`, {
+      fileType: 'pdf',
+      pageCount: 1,
+      cPages: { pages: [{ id: pageId }] },
+      pageTags: [
+        { name: 'ml', pageId, timestamp: 1774858864336 },
+        { name: 'rl', pageId, timestamp: 1774858869876 },
+      ],
+    });
+
+    const [doc] = discoverDocuments(tmpDir);
+    expect(doc.pageTags).toEqual({ [pageId]: ['ml', 'rl'] });
+  });
+
   it('excludes folder entries (CollectionType)', () => {
     writeJson(tmpDir, 'folder-1.metadata', {
       visibleName: 'Research',
@@ -241,7 +250,7 @@ describe('discoverDocuments', () => {
   });
 
   it('returns empty array for nonexistent directory', () => {
-    const docs = discoverDocuments('/nonexistent/path');
+    const docs = discoverDocuments(path.join(tmpDir, 'nonexistent'));
     expect(docs).toHaveLength(0);
   });
 
