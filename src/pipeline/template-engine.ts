@@ -28,6 +28,7 @@ import type { ExtractionResult, PageDrawings, PageOcr, MarkdownRenderer } from '
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { preserveTypedNotes } from './notes-preservation';
+import { cleanTags, mapFrontmatter, repairNoteFrontmatter, repairTemplateFrontmatter, yamlString } from './frontmatter';
 
 // Re-exported for backwards compatibility (public API / tests import it here).
 export { formatPdfLink };
@@ -143,7 +144,7 @@ export function buildTemplateContext(
     source_type: 'pdf',
     uuid: result.document.uuid,
     highlight_count: result.highlights.length,
-    tags,
+    tags: cleanTags(tags),
     highlights: result.highlights.map((h) => ({
       text: h.text,
       page: h.pageNumber,
@@ -173,7 +174,7 @@ export function renderTemplate(
   template: string,
   context: TemplateContext,
 ): string {
-  let output = template;
+  let output = repairTemplateFrontmatter(template);
 
   // Process {{#each highlights}} ... {{/each}}
   output = processEachBlocks(output, context);
@@ -307,38 +308,49 @@ function processIfBlocks(template: string, context: TemplateContext): string {
  * Substitute simple {{variable}} placeholders with context values.
  */
 function substituteVariables(template: string, context: TemplateContext): string {
-  let output = template;
-
-  // Direct scalar substitutions
-  output = output.replace(/\{\{title\}\}/g, context.title);
-  output = output.replace(/\{\{author\}\}/g, context.author);
-  output = output.replace(/\{\{date\}\}/g, context.date);
-  output = output.replace(/\{\{source_pdf\}\}/g, context.source_pdf);
-  output = output.replace(/\{\{source_type\}\}/g, context.source_type ?? 'pdf');
-  output = output.replace(/\{\{uuid\}\}/g, context.uuid);
-  output = output.replace(/\{\{highlight_count\}\}/g, String(context.highlight_count));
-  // {{source}}; sync source label (for multi-source setups)
-  output = output.replace(/\{\{source\}\}/g, context.source ?? '');
-  // {{annotations}}; page drawings rendered as image embeds
-  output = output.replace(/\{\{annotations\}\}/g, context.annotations ?? '');
-
-  // Tags as YAML list (for frontmatter)
-  output = output.replace(/\{\{tags_yaml\}\}/g, () => {
-    if (context.tags.length === 0) return '[]';
-    return context.tags.map((t) => `  - ${t}`).join('\n');
+  const tags = cleanTags(context.tags);
+  const values: Record<string, string> = {
+    title: context.title,
+    author: context.author,
+    date: context.date,
+    source_pdf: context.source_pdf,
+    source_type: context.source_type ?? 'pdf',
+    uuid: context.uuid,
+    highlight_count: String(context.highlight_count),
+    source: context.source ?? '',
+    annotations: context.annotations ?? '',
+    tags_yaml: JSON.stringify(tags),
+    tags_inline: tags.join(', '),
+    tags: formatObsidianTags(tags),
+    tags_hashtags: formatObsidianTags(tags),
+  };
+  // One callback pass preserves literal $& / $' and token-like document titles.
+  const substitute = (text: string): string => text.replace(
+    /\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match,
+  );
+  let header = '';
+  const body = mapFrontmatter(template, (yaml) => {
+    // A standalone list placeholder must be indented, even when it is [].
+    let rendered = yaml.replace(/^[ \t]*\{\{tags_yaml\}\}[ \t]*$/gm, () => `  ${values.tags_yaml}`);
+    rendered = rendered.replace(/^([\w-]+:[ \t]*)([^\r\n]*)$/gm, (line, prefix: string, value: string) => {
+      if (!/\{\{\w+\}\}/.test(value)) return line;
+      let scalar = value.trim();
+      if (scalar.startsWith('"') && scalar.endsWith('"')) {
+        try { scalar = JSON.parse(scalar) as string; } catch { scalar = scalar.slice(1, -1); }
+      } else if (scalar.startsWith("'") && scalar.endsWith("'")) {
+        scalar = scalar.slice(1, -1).replace(/''/g, "'");
+      }
+      // These placeholders are typed values, even in a safely quoted template.
+      if (scalar === '{{highlight_count}}') return prefix + values.highlight_count;
+      if (scalar === '{{tags_yaml}}') return prefix + values.tags_yaml;
+      return prefix + yamlString(substitute(scalar));
+    });
+    header = rendered;
+    return '';
   });
-
-  // Tags as inline comma-separated
-  output = output.replace(/\{\{tags_inline\}\}/g, context.tags.join(', '));
-
-  // Tags as hashtags
-  const obsidianTags = formatObsidianTags(context.tags);
-  output = output.replace(/\{\{tags_hashtags\}\}/g, () => {
-    return obsidianTags;
-  });
-  output = output.replace(/\{\{tags\}\}/g, obsidianTags);
-
-  return output;
+  // Substitute only the body so values inserted into YAML are never processed again.
+  const renderedBody = substitute(body.replace(/^[ \t]*\{\{tags_yaml\}\}[ \t]*$/gm, () => `  ${values.tags_yaml}`));
+  return mapFrontmatter(renderedBody, () => header);
 }
 
 // -------------------------------------------------------------------
@@ -355,10 +367,10 @@ function substituteVariables(template: string, context: TemplateContext): string
 export const DEFAULT_TEMPLATE = `---
 title: "{{title}}"
 source_pdf: "[[{{source_pdf}}]]"
-source_type: {{source_type}}
-date_highlighted: {{date}}
-highlight_count: {{highlight_count}}
-remarkable_uuid: {{uuid}}
+source_type: "{{source_type}}"
+date_highlighted: "{{date}}"
+highlight_count: "{{highlight_count}}"
+remarkable_uuid: "{{uuid}}"
 ---
 
 <!-- eink-sync:start -->
@@ -560,20 +572,22 @@ export class TemplateMarkdownRenderer implements MarkdownRenderer {
     // every write path via preserveTypedNotes() (notes-preservation.ts), which
     // matches by anchor and never drops content; the old positional re-insert
     // here silently destroyed notes whenever the fresh render had fewer slots.
-    const newStartIdx = fresh.indexOf(HIGHLIGHTS_SECTION_START);
-    const newEndIdx = fresh.indexOf(HIGHLIGHTS_SECTION_END);
-    if (newStartIdx === -1 || newEndIdx === -1) {
+    const freshStart = findHighlightsStart(fresh);
+    const freshEnd = findHighlightsEnd(fresh);
+    if (!freshStart || !freshEnd) {
       return fresh;
     }
-    const newSection = fresh.substring(
-      newStartIdx, newEndIdx + HIGHLIGHTS_SECTION_END.length
-    );
+    const newSection = HIGHLIGHTS_SECTION_START
+      + fresh.substring(freshStart.index + freshStart.marker.length, freshEnd.index)
+      + HIGHLIGHTS_SECTION_END;
 
     // Reassemble: before markers + new section + after markers
     const before = existingContent.substring(0, start.index);
     const after = existingContent.substring(end.index + end.marker.length);
 
-    const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
+    const updatedBefore = updateFrontmatterHighlightCount(
+      repairNoteFrontmatter(before, fresh), result.highlights.length,
+    );
 
     // Typed user notes must survive the section swap (the pipeline applies
     // this again for the overwrite path; the helper is idempotent).

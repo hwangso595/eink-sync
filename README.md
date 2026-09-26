@@ -229,6 +229,8 @@ Notebook pages that use a reMarkable template (ruled lines, grid, planner, …) 
 
 Document and page tags can be placed in generated notes by adding `{{tags}}` inside the template's managed `eink-sync` section. It renders space-separated Obsidian hashtags at that exact location (for example, `linear algebra` becomes `#linear-algebra`). Remove the placeholder to disable tag output.
 
+For tags in Obsidian Properties, add `tags: "{{tags_yaml}}"` to the template's YAML frontmatter. This produces a list of strings, or `tags: []` when there are no tags. Keep property placeholders quoted in the template (for example, `remarkable_uuid: "{{uuid}}"` and `highlight_count: "{{highlight_count}}"`) so Obsidian does not rewrite them as nested objects. Generated highlight counts are numbers. Existing notes with these malformed placeholder objects or empty-tag lists are repaired on their next extraction; custom properties and note text are preserved.
+
 ---
 
 ## How sync works

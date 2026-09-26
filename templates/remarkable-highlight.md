@@ -3,11 +3,10 @@ title: "{{title}}"
 author: "{{author}}"
 source_pdf: "[[{{source_pdf}}]]"
 source_type: pdf
-date_highlighted: {{date}}
-highlight_count: {{highlight_count}}
-remarkable_uuid: {{uuid}}
-tags:
-{{tags_yaml}}
+date_highlighted: "{{date}}"
+highlight_count: "{{highlight_count}}"
+remarkable_uuid: "{{uuid}}"
+tags: "{{tags_yaml}}"
 ---
 
 # {{title}}

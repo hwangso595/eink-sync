@@ -20,6 +20,7 @@ import { ExtractionResult, ExtractedHighlight, MarkdownRenderer, PageOcr } from 
 import type { PdfLinkFormat } from '../plugin/settings';
 import { formatPdfLink, formatHighlightDate, updateFrontmatterHighlightCount } from './render-helpers';
 import { preserveTypedNotes } from './notes-preservation';
+import { cleanTags, repairNoteFrontmatter, yamlString } from './frontmatter';
 import { logger } from '../utils/logger';
 import {
   HIGHLIGHTS_SECTION_START,
@@ -66,7 +67,7 @@ function buildFrontmatter(data: FrontmatterData): string {
   if (data.tags && data.tags.length > 0) {
     lines.push('tags:');
     for (const tag of data.tags) {
-      lines.push(`  - ${tag}`);
+      lines.push(`  - ${yamlString(tag)}`);
     }
   }
 
@@ -78,10 +79,7 @@ function buildFrontmatter(data: FrontmatterData): string {
  * Escape special characters in a YAML string value.
  */
 function escapeYamlString(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n');
+  return yamlString(value).slice(1, -1);
 }
 
 /** Options controlling how a highlight is formatted. */
@@ -321,7 +319,7 @@ export function renderMarkdown(
     frontmatterData.source = sourceLabel;
   }
   // Merge document-level tags from the tablet with default tags from settings
-  const allTags = [...defaultTags, ...(result.tags ?? [])];
+  const allTags = cleanTags([...defaultTags, ...(result.tags ?? [])]);
   if (allTags.length > 0) {
     // Deduplicate while preserving order
     frontmatterData.tags = [...new Set(allTags)];
@@ -417,7 +415,10 @@ export function mergeWithExistingNote(
     const after = existingContent.substring(end.index + end.marker.length);
 
     // Update frontmatter highlight count if present
-    const updatedBefore = updateFrontmatterHighlightCount(before, result.highlights.length);
+    const updatedBefore = updateFrontmatterHighlightCount(
+      repairNoteFrontmatter(before, renderMarkdown(result, sourcePdfName, pageDrawings, renderOptions, pageOcr)),
+      result.highlights.length,
+    );
 
     // Typed user notes (<!-- notes --> blocks, e.g. added manually or via a
     // custom template) must survive the section swap.

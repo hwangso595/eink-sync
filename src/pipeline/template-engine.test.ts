@@ -165,7 +165,7 @@ describe('renderTemplate', () => {
     const template = 'tags:\n{{tags_yaml}}';
     const ctx = makeContext();
     const result = renderTemplate(template, ctx);
-    expect(result).toBe('tags:\n  - remarkable\n  - highlights');
+    expect(result).toBe('tags:\n  ["remarkable","highlights"]');
   });
 
   it('should render empty tags_yaml as empty array', () => {

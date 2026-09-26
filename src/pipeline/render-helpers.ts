@@ -8,6 +8,7 @@
  */
 
 import type { PdfLinkFormat } from '../plugin/settings';
+import { mapFrontmatter } from './frontmatter';
 
 /**
  * Format a PDF page link according to the configured format.
@@ -47,12 +48,12 @@ export function formatHighlightDate(lastModifiedEpochMs: number): string {
 }
 
 /** Frontmatter `highlight_count:` line, matched anywhere in the block. */
-const HIGHLIGHT_COUNT_RE = /^highlight_count:\s*\d+$/m;
+const HIGHLIGHT_COUNT_RE = /^highlight_count:[ \t]*\d+(?=\r?$)/m;
 
 /**
  * Replace the `highlight_count:` value in a note's frontmatter, if present.
  * Returns the content unchanged when there is no such line.
  */
 export function updateFrontmatterHighlightCount(content: string, newCount: number): string {
-  return content.replace(HIGHLIGHT_COUNT_RE, `highlight_count: ${newCount}`);
+  return mapFrontmatter(content, (yaml) => yaml.replace(HIGHLIGHT_COUNT_RE, `highlight_count: ${newCount}`));
 }
